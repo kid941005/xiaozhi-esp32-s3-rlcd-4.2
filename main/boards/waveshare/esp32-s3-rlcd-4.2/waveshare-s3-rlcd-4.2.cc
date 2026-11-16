@@ -757,8 +757,40 @@ public:
     }
 
     virtual bool GetBatteryLevel(int &level, bool& charging, bool& discharging) override {
-        charging = false;
-        discharging = !charging;
+        // 本板没有把充电芯片的 STAT 脚接到 SoC，只能靠电池电压趋势推断：
+        //   电压在观察窗口内明显上升 → 正在充电（插上充电器时会有一次明显抬升）
+        //   明显下降              → 正在放电（拔掉充电器时会有一次明显跌落）
+        //   变化不明显            → 保持上一次状态（充电 CV 阶段、静置时都不会误翻转图标）
+        static uint32_t last_sample_ms = 0;
+        static uint16_t hist_mv[12] = {0};
+        static int hist_count = 0;
+        static int hist_pos = 0;
+        static bool charging_state = false;
+
+        const uint32_t kSampleIntervalMs = 5000;   // 采样间隔
+        const int kTrendThresholdMv = 30;          // 窗口内变化超过该值才判定状态切换
+
+        uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+        if (last_sample_ms == 0 || now_ms - last_sample_ms >= kSampleIntervalMs) {
+            last_sample_ms = now_ms;
+            hist_mv[hist_pos] = BatterygetVoltage();
+            hist_pos = (hist_pos + 1) % 12;
+            if (hist_count < 12) hist_count++;
+
+            if (hist_count >= 4) {
+                int newest = (hist_pos + 12 - 1) % 12;
+                int oldest = (hist_pos + 12 - hist_count) % 12;
+                int delta_mv = (int)hist_mv[newest] - (int)hist_mv[oldest];
+                if (delta_mv >= kTrendThresholdMv) {
+                    charging_state = true;
+                } else if (delta_mv <= -kTrendThresholdMv) {
+                    charging_state = false;
+                }
+            }
+        }
+
+        charging = charging_state;
+        discharging = !charging_state;
         level = (int)BatterygetPercent();
         return true;
     }

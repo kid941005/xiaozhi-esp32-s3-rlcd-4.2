@@ -48,8 +48,8 @@ void CustomLcdDisplay::SetupMusicUI() {
     const lv_font_t *font_sm     = &font_puhui_14_1;    // 14px 小字
 
     // 全局布局常量
-    const int SCR_W = 400;
-    const int SCR_H = 300;
+    const int SCR_W = UI_SCR_W;
+    const int SCR_H = UI_SCR_H;
     const int PAD = 12;               // 左右安全边距
 
     // ===== 音乐页面容器（全屏黑底，初始隐藏）=====
@@ -115,8 +115,15 @@ void CustomLcdDisplay::SetupMusicUI() {
     // ============================================================
 
     const int content_y = 36;         // 顶部信息下方
+#if UI_PORTRAIT
+    const int vinyl_card_size = 110;  // 唱片方卡尺寸
+    const int vinyl_size = 96;        // 唱片圆盘直径
+#else
     const int vinyl_card_size = 150;  // 唱片方卡尺寸
     const int vinyl_size = 130;       // 唱片圆盘直径
+#endif
+    // 右侧信息卡高度：竖屏时高于唱片，给 3 行歌词留空间
+    const int info_h = UI_PORTRAIT ? 150 : vinyl_card_size;
     const int vinyl_x = PAD;          // 唱片左边距
     const int info_x = vinyl_x + vinyl_card_size + 12;  // 右侧信息区起始 x
     const int info_w = SCR_W - info_x - PAD;             // 右侧信息区宽度
@@ -146,7 +153,11 @@ void CustomLcdDisplay::SetupMusicUI() {
     lv_obj_remove_flag(vinyl_disc, LV_OBJ_FLAG_SCROLLABLE);
 
     // 唱片纹路（3 层同心圆）
+#if UI_PORTRAIT
+    const int ring_sizes[] = {84, 66, 50};
+#else
     const int ring_sizes[] = {104, 84, 64};
+#endif
     for (int i = 0; i < 3; i++) {
         lv_obj_t *ring = lv_obj_create(vinyl_disc);
         lv_obj_set_size(ring, ring_sizes[i], ring_sizes[i]);
@@ -160,7 +171,11 @@ void CustomLcdDisplay::SetupMusicUI() {
     }
 
     // 中心标签区（白色圆形）
+#if UI_PORTRAIT
+    const int center_size = 34;
+#else
     const int center_size = 40;
+#endif
     lv_obj_t *vinyl_center = lv_obj_create(vinyl_disc);
     lv_obj_set_size(vinyl_center, center_size, center_size);
     lv_obj_center(vinyl_center);
@@ -184,7 +199,7 @@ void CustomLcdDisplay::SetupMusicUI() {
 
     // --- 右侧：歌曲信息（白色卡片，和唱片等高）---
     lv_obj_t *info_card = lv_obj_create(page);
-    lv_obj_set_size(info_card, info_w, vinyl_card_size);
+    lv_obj_set_size(info_card, info_w, info_h);
     lv_obj_set_pos(info_card, info_x, content_y);
     lv_obj_set_style_bg_color(info_card, lv_color_white(), 0);
     lv_obj_set_style_bg_opa(info_card, LV_OPA_COVER, 0);
@@ -266,7 +281,7 @@ void CustomLcdDisplay::SetupMusicUI() {
     // 第 3 层：进度条 + 时间
     // ============================================================
 
-    const int bar_y = content_y + vinyl_card_size + 10;
+    const int bar_y = content_y + (info_h > vinyl_card_size ? info_h : vinyl_card_size) + 10;
     const int bar_w = SCR_W - PAD * 2 - 120;  // 留出右侧时间文字的空间
 
     music_progress_bar_ = lv_bar_create(page);

@@ -39,7 +39,7 @@ void CustomLcdDisplay::SetupWeatherUI() {
     lv_obj_t *root = lv_screen_active();
     lv_obj_set_style_bg_color(root, lv_color_black(), 0);
     weather_page_ = lv_obj_create(root);
-    lv_obj_set_size(weather_page_, 400, 300);
+    lv_obj_set_size(weather_page_, UI_SCR_W, UI_SCR_H);
     lv_obj_set_pos(weather_page_, 0, 0);
     lv_obj_set_style_bg_opa(weather_page_, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(weather_page_, 0, 0);
@@ -93,18 +93,40 @@ void CustomLcdDisplay::SetupWeatherUI() {
     lv_obj_align(sensor_label_, LV_ALIGN_TOP_LEFT, 10, 8);
     lv_label_set_text(sensor_label_, "--.-°C  --.-%");
 
-    // ===== 2×2 卡片网格布局 =====
+    // ===== 卡片布局：横屏 2×2 网格 / 竖屏 单列自上而下堆叠 =====
     const int pad = 8;
     const int gap = 6;
     const int top_y = 36;
+#if UI_PORTRAIT
+    // 竖屏 300×400：时钟 → 日历 → AI → 备忘录 依次纵向堆叠，每张卡片整宽
+    const int col_w        = UI_SCR_W - pad * 2;            // 284
+    const int left_w       = col_w;
+    const int right_w      = col_w;
+    const int top_row_h    = 104;                            // 时钟卡高度
+    const int cal_y        = top_y + top_row_h + gap;        // 日历卡 y = 146
+    const int cal_h        = 100;                            // 日历卡高度
+    const int bot_y        = cal_y + cal_h + gap;            // AI 卡 y = 252
+    const int bot_row_h    = 80;                             // AI 卡高度
+    const int bot_card_w   = col_w;
+    const int music_card_w = col_w;
+    const int right_x      = pad;                            // 日历卡 x
+    const int memo_y       = bot_y + bot_row_h + gap;        // 备忘卡 y = 338
+    const int memo_h       = UI_SCR_H - memo_y - 4;          // 备忘卡高度 = 58
+#else
     const int top_row_h = 128;
-    const int bot_row_h = 300 - top_y - top_row_h - gap - pad;  // = 122
+    const int bot_row_h = UI_SCR_H - top_y - top_row_h - gap - pad;  // = 122
     const int left_w = 248;
-    const int right_w = 400 - pad * 2 - left_w - gap;  // = 130
+    const int right_w = UI_SCR_W - pad * 2 - left_w - gap;  // = 130
     const int bot_y = top_y + top_row_h + gap;
-    const int bot_total_w = 400 - pad * 2 - gap;
+    const int bot_total_w = UI_SCR_W - pad * 2 - gap;
     const int bot_card_w = bot_total_w * 2 / 3;  // AI 区域 = 252
     const int music_card_w = bot_total_w - bot_card_w;  // 音乐区域 = 126
+    const int right_x = pad + left_w + gap;
+    const int cal_y = top_y;
+    const int cal_h = top_row_h;
+    const int memo_y = bot_y;
+    const int memo_h = bot_row_h;
+#endif
 
     // --- 左上：时钟卡片 ---
     lv_obj_t *time_card = lv_obj_create(screen);
@@ -134,13 +156,12 @@ void CustomLcdDisplay::SetupWeatherUI() {
     lv_obj_set_style_radius(time_inner, 10, 0);
     lv_obj_remove_flag(time_inner, LV_OBJ_FLAG_SCROLLABLE);
 
-    // --- 右上：日历卡片 ---
-    int right_x = pad + left_w + gap;
+    // --- 右上（竖屏为第二行）：日历卡片 ---
     int day_header_h = 40;
 
     lv_obj_t *calendar_card = lv_obj_create(screen);
-    lv_obj_set_pos(calendar_card, right_x, top_y);
-    lv_obj_set_size(calendar_card, right_w, top_row_h);
+    lv_obj_set_pos(calendar_card, right_x, cal_y);
+    lv_obj_set_size(calendar_card, right_w, cal_h);
     lv_obj_set_style_border_width(calendar_card, 3, 0);
     lv_obj_set_style_border_color(calendar_card, lv_color_white(), 0);
     lv_obj_set_style_radius(calendar_card, 15, 0);
@@ -249,8 +270,8 @@ void CustomLcdDisplay::SetupWeatherUI() {
 
     // --- 右下：备忘录/待办卡片 ---
     lv_obj_t *memo_card = lv_obj_create(screen);
-    lv_obj_set_pos(memo_card, pad + bot_card_w + gap, bot_y);
-    lv_obj_set_size(memo_card, music_card_w, bot_row_h);
+    lv_obj_set_pos(memo_card, right_x, memo_y);
+    lv_obj_set_size(memo_card, music_card_w, memo_h);
     lv_obj_set_style_border_width(memo_card, 2, 0);
     lv_obj_set_style_border_color(memo_card, lv_color_black(), 0);
     lv_obj_set_style_radius(memo_card, 15, 0);
@@ -317,7 +338,7 @@ void CustomLcdDisplay::SetupWeatherUI() {
     
     low_battery_popup_ = lv_obj_create(screen);
     lv_obj_set_scrollbar_mode(low_battery_popup_, LV_SCROLLBAR_MODE_OFF);
-    lv_obj_set_size(low_battery_popup_, 320, 42);
+    lv_obj_set_size(low_battery_popup_, (UI_SCR_W - 20) < 320 ? (UI_SCR_W - 20) : 320, 42);
     lv_obj_align(low_battery_popup_, LV_ALIGN_BOTTOM_MID, 0, -10);
     lv_obj_set_style_bg_color(low_battery_popup_, lv_color_white(), 0);
     lv_obj_set_style_bg_opa(low_battery_popup_, LV_OPA_COVER, 0);
@@ -331,7 +352,7 @@ void CustomLcdDisplay::SetupWeatherUI() {
     lv_obj_set_style_text_font(low_battery_label_, font_ai, 0);
     lv_obj_set_style_text_color(low_battery_label_, lv_color_black(), 0);
     lv_obj_set_style_text_align(low_battery_label_, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_width(low_battery_label_, 300);
+    lv_obj_set_width(low_battery_label_, UI_SCR_W - 40);
     lv_obj_center(low_battery_label_);
     lv_label_set_text(low_battery_label_, "电量低，请尽快充电");
     

@@ -46,8 +46,8 @@ void CustomLcdDisplay::SetupPomodoroUI() {
     const lv_font_t *font_cn     = &font_puhui_16_4;
     const lv_font_t *font_sm     = &font_puhui_14_1;
 
-    const int SCR_W = 400;
-    const int SCR_H = 300;
+    const int SCR_W = UI_SCR_W;
+    const int SCR_H = UI_SCR_H;
     const int PAD = 12;
 
     // ===== 番茄钟页面容器（全屏黑底，初始隐藏）=====
@@ -134,7 +134,7 @@ void CustomLcdDisplay::SetupPomodoroUI() {
     // 第 4 层：进度条
     // ============================================================
 
-    const int bar_y = 165;
+    const int bar_y = UI_PORTRAIT ? 250 : 165;
     const int bar_w = SCR_W - PAD * 2 - 40;
 
     pomo_progress_bar_ = lv_bar_create(page);

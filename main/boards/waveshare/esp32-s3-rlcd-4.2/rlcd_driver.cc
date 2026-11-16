@@ -56,11 +56,11 @@ RlcdDriver::RlcdDriver(spi_display_config_t spiconfig, int width, int height,
     assert(DispBuffer);
 
     // 分配像素映射 LUT（加速 RGB565 → 1-bit 转换）
-    PixelIndexLUT = (uint16_t (*)[300])heap_caps_malloc(transfer * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
-    PixelBitLUT   = (uint8_t (*)[300])heap_caps_malloc(transfer * sizeof(uint8_t), MALLOC_CAP_SPIRAM);
+    PixelIndexLUT = (uint16_t (*)[RLCD_LUT_STRIDE])heap_caps_malloc((size_t)width_ * RLCD_LUT_STRIDE * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
+    PixelBitLUT   = (uint8_t (*)[RLCD_LUT_STRIDE])heap_caps_malloc((size_t)width_ * RLCD_LUT_STRIDE * sizeof(uint8_t), MALLOC_CAP_SPIRAM);
     assert(PixelIndexLUT);
     assert(PixelBitLUT);
-    if (width_ == 400) {
+    if (width_ > height_) {
         InitLandscapeLUT();
     } else {
         InitPortraitLUT();

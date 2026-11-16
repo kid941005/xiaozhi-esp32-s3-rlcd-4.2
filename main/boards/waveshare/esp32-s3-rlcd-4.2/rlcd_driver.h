@@ -6,6 +6,9 @@
 #include <driver/spi_common.h>
 #include <esp_lcd_panel_io.h>
 
+// LUT 行跨度：取最大边长 400，横屏(400x300)/竖屏(300x400) 都不会越界
+#define RLCD_LUT_STRIDE 400
+
 // RLCD 像素颜色（1-bit 单色屏，只有黑白两色）
 enum ColorSelection {
     ColorBlack = 0,    
@@ -67,8 +70,9 @@ private:
     int DisplayLen = 0;
 
     // 像素映射查找表（加速 RGB565 → 1-bit 转换）
-    uint16_t (*PixelIndexLUT)[300] = nullptr;
-    uint8_t  (*PixelBitLUT)[300] = nullptr;
+    // 行跨度固定为 RLCD_LUT_STRIDE，保证竖屏(300x400)时 y 方向不越界；缓冲区按 width*stride 分配
+    uint16_t (*PixelIndexLUT)[RLCD_LUT_STRIDE] = nullptr;
+    uint8_t  (*PixelBitLUT)[RLCD_LUT_STRIDE] = nullptr;
 
     // 初始化像素映射 LUT（竖屏/横屏两种模式）
     void InitPortraitLUT();

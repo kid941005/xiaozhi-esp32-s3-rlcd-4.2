@@ -3,7 +3,13 @@
 
 #include <atomic>
 #include <driver/gpio.h>
+#include "config.h"
 #include "lcd_display.h"
+
+// 统一屏幕尺寸/方向宏，供各 UI 页面使用（由 config.h 的 RLCD_PORTRAIT 决定）
+#define UI_SCR_W   RLCD_WIDTH
+#define UI_SCR_H   RLCD_HEIGHT
+#define UI_PORTRAIT (RLCD_HEIGHT > RLCD_WIDTH)
 #include "rlcd_driver.h"
 #include "managers/sensor_manager.h"
 #include "managers/weather_manager.h"

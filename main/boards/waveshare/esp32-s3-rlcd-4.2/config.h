@@ -34,8 +34,17 @@
 #define RLCD_RST_PIN   GPIO_NUM_41
 #define RLCD_TE_PIN    GPIO_NUM_6
 
+// 屏幕方向：0 = 横屏 400x300（默认，2x2 卡片网格）；1 = 竖屏 300x400（单列堆叠）
+// 改这一个宏即可切换，重新编译烧录生效
+#define RLCD_PORTRAIT 0
+
+#if RLCD_PORTRAIT
+#define RLCD_WIDTH   300
+#define RLCD_HEIGHT  400
+#else
 #define RLCD_WIDTH   400
 #define RLCD_HEIGHT  300
+#endif
 
 #define DISPLAY_MIRROR_X false
 #define DISPLAY_MIRROR_Y false
