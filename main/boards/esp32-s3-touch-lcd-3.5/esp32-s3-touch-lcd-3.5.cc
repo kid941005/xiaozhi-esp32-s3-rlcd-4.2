@@ -146,13 +146,17 @@ private:
         esp_err_t ret = esp_io_expander_new_i2c_tca9554(i2c_bus_, ESP_IO_EXPANDER_I2C_TCA9554_ADDRESS_000, &io_expander);
         if(ret != ESP_OK)
         ESP_LOGE(TAG, "TCA9554 create returned error");        
-        ret = esp_io_expander_set_dir(io_expander, IO_EXPANDER_PIN_NUM_0 | IO_EXPANDER_PIN_NUM_1, IO_EXPANDER_OUTPUT);         
+        ret = esp_io_expander_set_dir(io_expander,
+            IO_EXPANDER_PIN_NUM_0 | IO_EXPANDER_PIN_NUM_1 | IO_EXPANDER_PIN_NUM_7,
+            IO_EXPANDER_OUTPUT);
         ESP_ERROR_CHECK(ret);
         vTaskDelay(pdMS_TO_TICKS(100));
         ret = esp_io_expander_set_level(io_expander, IO_EXPANDER_PIN_NUM_0 | IO_EXPANDER_PIN_NUM_1, 0);
         ESP_ERROR_CHECK(ret);
         vTaskDelay(pdMS_TO_TICKS(100));
-        ret = esp_io_expander_set_level(io_expander, IO_EXPANDER_PIN_NUM_1, 1);
+        // EXIO1: LCD reset; EXIO7: NS4150B power amplifier enable.
+        ret = esp_io_expander_set_level(io_expander,
+            IO_EXPANDER_PIN_NUM_1 | IO_EXPANDER_PIN_NUM_7, 1);
         ESP_ERROR_CHECK(ret);
     }
 
@@ -232,7 +236,16 @@ private:
             },
         };
         esp_lcd_panel_io_handle_t tp_io_handle = NULL;
-        esp_lcd_panel_io_i2c_config_t tp_io_config = ESP_LCD_TOUCH_IO_I2C_FT5x06_CONFIG();
+        esp_lcd_panel_io_i2c_config_t tp_io_config = {
+            .dev_addr = ESP_LCD_TOUCH_IO_I2C_FT5x06_ADDRESS,
+            .control_phase_bytes = 1,
+            .dc_bit_offset = 0,
+            .lcd_cmd_bits = 8,
+            .flags =
+            {
+                .disable_control_phase = 1,
+            }
+        };
         tp_io_config.scl_speed_hz = 400 * 1000;
         ESP_ERROR_CHECK(esp_lcd_new_panel_io_i2c(i2c_bus_, &tp_io_config, &tp_io_handle));
         ESP_LOGI(TAG, "Initialize touch controller");

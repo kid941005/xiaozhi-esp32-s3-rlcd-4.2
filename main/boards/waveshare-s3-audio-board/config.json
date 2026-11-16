@@ -1,8 +1,10 @@
 {
+    "manufacturer": "waveshare",
+    "type": "esp32-s3-audio-board",
     "target": "esp32s3",
     "builds": [
         {
-            "name": "waveshare-s3-audio-board",
+            "name": "esp32-s3-audio-board",
             "sdkconfig_append": [
                 "CONFIG_USE_WECHAT_MESSAGE_STYLE=y",
                 "CONFIG_CAMERA_OV2640=y",
