@@ -139,12 +139,29 @@ void CustomLcdDisplay::SetupWeatherUI() {
     lv_obj_set_style_pad_all(time_card, 0, 0);
     lv_obj_remove_flag(time_card, LV_OBJ_FLAG_SCROLLABLE);
 
+    // 时钟卡内垂直布局：大字时间在上，农历/节气在下
+#if UI_PORTRAIT
+    const int clock_y = 2;
+    const int lunar_y = -2;
+#else
+    const int clock_y = 10;
+    const int lunar_y = -8;
+#endif
+
     time_label_ = lv_label_create(time_card);
     lv_obj_set_style_text_color(time_label_, lv_color_black(), 0);
     lv_obj_set_style_text_font(time_label_, font_clock, 0);
     lv_obj_set_style_text_letter_space(time_label_, 2, 0);
-    lv_obj_center(time_label_);
+    lv_obj_align(time_label_, LV_ALIGN_TOP_MID, 0, clock_y);
     lv_label_set_text(time_label_, "00:00");
+
+    // 农历行：如「十月初七 小雪」「八月十五 中秋」
+    // 必须用 font_puhui_16_4（7415 常用汉字），alibaba_puhui_16 缺节气/节日生僻字
+    lunar_label_ = lv_label_create(time_card);
+    lv_obj_set_style_text_color(lunar_label_, lv_color_black(), 0);
+    lv_obj_set_style_text_font(lunar_label_, font_ai, 0);
+    lv_obj_align(lunar_label_, LV_ALIGN_BOTTOM_MID, 0, lunar_y);
+    lv_label_set_text(lunar_label_, "");
 
     // 时钟卡片内边框装饰
     lv_obj_t *time_inner = lv_obj_create(time_card);

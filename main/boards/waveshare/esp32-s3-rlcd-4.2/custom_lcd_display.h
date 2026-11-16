@@ -79,6 +79,7 @@ private:
     
     // 时钟卡片（左上）
     lv_obj_t *time_label_ = nullptr;        // 大字时钟 "14:30"
+    lv_obj_t *lunar_label_ = nullptr;       // 农历/节气/节日 "十月初七 小雪"
     
     // 日历卡片（右上）
     lv_obj_t *day_label_ = nullptr;         // 星期 "TUE"

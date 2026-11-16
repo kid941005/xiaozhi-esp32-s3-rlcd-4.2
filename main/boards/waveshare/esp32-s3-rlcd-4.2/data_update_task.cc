@@ -26,6 +26,7 @@
 #include "managers/sensor_manager.h"
 #include "managers/weather_manager.h"
 #include "managers/pomodoro_manager.h"
+#include "managers/lunar_calendar.h"
 // 敏感配置（天气 API Key 等）不入库：有 secret_config.h 就用，没有就用默认值
 #if __has_include("secret_config.h")
 #include "secret_config.h"
@@ -224,6 +225,15 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                 char date_buf[8];
                 snprintf(date_buf, sizeof(date_buf), "%d", timeinfo.tm_mday);
                 if (self->date_num_label_) lv_label_set_text(self->date_num_label_, date_buf);
+
+                // 农历 / 节气 / 节日（跨天自然由分钟刷新带出）
+                // 未校时（1970）不显示，避免出现 1969 年农历
+                char lunar_buf[48];
+                if (self->lunar_label_ && timeinfo.tm_year >= 124 &&
+                    lunar::FormatLabel(timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+                                       lunar_buf, sizeof(lunar_buf))) {
+                    lv_label_set_text(self->lunar_label_, lunar_buf);
+                }
 
                 self->last_min_ = timeinfo.tm_min;
                 ESP_LOGI(TAG, "时间已更新: %s, %s, %d日", time_buf, weeks_en[timeinfo.tm_wday], timeinfo.tm_mday);
