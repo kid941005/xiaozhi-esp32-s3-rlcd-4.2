@@ -586,7 +586,7 @@ choice BOARD_TYPE
     config BOARD_TYPE_WAVESHARE_ESP32_S3_TOUCH_AMOLED_1_75C
         bool "Waveshare ESP32-S3-Touch-AMOLED-1.75C"
         depends on IDF_TARGET_ESP32S3
-    config BOARD_TYPE_WAVESHARE_S3_TOUCH_AMOLED_1_8
+    config BOARD_TYPE_WAVESHARE_ESP32_S3_TOUCH_AMOLED_1_8
         bool "Waveshare ESP32-S3-Touch-AMOLED-1.8"
         depends on IDF_TARGET_ESP32S3
     config BOARD_TYPE_WAVESHARE_ESP32_S3_TOUCH_AMOLED_1_8_v2
@@ -604,7 +604,7 @@ choice BOARD_TYPE
     config BOARD_TYPE_WAVESHARE_ESP32_S3_TOUCH_LCD_1_54
         bool "Waveshare ESP32-S3-Touch-LCD-1.54"
         depends on IDF_TARGET_ESP32S3
-    config BOARD_TYPE_WAVESHARE_S3_TOUCH_LCD_1_83
+    config BOARD_TYPE_WAVESHARE_ESP32_S3_TOUCH_LCD_1_83
         bool "Waveshare ESP32-S3-Touch-LCD-1.83"
         depends on IDF_TARGET_ESP32S3
     config BOARD_TYPE_WAVESHARE_ESP32_S3_TOUCH_LCD_1_85
@@ -631,7 +631,7 @@ choice BOARD_TYPE
     config BOARD_TYPE_WAVESHARE_ESP32_S3_TOUCH_LCD_4B
         bool "Waveshare ESP32-S3-Touch-LCD-4B"
         depends on IDF_TARGET_ESP32S3
-    config BOARD_TYPE_WAVESHARE_S3_TOUCH_LCD_4_3C
+    config BOARD_TYPE_WAVESHARE_ESP32_S3_TOUCH_LCD_4_3C
         bool "Waveshare ESP32-S3-Touch-LCD-4.3C"
         depends on IDF_TARGET_ESP32S3
     config BOARD_TYPE_WAVESHARE_ESP32_S3_TOUCH_LCD_7C
@@ -920,7 +920,7 @@ choice DISPLAY_ESP32S3_CAM_XXXX
 endchoice
 
 choice DISPLAY_ESP32S3_AUDIO_BOARD
-    depends on BOARD_TYPE_WAVESHARE_S3_AUDIO_BOARD
+    depends on BOARD_TYPE_WAVESHARE_ESP32_S3_AUDIO_BOARD
     prompt "ESP32S3_AUDIO_BOARD LCD Type"
     default AUDIO_BOARD_LCD_JD9853
     help
@@ -1045,6 +1045,16 @@ config SEND_WAKE_WORD_DATA
     depends on USE_AFE_WAKE_WORD || USE_CUSTOM_WAKE_WORD
     help
         Send wake word data to the server as the first message of the conversation and wait for response
+
+config WAKE_WORD_DETECTION_IN_LISTENING
+    bool "Enable Wake Word Detection in Listening Mode"
+    default n
+    depends on USE_AFE_WAKE_WORD || USE_CUSTOM_WAKE_WORD
+    help
+        Enable wake word detection while in listening mode.
+        When enabled, the device can detect wake word during listening,
+        which allows interrupting the current conversation.
+        When disabled (default), wake word detection is turned off during listening.
 
 config USE_AUDIO_PROCESSOR
     bool "Enable AFE Audio Processing"

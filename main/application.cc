@@ -16,7 +16,6 @@
 #include <driver/gpio.h>
 #include <esp_log.h>
 #include <arpa/inet.h>
-#include <font_awesome.h>
 #include <esp_heap_caps.h>
 #include "esp_audio_dec_default.h"
 #include "esp_audio_simple_dec.h"
@@ -968,6 +967,7 @@ void Application::HandleStopListeningEvent() {
 }
 
 void Application::HandleWakeWordDetectedEvent() {
+    const std::string& wake_word = audio_service_.GetLastWakeWord();
     if (IsMusicPlaying()) {
         StopMusicPlayback();
     }
@@ -1329,6 +1329,10 @@ void Application::AbortSpeaking(AbortReason reason) {
 void Application::SetListeningMode(ListeningMode mode) {
     listening_mode_ = mode;
     SetDeviceState(kDeviceStateListening);
+}
+
+ListeningMode Application::GetDefaultListeningMode() const {
+    return aec_mode_ == kAecOff ? kListeningModeAutoStop : kListeningModeRealtime;
 }
 
 void Application::Reboot() {
@@ -1777,12 +1781,13 @@ void Application::MusicPlaybackTask(std::string url, std::string title, std::str
         }
 
         while (!stop_music_playback_.load()) {
-            int read_bytes = http->Read(reinterpret_cast<char*>(in_buf), kReadBufSize);
-            if (read_bytes < 0) {
-                ESP_LOGE(TAG, "读取音乐流失败: %d", read_bytes);
+            auto read_result = http->Read(reinterpret_cast<char*>(in_buf), kReadBufSize);
+            if (!read_result.has_value()) {
+                ESP_LOGE(TAG, "读取音乐流失败");
                 playback_failed = true;
                 break;
             }
+            int read_bytes = read_result.value();
             if (read_bytes == 0) {
                 zero_read_count++;
                 if (zero_read_count >= kMaxZeroReads) {

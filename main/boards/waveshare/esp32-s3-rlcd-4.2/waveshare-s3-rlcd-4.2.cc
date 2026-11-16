@@ -402,12 +402,8 @@ private:
                 Property("white_noise", kPropertyTypeBoolean)
             }),
             [this](const PropertyList& properties) -> ReturnValue {
-                int minutes = 25;
-                bool noise = true;
-                
-                // 安全获取参数（带默认值）
-                try { minutes = properties["minutes"].value<int>(); } catch (...) { minutes = 25; }
-                try { noise = properties["white_noise"].value<bool>(); } catch (...) { noise = true; }
+                int minutes = properties["minutes"].value<int>();
+                bool noise = properties["white_noise"].value<bool>();
 
                 if (minutes < 1) minutes = 1;
                 if (minutes > 120) minutes = 120;

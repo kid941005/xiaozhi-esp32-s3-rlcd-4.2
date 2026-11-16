@@ -241,7 +241,7 @@ void CustomLcdDisplay::SetChatMessage(const char* role, const char* content) {
     }
 }
 
-void CustomLcdDisplay::SetEmotion(const char* emotion) {
+bool CustomLcdDisplay::SetEmotion(const char* emotion) {
     DisplayLockGuard lock(this);
     
     // 1. 更新左侧文字（完整映射小智所有 21 种表情 + 额外状态）
@@ -319,6 +319,7 @@ void CustomLcdDisplay::SetEmotion(const char* emotion) {
         }
     }
 
+    return true;
     return true;
 }
 

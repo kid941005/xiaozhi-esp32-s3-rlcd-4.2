@@ -26,7 +26,15 @@
 #include "managers/sensor_manager.h"
 #include "managers/weather_manager.h"
 #include "managers/pomodoro_manager.h"
+// 敏感配置（天气 API Key 等）不入库：有 secret_config.h 就用，没有就用默认值
+#if __has_include("secret_config.h")
 #include "secret_config.h"
+#else
+#define WEATHER_API_KEY  ""
+#define WEATHER_API_HOST ""
+#define TIMEZONE_STRING  "CST-8"
+#define NTP_SERVER       "ntp.aliyun.com"
+#endif
 
 // 声明状态栏图标（DataUpdateTask 需要更新图标）
 LV_IMAGE_DECLARE(ui_img_wifi);

@@ -158,6 +158,9 @@ void CustomWakeWord::Start() {
 
 void CustomWakeWord::Stop() {
     running_ = false;
+
+    std::lock_guard<std::mutex> lock(input_buffer_mutex_);
+    input_buffer_.clear();
 }
 
 void CustomWakeWord::Feed(const std::vector<int16_t>& data) {
@@ -179,15 +182,11 @@ void CustomWakeWord::FeedSamples(const int16_t* data, size_t samples, bool mono)
         return;
     }
 
-    esp_mn_state_t mn_state;
     // If input channels is 2, we need to fetch the left channel data
     if (!mono && codec_->input_channels() > 1) {
         for (size_t i = 0; i < samples; i += codec_->input_channels()) {
             input_buffer_.push_back(data[i]);
         }
-
-        StoreWakeWordData(mono_data);
-        mn_state = multinet_->detect(multinet_model_data_, const_cast<int16_t*>(mono_data.data()));
     } else {
         input_buffer_.insert(input_buffer_.end(), data, data + samples);
     }
@@ -216,11 +215,16 @@ void CustomWakeWord::FeedSamples(const int16_t* data, size_t samples, bool mono)
                     }
                 }
             }
+            multinet_->clean(multinet_model_data_);
+        } else if (mn_state == ESP_MN_STATE_TIMEOUT) {
+            ESP_LOGD(TAG, "Command word detection timeout, cleaning state");
+            multinet_->clean(multinet_model_data_);
         }
-        multinet_->clean(multinet_model_data_);
-    } else if (mn_state == ESP_MN_STATE_TIMEOUT) {
-        ESP_LOGD(TAG, "Command word detection timeout, cleaning state");
-        multinet_->clean(multinet_model_data_);
+        
+        if (!running_) {
+            break;
+        }
+        input_buffer_.erase(input_buffer_.begin(), input_buffer_.begin() + chunksize);
     }
 }
 

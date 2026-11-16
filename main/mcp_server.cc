@@ -83,7 +83,8 @@ void McpServer::AddCommonTools() {
                                                properties["lyric"].value<std::string>(),
                                                properties["lyric_url"].value<std::string>());
                 if (!ok) {
-                    throw std::runtime_error("music playback failed: check URL or network");
+                    ESP_LOGE(TAG, "Music playback failed");
+                    return std::string("music playback failed: check URL or network");
                 }
                 return std::string("music playback started");
             });
