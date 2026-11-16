@@ -23,7 +23,42 @@
 #include "engines/lite_audio_engine.h"
 #endif
 
+#if CONFIG_PM_ENABLE
+#include <esp_pm.h>
+#endif
+
 #define TAG "AudioService"
+
+// ===== 电源管理：音频工作期间禁止自动 light sleep =====
+// I2S 采集/播放依赖持续的 APB 时钟，进入 light sleep 会丢帧、漏检唤醒词。
+// 用一个文件级 ESP_PM_NO_LIGHT_SLEEP 锁：编解码器输入或输出打开时持有，
+// 两者都关闭（AudioService 自身的省电超时关掉 codec）后释放。
+// CONFIG_PM_ENABLE 未开启时 esp_pm_lock_create 返回 ESP_ERR_NOT_SUPPORTED，静默降级。
+#if CONFIG_PM_ENABLE
+static esp_pm_lock_handle_t s_audio_pm_lock = nullptr;
+static bool s_audio_pm_held = false;
+
+static void AudioPmHold(bool hold) {
+    if (s_audio_pm_lock == nullptr) {
+        if (esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP, 0, "audio_active", &s_audio_pm_lock) != ESP_OK) {
+            s_audio_pm_lock = nullptr;
+            return;
+        }
+    }
+    if (s_audio_pm_held == hold) {
+        return;
+    }
+    if (hold) {
+        esp_pm_lock_acquire(s_audio_pm_lock);
+    } else {
+        esp_pm_lock_release(s_audio_pm_lock);
+    }
+    s_audio_pm_held = hold;
+}
+#else
+static void AudioPmHold(bool) {}
+#endif
+
 
 AudioService::AudioService() { event_group_ = xEventGroupCreate(); }
 
@@ -197,6 +232,7 @@ bool AudioService::ReadAudioData(std::vector<int16_t>& data, int sample_rate, in
         esp_timer_stop(audio_power_timer_);
         esp_timer_start_periodic(audio_power_timer_, AUDIO_POWER_CHECK_INTERVAL_MS * 1000);
         codec_->EnableInput(true);
+        AudioPmHold(true);
     }
 
     if (codec_->input_sample_rate() != sample_rate) {
@@ -342,6 +378,7 @@ void AudioService::AudioOutputTask() {
             esp_timer_stop(audio_power_timer_);
             esp_timer_start_periodic(audio_power_timer_, AUDIO_POWER_CHECK_INTERVAL_MS * 1000);
             codec_->EnableOutput(true);
+            AudioPmHold(true);
         }
 
         if (task.playback_id != 0 && callbacks_.on_playback_progress) {
@@ -784,6 +821,7 @@ void AudioService::PlaySound(const std::string_view& ogg) {
         esp_timer_stop(audio_power_timer_);
         esp_timer_start_periodic(audio_power_timer_, AUDIO_POWER_CHECK_INTERVAL_MS * 1000);
         codec_->EnableOutput(true);
+        AudioPmHold(true);
     }
 
     const uint8_t* buf = reinterpret_cast<const uint8_t*>(ogg.data());
@@ -857,6 +895,7 @@ void AudioService::SetExternalPlaybackActive(bool active) {
         // 外部播放（例如 HTTP 音乐直链）期间，保持输出通道常开，避免省电定时器误关导致卡顿。
         if (!codec_->output_enabled()) {
             codec_->EnableOutput(true);
+            AudioPmHold(true);
         }
         esp_timer_stop(audio_power_timer_);
         esp_timer_start_periodic(audio_power_timer_, AUDIO_POWER_CHECK_INTERVAL_MS * 1000);
@@ -864,6 +903,9 @@ void AudioService::SetExternalPlaybackActive(bool active) {
 }
 
 void AudioService::CheckAndUpdateAudioPowerState() {
+    // 以 codec 实际状态为准同步 PM 锁，避免遗漏某条开关路径
+    AudioPmHold(codec_->input_enabled() || codec_->output_enabled());
+
     auto now = std::chrono::steady_clock::now();
     auto input_elapsed =
         std::chrono::duration_cast<std::chrono::milliseconds>(now - last_input_time_).count();
@@ -890,6 +932,8 @@ void AudioService::CheckAndUpdateAudioPowerState() {
         }
     }
     if (!codec_->input_enabled() && !codec_->output_enabled()) {
+        // 音频彻底空闲：允许系统进入 light sleep
+        AudioPmHold(false);
         esp_timer_stop(audio_power_timer_);
     }
 }

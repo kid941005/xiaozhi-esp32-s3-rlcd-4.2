@@ -1,10 +1,14 @@
 #include "sdcard_manager.h"
+#include "power_manager.h"
 #include <esp_log.h>
 #include <dirent.h>
 #include <cstring>
 #include <algorithm>
 
 bool SdcardManager::init(int clk, int cmd, int d0) {
+    // SDMMC 初始化对时序敏感，期间禁止降频/休眠
+    PowerManager::NoLightSleepGuard sleep_guard;
+    PowerManager::ApbMaxGuard apb_guard;
     if (mounted_) {
         ESP_LOGW(TAG, "SD 卡已挂载，跳过重复初始化");
         return true;
@@ -54,6 +58,7 @@ SdcardManager::~SdcardManager() {
 
 std::vector<std::string> SdcardManager::listFiles(const char* dir_path, const char* extension) {
     std::vector<std::string> files;
+    PowerManager::NoLightSleepGuard sleep_guard;
 
     if (!mounted_) {
         ESP_LOGW(TAG, "SD 卡未挂载，无法列出文件");

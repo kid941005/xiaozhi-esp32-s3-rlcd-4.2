@@ -30,6 +30,7 @@
 #include "board.h"
 #include "application.h"
 #include "lvgl_theme.h"
+#include "managers/power_manager.h"
 
 static const char *TAG = "CustomDisplay";
 
@@ -125,6 +126,9 @@ void CustomLcdDisplay::FlushCommit()
         const bool use_full = flush_first_frame_ || flush_force_full_ ||
                               (covered * 5 >= scr_w * 3);
         const int64_t t0 = esp_timer_get_time();
+        // SPI 传输期间需要 APB 80 MHz 且不能进入 light sleep
+        PowerManager::ApbMaxGuard apb_guard;
+        PowerManager::NoLightSleepGuard sleep_guard;
         if (use_full) {
             rlcd_->RLCD_Display();
             stat_full_++;

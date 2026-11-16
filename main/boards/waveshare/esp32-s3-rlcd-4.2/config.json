@@ -7,7 +7,12 @@
             "name": "esp32-s3-rlcd-4.2",
             "sdkconfig_append": [
                 "CONFIG_USE_WECHAT_MESSAGE_STYLE=n",
-                "CONFIG_USE_DEVICE_AEC=y"
+                "CONFIG_USE_DEVICE_AEC=y",
+                "CONFIG_PM_ENABLE=y",
+                "CONFIG_FREERTOS_USE_TICKLESS_IDLE=y",
+                "CONFIG_FREERTOS_IDLE_TIME_BEFORE_SLEEP=3",
+                "CONFIG_PM_POWER_DOWN_CPU_IN_LIGHT_SLEEP=y",
+                "CONFIG_PM_RESTORE_CACHE_TAGMEM_AFTER_LIGHT_SLEEP=y"
             ]
         }
     ]

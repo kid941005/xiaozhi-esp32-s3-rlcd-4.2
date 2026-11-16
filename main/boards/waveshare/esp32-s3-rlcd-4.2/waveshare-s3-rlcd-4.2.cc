@@ -19,6 +19,7 @@
 #include "managers/sensor_manager.h"
 #include "managers/sdcard_manager.h"
 #include "managers/pomodoro_manager.h"
+#include "managers/power_manager.h"
 
 // 声明小智字体（用于系统信息显示时临时切换字体大小）
 LV_FONT_DECLARE(font_puhui_14_1);
@@ -733,6 +734,25 @@ public:
         InitializeButtons();     
         InitializeTools();
         InitializeLcdDisplay();
+        // 最后启用 DVFS + 自动 light sleep：此前各外设已初始化完毕
+        PowerManager::GetInstance().Init();
+    }
+
+    // 应用层的省电等级 → 板级 DVFS 最高频率
+    virtual void SetPowerSaveLevel(PowerSaveLevel level) override {
+        WifiBoard::SetPowerSaveLevel(level);
+        switch (level) {
+            case PowerSaveLevel::PERFORMANCE:
+                PowerManager::GetInstance().SetLevel(PowerManager::Level::kPerformance);
+                break;
+            case PowerSaveLevel::BALANCED:
+                PowerManager::GetInstance().SetLevel(PowerManager::Level::kBalanced);
+                break;
+            case PowerSaveLevel::LOW_POWER:
+            default:
+                PowerManager::GetInstance().SetLevel(PowerManager::Level::kLowPower);
+                break;
+        }
     }
 
     virtual AudioCodec* GetAudioCodec() override {
