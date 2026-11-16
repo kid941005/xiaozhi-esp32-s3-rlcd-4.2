@@ -71,12 +71,12 @@ void CustomLcdDisplay::SetupWeatherUI() {
 
     // ===== 状态栏（右上角白底胶囊：WiFi + 电池 + 电量）=====
     lv_obj_t *status_bar = lv_obj_create(screen);
-    lv_obj_set_size(status_bar, 115, 28);
+    lv_obj_set_size(status_bar, 110, 24);
     lv_obj_set_style_bg_opa(status_bar, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(status_bar, lv_color_white(), 0);
     lv_obj_set_style_border_width(status_bar, 0, 0);
     lv_obj_set_style_radius(status_bar, 14, 0);
-    lv_obj_align(status_bar, LV_ALIGN_TOP_RIGHT, -8, 4);
+    lv_obj_align(status_bar, LV_ALIGN_TOP_RIGHT, -10, 9);
     lv_obj_set_style_pad_all(status_bar, 0, 0);
     lv_obj_set_style_pad_left(status_bar, 8, 0);
     lv_obj_set_style_pad_right(status_bar, 8, 0);
@@ -96,47 +96,55 @@ void CustomLcdDisplay::SetupWeatherUI() {
     lv_obj_set_style_text_color(battery_pct_label_, lv_color_black(), 0);
     lv_label_set_text(battery_pct_label_, "---%");
 
-    // ===== 左上角温湿度（白字，直接在黑底上）=====
+    // ===== 左上角「环境 温度 湿度」（白字，直接在黑底上）=====
+    // 注意：必须用 font_puhui_16_4（7415 常用汉字），alibaba_puhui_16 字符集缺「环境」二字
     sensor_label_ = lv_label_create(screen);
-    lv_obj_set_style_text_font(sensor_label_, font_small, 0);
+    lv_obj_set_style_text_font(sensor_label_, font_ai, 0);
     lv_obj_set_style_text_color(sensor_label_, lv_color_white(), 0);
-    lv_obj_align(sensor_label_, LV_ALIGN_TOP_LEFT, 10, 8);
-    lv_label_set_text(sensor_label_, "环境 --.-°C  --%");
+    lv_obj_align(sensor_label_, LV_ALIGN_TOP_LEFT, 10, 10);
+    lv_label_set_text(sensor_label_, "环境 --.-°C --%");
+
+    // 农历 / 节气 / 节日：放在顶栏右侧（胶囊左边），不占用时钟卡的四行结构
+    lunar_label_ = lv_label_create(screen);
+    lv_obj_set_style_text_font(lunar_label_, font_tiny, 0);
+    lv_obj_set_style_text_color(lunar_label_, lv_color_white(), 0);
+    lv_obj_align(lunar_label_, LV_ALIGN_TOP_RIGHT, -128, 12);
+    lv_label_set_text(lunar_label_, "");
 
     // ===== 卡片几何 =====
-    const int pad = 8;
-    const int gap = 6;
-    const int top = 36;
+    const int pad = 10;
+    const int gap = 8;
+    const int top = 41;
 #if UI_PORTRAIT
     // 竖屏 300×400：时钟 → 待办 → AI，整宽纵向堆叠
-    const int col_w   = UI_SCR_W - pad * 2;                  // 284
+    const int col_w   = UI_SCR_W - pad * 2;                  // 280
     const int clock_x = pad;
     const int clock_y = top;
     const int clock_w = col_w;
     const int clock_h = 140;
     const int todo_x  = pad;
-    const int todo_y  = clock_y + clock_h + gap;             // 182
+    const int todo_y  = clock_y + clock_h + gap;             // 189
     const int todo_w  = col_w;
     const int todo_h  = 138;
     const int ai_x    = pad;
-    const int ai_y    = todo_y + todo_h + gap;               // 326
+    const int ai_y    = todo_y + todo_h + gap;               // 335
     const int ai_w    = col_w;
-    const int ai_h    = UI_SCR_H - ai_y - pad;               // 66
+    const int ai_h    = UI_SCR_H - ai_y - pad;               // 55
 #else
-    // 横屏 400×300：左右两栏，左栏上下分时钟 / AI，右栏整高待办
-    const int col_w   = (UI_SCR_W - pad * 2 - gap) / 2;      // 189
+    // 横屏 400×300：左栏（时钟 + AI）+ 右栏（整高待办），尺寸按微雪成品界面实测比例
+    const int col_w   = 199;                                 // 左栏宽
     const int clock_x = pad;
     const int clock_y = top;
     const int clock_w = col_w;
-    const int clock_h = 138;
-    const int todo_x  = pad + col_w + gap;                   // 203
+    const int clock_h = 120;
+    const int todo_x  = pad + col_w + gap;                   // 217
     const int todo_y  = top;
-    const int todo_w  = UI_SCR_W - pad * 2 - gap - col_w;    // 189
-    const int todo_h  = UI_SCR_H - top - pad;                // 256
+    const int todo_w  = UI_SCR_W - pad * 2 - gap - col_w;    // 173
+    const int todo_h  = UI_SCR_H - top - 10;                 // 249
     const int ai_x    = pad;
-    const int ai_y    = clock_y + clock_h + gap;             // 180
+    const int ai_y    = clock_y + clock_h + 18;              // 179
     const int ai_w    = col_w;
-    const int ai_h    = UI_SCR_H - ai_y - pad;               // 112
+    const int ai_h    = 100;
 #endif
 
     // ===== 时钟卡片：日期 / 大字时间 / 农历 / 天气 =====
@@ -151,29 +159,35 @@ void CustomLcdDisplay::SetupWeatherUI() {
     lv_obj_remove_flag(clock_card, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_clip_corner(clock_card, true, 0);
 
-    // 日期行：「10月2日 星期五」
+    // 日期行：「10月2日 星期五」（黑字白底，卡片顶部）
     day_label_ = lv_label_create(clock_card);
     lv_obj_set_style_text_font(day_label_, font_ai, 0);
     lv_obj_set_style_text_color(day_label_, lv_color_black(), 0);
-    lv_obj_align(day_label_, LV_ALIGN_TOP_MID, 0, 10);
+    lv_obj_align(day_label_, LV_ALIGN_TOP_MID, 0, 8);
     lv_label_set_text(day_label_, "--月--日 星期-");
 
-    // 大字时钟
-    time_label_ = lv_label_create(clock_card);
-    lv_obj_set_style_text_color(time_label_, lv_color_black(), 0);
+    // 大字时钟：反色时间块（白字黑底条），横跨卡片内宽，与参考图一致
+    lv_obj_t *time_block = lv_obj_create(clock_card);
+    lv_obj_set_size(time_block, clock_w - 16, 62);
+    lv_obj_align(time_block, LV_ALIGN_TOP_MID, 0, 26);
+    lv_obj_set_style_bg_color(time_block, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(time_block, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(time_block, 0, 0);
+    lv_obj_set_style_radius(time_block, 0, 0);
+    lv_obj_set_style_pad_all(time_block, 0, 0);
+    lv_obj_remove_flag(time_block, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(time_block, LV_OBJ_FLAG_CLICKABLE);
+
+    time_label_ = lv_label_create(time_block);
+    lv_obj_set_style_text_color(time_label_, lv_color_white(), 0);
+    lv_obj_set_style_bg_opa(time_label_, LV_OPA_TRANSP, 0);
     lv_obj_set_style_text_font(time_label_, font_clock, 0);
     lv_obj_set_style_text_letter_space(time_label_, 0, 0);
-    lv_obj_align(time_label_, LV_ALIGN_TOP_MID, 0, 26);
+    lv_obj_set_style_text_align(time_label_, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_center(time_label_);
     lv_label_set_text(time_label_, "00:00");
 
-    // 农历 / 节气 / 节日（14px，生僻字用 font_puhui_14_1）
-    lunar_label_ = lv_label_create(clock_card);
-    lv_obj_set_style_text_color(lunar_label_, lv_color_black(), 0);
-    lv_obj_set_style_text_font(lunar_label_, font_tiny, 0);
-    lv_obj_align(lunar_label_, LV_ALIGN_BOTTOM_MID, 0, -28);
-    lv_label_set_text(lunar_label_, "");
-
-    // 天气行：「成都 晴 23°C」
+    // 天气行：「成都 晴 23°C」（黑字白底，卡片底部）
     weather_label_ = lv_label_create(clock_card);
     lv_obj_set_style_text_font(weather_label_, font_ai, 0);
     lv_obj_set_style_text_color(weather_label_, lv_color_black(), 0);
@@ -250,11 +264,11 @@ void CustomLcdDisplay::SetupWeatherUI() {
 
     // ===== AI 对话卡片（左下）=====
     // 布局：[左侧表情区 64px | 分隔线 | 右侧对话文字区]
-    const int emotion_w = 64;
-    const bool compact_ai = (ai_h < 100);
-    const int emo_img_size = compact_ai ? 32 : 48;
-    const int emo_img_dy   = compact_ai ? -12 : -16;
-    const int emo_lbl_dy   = compact_ai ? 16 : 26;
+    const int emotion_w = 56;                                // 左侧表情区宽度（约占卡片 1/3）
+    const bool compact_ai = (ai_h < 90);
+    const int emo_img_size = compact_ai ? 30 : 48;
+    const int emo_img_dy   = compact_ai ? -8 : -14;
+    const int emo_lbl_dy   = compact_ai ? 14 : 28;
     const lv_font_t *emo_lbl_font = compact_ai ? font_tiny : font_ai;
 
     chat_card_ = lv_obj_create(screen);
@@ -282,7 +296,7 @@ void CustomLcdDisplay::SetupWeatherUI() {
     emotion_img_ = lv_image_create(chat_inner);
     lv_obj_set_size(emotion_img_, emo_img_size, emo_img_size);
     lv_image_set_inner_align(emotion_img_, LV_IMAGE_ALIGN_CENTER);
-    lv_obj_align(emotion_img_, LV_ALIGN_LEFT_MID, 14, emo_img_dy);
+    lv_obj_align(emotion_img_, LV_ALIGN_LEFT_MID, 12, emo_img_dy);
     lv_obj_add_flag(emotion_img_, LV_OBJ_FLAG_HIDDEN);
 
     emotion_label_ = lv_label_create(chat_inner);
@@ -291,7 +305,7 @@ void CustomLcdDisplay::SetupWeatherUI() {
     lv_obj_set_style_text_align(emotion_label_, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_width(emotion_label_, emotion_w);
     lv_label_set_long_mode(emotion_label_, LV_LABEL_LONG_WRAP);
-    lv_obj_align(emotion_label_, LV_ALIGN_LEFT_MID, 8, emo_lbl_dy);
+    lv_obj_align(emotion_label_, LV_ALIGN_LEFT_MID, 4, emo_lbl_dy);
     lv_label_set_text(emotion_label_, "待命");
 
     lv_obj_t *divider = lv_obj_create(chat_inner);

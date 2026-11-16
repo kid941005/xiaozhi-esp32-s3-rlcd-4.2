@@ -323,9 +323,11 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                 SensorData sd = SensorManager::getInstance().getTempHumidity();
                 if (sd.valid) {
                     if (fabs(sd.temperature - self->last_temp_) > 0.2f || fabs(sd.humidity - self->last_humi_) > 1.0f) {
-                        char buf[32];
-                        snprintf(buf, sizeof(buf), "%.1f°C  %.0f%%", sd.temperature, sd.humidity);
+                        char buf[48];
+                        snprintf(buf, sizeof(buf), "环境 %.1f°C %.0f%%", sd.temperature, sd.humidity);
                         if (self->sensor_label_) lv_label_set_text(self->sensor_label_, buf);
+                        // 音乐页只显示数值，不带「环境」前缀
+                        snprintf(buf, sizeof(buf), "%.1f°C  %.0f%%", sd.temperature, sd.humidity);
                         if (self->music_sensor_label_) lv_label_set_text(self->music_sensor_label_, buf);
                         self->last_temp_ = sd.temperature;
                         self->last_humi_ = sd.humidity;
