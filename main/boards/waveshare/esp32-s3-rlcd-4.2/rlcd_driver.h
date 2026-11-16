@@ -38,16 +38,24 @@ public:
     void RLCD_Init();
     // 清屏（填充指定颜色）
     void RLCD_ColorClear(uint8_t color);
-    // 设置单个像素
-    void RLCD_SetPixel(uint16_t x, uint16_t y, uint8_t color);
-    // 将缓冲区内容刷新到屏幕
+    // 设置单个像素；返回该像素对应的显存字节是否真的发生了变化
+    bool RLCD_SetPixel(uint16_t x, uint16_t y, uint8_t color);
+    // 将整帧缓冲区刷新到屏幕（横屏 15000 B）
     void RLCD_Display();
+    // 局部刷新：只把 x∈[x1,x2] 的竖直条带送到屏幕（x 自动对齐到 2 像素对）
+    // 仅横屏（width > height）支持；竖屏 LUT 为行优先，退化为整帧刷新
+    void RLCD_DisplayXRange(uint16_t x1, uint16_t x2);
     // 设置屏幕对比度 (0x00-0x1F)
     void SetContrast(uint8_t level);
 
     // 获取屏幕尺寸
     int width() const { return width_; }
     int height() const { return height_; }
+
+    // 传输统计（用于评估局部刷新效果：累计字节数 / 传输次数 / 整帧字节数）
+    uint64_t transferred_bytes() const { return transferred_bytes_; }
+    uint32_t transfer_count() const { return transfer_count_; }
+    int display_len() const { return DisplayLen; }
 
     // 获取 SPI IO 句柄（LVGL 初始化可能需要）
     esp_lcd_panel_io_handle_t io_handle() const { return io_handle_; }
@@ -68,6 +76,10 @@ private:
     // 1-bit 显示缓冲区
     uint8_t *DispBuffer = nullptr;
     int DisplayLen = 0;
+
+    // 传输统计
+    uint64_t transferred_bytes_ = 0;
+    uint32_t transfer_count_ = 0;
 
     // 像素映射查找表（加速 RGB565 → 1-bit 转换）
     // 行跨度固定为 RLCD_LUT_STRIDE，保证竖屏(300x400)时 y 方向不越界；缓冲区按 width*stride 分配

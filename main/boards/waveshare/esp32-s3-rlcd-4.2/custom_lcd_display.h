@@ -45,6 +45,30 @@ private:
 
     // RLCD 硬件驱动（独立模块，负责 SPI 通信和像素操作）
     RlcdDriver *rlcd_ = nullptr;
+
+    // ===== 1-bit 脏区局部刷新状态 =====
+    // 一帧内可能多次 flush，先按 x 条带累积，帧末（flush_is_last）统一提交
+    struct FlushRange {
+        int x1;
+        int x2;
+    };
+    static constexpr int kMaxFlushRanges = 6;   // 超过就退化为整帧
+    static constexpr int kFlushMergeGap = 8;    // 相邻条带间隙小于该值则合并
+    FlushRange flush_ranges_[kMaxFlushRanges] = {};
+    int flush_range_count_ = 0;
+    bool flush_force_full_ = false;
+    bool flush_first_frame_ = true;   // 首帧整屏刷新，保证面板与影子缓冲一致
+
+    // 刷新统计（帧数 / 整帧 / 局部 / 跳过 / 累计字节 / 累计传输耗时）
+    uint32_t stat_frames_ = 0;
+    uint32_t stat_full_ = 0;
+    uint32_t stat_partial_ = 0;
+    uint32_t stat_skip_ = 0;
+    uint64_t stat_bytes_ = 0;
+    uint64_t stat_transfer_us_ = 0;
+
+    void FlushAddRange(int x1, int x2);   // 累积/合并脏区条带
+    void FlushCommit();                   // 帧末提交：整帧或逐条带局部刷新 + 统计
     lv_obj_t *weather_page_ = nullptr;
     lv_obj_t *music_page_ = nullptr;
     lv_obj_t *pomodoro_page_ = nullptr;

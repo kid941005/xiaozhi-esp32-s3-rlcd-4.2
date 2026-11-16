@@ -176,16 +176,19 @@ void RlcdDriver::RLCD_Init() {
     RLCD_SendCommand(0x38);
     RLCD_SendCommand(0x29);
     RLCD_ColorClear(ColorWhite);
+    RLCD_Display();   // 上电先推一次全白，清掉面板残留内容
 }
 
-void RlcdDriver::RLCD_SetPixel(uint16_t x, uint16_t y, uint8_t color) {
+bool RlcdDriver::RLCD_SetPixel(uint16_t x, uint16_t y, uint8_t color) {
     uint32_t idx = PixelIndexLUT[x][y];
     uint8_t  mask = PixelBitLUT[x][y];
     uint8_t *p = &DispBuffer[idx];
+    const uint8_t before = *p;
     if (color)
         *p |= mask;
     else
         *p &= ~mask;
+    return *p != before;
 }
 
 void RlcdDriver::RLCD_Display() {
@@ -197,6 +200,47 @@ void RlcdDriver::RLCD_Display() {
     RLCD_SendData(0xC7);
     RLCD_SendCommand(0x2c);
     RLCD_Sendbuffera(DispBuffer, DisplayLen);
+    transferred_bytes_ += (uint64_t)DisplayLen;
+    transfer_count_++;
+}
+
+// 局部刷新：面板显存按「x 像素对」成块（每对 width/2 列对应 height/4 个 4 行块），
+// 所以 0x2B 用来选 x 对窗口，数据是从该对起始的连续 len 字节。
+void RlcdDriver::RLCD_DisplayXRange(uint16_t x1, uint16_t x2) {
+    // 竖屏 LUT 是行优先（byte_y * W4 + byte_x），窗口语义未在实机验证 → 退化为整帧
+    if (!(width_ > height_)) {
+        RLCD_Display();
+        return;
+    }
+    if (x1 > x2 || x1 >= (uint16_t)width_) {
+        return;
+    }
+    if (x2 >= (uint16_t)width_) {
+        x2 = (uint16_t)(width_ - 1);
+    }
+    const uint16_t rows_per_pair = (uint16_t)(height_ >> 2);   // 横屏 300/4 = 75
+    uint16_t start_pair = (uint16_t)(x1 >> 1);
+    uint16_t end_pair   = (uint16_t)(x2 >> 1);
+    const uint16_t max_pair = (uint16_t)((width_ >> 1) - 1);   // 横屏 199
+    if (end_pair > max_pair) {
+        end_pair = max_pair;
+    }
+    if (start_pair > end_pair) {
+        return;
+    }
+    const uint32_t offset = (uint32_t)start_pair * rows_per_pair;
+    const uint32_t len = (uint32_t)(end_pair - start_pair + 1) * rows_per_pair;
+
+    RLCD_SendCommand(0x2A);
+    RLCD_SendData(0x12);
+    RLCD_SendData(0x2A);
+    RLCD_SendCommand(0x2B);
+    RLCD_SendData((uint8_t)(start_pair & 0xFF));
+    RLCD_SendData((uint8_t)(end_pair & 0xFF));
+    RLCD_SendCommand(0x2c);
+    RLCD_Sendbuffera(DispBuffer + offset, (int)len);
+    transferred_bytes_ += (uint64_t)len;
+    transfer_count_++;
 }
 
 void RlcdDriver::SetContrast(uint8_t level) {

@@ -21,6 +21,7 @@
 #include <freertos/task.h>
 #include <esp_log.h>
 #include <esp_err.h>
+#include <esp_timer.h>
 #include "custom_lcd_display.h"
 #include "lcd_display.h"
 #include "esp_lvgl_port.h"
@@ -40,17 +41,122 @@ void CustomLcdDisplay::Lvgl_flush_cb(lv_display_t * disp, const lv_area_t * area
     CustomLcdDisplay *self = (CustomLcdDisplay *)lv_display_get_user_data(disp);
     RlcdDriver *rlcd = self->rlcd_;
     uint16_t *buffer = (uint16_t *)color_p;
-    for(int y = area->y1; y <= area->y2; y++)
-    {
-        for(int x = area->x1; x <= area->x2; x++) 
-        {
-            uint8_t color = (*buffer < 0x7fff) ? ColorBlack : ColorWhite;
-            rlcd->RLCD_SetPixel(x, y, color);
-            buffer++;
+
+    const int scr_w = (int)lv_display_get_horizontal_resolution(disp);
+    const int scr_h = (int)lv_display_get_vertical_resolution(disp);
+
+    // 1) 裁剪到屏幕范围（LVGL 可能给出越界区域）
+    int x1 = area->x1 < 0 ? 0 : area->x1;
+    int y1 = area->y1 < 0 ? 0 : area->y1;
+    int x2 = area->x2 >= scr_w ? scr_w - 1 : area->x2;
+    int y2 = area->y2 >= scr_h ? scr_h - 1 : area->y2;
+
+    if (x1 <= x2 && y1 <= y2) {
+        const int src_w = area->x2 - area->x1 + 1;
+        int changed_min_x = scr_w;
+        int changed_max_x = -1;
+        // 2) 只把该区域写进 1-bit 影子缓冲，同时记录真正发生变化的 x 范围
+        for (int y = y1; y <= y2; y++) {
+            uint16_t *row = buffer + (size_t)(y - area->y1) * src_w + (x1 - area->x1);
+            for (int x = x1; x <= x2; x++) {
+                uint8_t color = (*row < 0x7fff) ? ColorBlack : ColorWhite;
+                if (rlcd->RLCD_SetPixel((uint16_t)x, (uint16_t)y, color)) {
+                    if (x < changed_min_x) changed_min_x = x;
+                    if (x > changed_max_x) changed_max_x = x;
+                }
+                row++;
+            }
+        }
+        if (changed_max_x >= changed_min_x) {
+            // 3) 面板按 2 像素对寻址，条带边界向外对齐
+            int a1 = changed_min_x & ~1;
+            int a2 = changed_max_x | 1;
+            if (a2 > scr_w - 1) a2 = scr_w - 1;
+            self->FlushAddRange(a1, a2);
         }
     }
-    rlcd->RLCD_Display();
-    lv_disp_flush_ready(disp);
+
+    // 4) 帧末统一提交（整帧或逐条带局部刷新）
+    if (lv_display_flush_is_last(disp)) {
+        self->FlushCommit();
+    }
+    lv_display_flush_ready(disp);
+}
+
+// 累积/合并脏区条带：间隙小于 kFlushMergeGap 的条带合并，条带过多则退化为整帧
+void CustomLcdDisplay::FlushAddRange(int x1, int x2)
+{
+    if (x1 > x2) {
+        return;
+    }
+    for (int i = 0; i < flush_range_count_; i++) {
+        if (x1 <= flush_ranges_[i].x2 + kFlushMergeGap &&
+            x2 + kFlushMergeGap >= flush_ranges_[i].x1) {
+            if (x1 < flush_ranges_[i].x1) flush_ranges_[i].x1 = x1;
+            if (x2 > flush_ranges_[i].x2) flush_ranges_[i].x2 = x2;
+            return;
+        }
+    }
+    if (flush_range_count_ >= kMaxFlushRanges) {
+        flush_force_full_ = true;
+        return;
+    }
+    flush_ranges_[flush_range_count_].x1 = x1;
+    flush_ranges_[flush_range_count_].x2 = x2;
+    flush_range_count_++;
+}
+
+// 帧末提交：首帧/条带过碎/覆盖过宽 → 整帧；否则逐条带只发变化的部分
+void CustomLcdDisplay::FlushCommit()
+{
+    stat_frames_++;
+
+    const int scr_w = (int)lv_display_get_horizontal_resolution(display_);
+    const bool nothing_changed = (flush_range_count_ == 0 && !flush_force_full_);
+
+    if (nothing_changed && !flush_first_frame_) {
+        stat_skip_++;   // 本帧所有像素与显存一致，完全跳过 SPI
+    } else {
+        int covered = 0;
+        for (int i = 0; i < flush_range_count_; i++) {
+            covered += flush_ranges_[i].x2 - flush_ranges_[i].x1 + 1;
+        }
+        // 覆盖超过 60% 宽度时，逐条带的命令开销大于省下的数据量，直接整帧
+        const bool use_full = flush_first_frame_ || flush_force_full_ ||
+                              (covered * 5 >= scr_w * 3);
+        const int64_t t0 = esp_timer_get_time();
+        if (use_full) {
+            rlcd_->RLCD_Display();
+            stat_full_++;
+            stat_bytes_ += (uint64_t)rlcd_->display_len();
+        } else {
+            for (int i = 0; i < flush_range_count_; i++) {
+                rlcd_->RLCD_DisplayXRange((uint16_t)flush_ranges_[i].x1,
+                                          (uint16_t)flush_ranges_[i].x2);
+            }
+            stat_partial_++;
+            const int rows_per_pair = rlcd_->height() >> 2;
+            for (int i = 0; i < flush_range_count_; i++) {
+                const int pairs = (flush_ranges_[i].x2 >> 1) - (flush_ranges_[i].x1 >> 1) + 1;
+                stat_bytes_ += (uint64_t)pairs * rows_per_pair;
+            }
+        }
+        stat_transfer_us_ += (uint64_t)(esp_timer_get_time() - t0);
+        flush_first_frame_ = false;
+    }
+
+    flush_range_count_ = 0;
+    flush_force_full_ = false;
+
+    // 每 120 帧输出一次统计，便于实机对比局部刷新前后
+    if ((stat_frames_ % 120) == 0) {
+        ESP_LOGI(TAG,
+                 "刷新统计: 帧=%u 整帧=%u 局部=%u 跳过=%u 平均字节/帧=%.0f 平均耗时/帧=%.0f us",
+                 (unsigned)stat_frames_, (unsigned)stat_full_, (unsigned)stat_partial_,
+                 (unsigned)stat_skip_,
+                 (double)stat_bytes_ / (double)stat_frames_,
+                 (double)stat_transfer_us_ / (double)stat_frames_);
+    }
 }
 
 // ===== 构造 / 析构 =====
