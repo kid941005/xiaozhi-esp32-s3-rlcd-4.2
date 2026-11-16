@@ -25,6 +25,7 @@ LV_FONT_DECLARE(font_puhui_14_1);
 LV_FONT_DECLARE(font_puhui_16_4);
 #include "managers/weather_manager.h"
 #include "managers/todo_mcp_client.h"
+#include "screenshot_server.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
@@ -747,7 +748,7 @@ public:
 
     // 记录 DHCP 下发的 DNS，便于排查无法解析域名的问题
     virtual void SetNetworkEventCallback(NetworkEventCallback callback) override {
-        WifiBoard::SetNetworkEventCallback([callback](NetworkEvent event, const std::string& data) {
+        WifiBoard::SetNetworkEventCallback([this, callback](NetworkEvent event, const std::string& data) {
             if (event == NetworkEvent::Connected) {
                 // 网络刚连上：立刻拉一次待办
                 TodoMcpClient::GetInstance().RequestRefresh();
@@ -778,6 +779,16 @@ public:
                             esp_netif_set_dns_info(netif, ESP_NETIF_DNS_BACKUP, &backup) == ESP_OK) {
                             ESP_LOGI(TAG, "备用 DNS 已设置为 119.29.29.29");
                         }
+                    }
+
+                    // 启动截图服务，方便主机侧查看设备真实画面（GET /shot.bmp）
+                    esp_netif_ip_info_t ip_info = {};
+                    if (esp_netif_get_ip_info(netif, &ip_info) == ESP_OK) {
+                        ESP_LOGI(TAG, "设备 IP: " IPSTR "，截图地址: http://" IPSTR ":8080/shot.bmp",
+                                 IP2STR(&ip_info.ip), IP2STR(&ip_info.ip));
+                    }
+                    if (display_ != nullptr) {
+                        ScreenshotServerStart(display_);
                     }
                 }
             }

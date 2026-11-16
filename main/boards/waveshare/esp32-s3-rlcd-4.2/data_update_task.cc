@@ -482,7 +482,7 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                     self->SetShowingSystemInfo(false);
                     lv_anim_delete(self->chat_status_label_, nullptr);
                     lv_label_set_long_mode(self->chat_status_label_, LV_LABEL_LONG_WRAP);
-                    lv_obj_align(self->chat_status_label_, LV_ALIGN_LEFT_MID, 64 + 20, 0);
+                    lv_obj_align(self->chat_status_label_, LV_ALIGN_LEFT_MID, 56 + 20, 0);
                     lv_label_set_text(self->chat_status_label_, status_text);
                 }
                 if (ds != kDeviceStateSpeaking && ds != kDeviceStateWifiConfiguring &&

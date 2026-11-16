@@ -36,6 +36,107 @@ LV_FONT_DECLARE(font_puhui_16_4);  // 16px 标准字体
 LV_FONT_DECLARE(font_puhui_14_1);  // 14px 小字体
 LV_FONT_DECLARE(font_material_symbols_16_4);  // 16px 图标字体（★ ☑）
 
+// ===== 内置猫脸线稿（资源包没有 emoji 素材时的兜底图形）=====
+// 全部用 lv_obj/lv_line 画，不依赖任何图片资源；坐标按 48x48 设计，按 size 等比缩放。
+static lv_point_precise_t cf_ear_l[4];
+static lv_point_precise_t cf_ear_r[4];
+static lv_point_precise_t cf_mouth_v[2];
+static lv_point_precise_t cf_mouth_v2[3];
+static lv_point_precise_t cf_wsk[4][2];
+
+static lv_obj_t *CfLine(lv_obj_t *parent, lv_point_precise_t *pts, uint32_t n, int size) {
+    lv_obj_t *line = lv_line_create(parent);
+    lv_obj_set_size(line, size, size);
+    lv_obj_set_pos(line, 0, 0);
+    lv_obj_set_style_line_width(line, 2, 0);
+    lv_obj_set_style_line_color(line, lv_color_black(), 0);
+    lv_obj_set_style_line_rounded(line, true, 0);
+    lv_obj_set_style_bg_opa(line, LV_OPA_TRANSP, 0);
+    lv_obj_remove_flag(line, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(line, LV_OBJ_FLAG_CLICKABLE);
+    lv_line_set_points(line, pts, n);
+    return line;
+}
+
+static lv_obj_t *CfDot(lv_obj_t *parent, int x, int y, int w, int h) {
+    lv_obj_t *o = lv_obj_create(parent);
+    lv_obj_set_pos(o, x, y);
+    lv_obj_set_size(o, w, h);
+    lv_obj_set_style_bg_color(o, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(o, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(o, 0, 0);
+    lv_obj_set_style_radius(o, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_pad_all(o, 0, 0);
+    lv_obj_remove_flag(o, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(o, LV_OBJ_FLAG_CLICKABLE);
+    return o;
+}
+
+static lv_obj_t *CreateCatFace(lv_obj_t *parent, int size) {
+    const int s = size;
+#define CF(v) ((lv_coord_t)((v) * s / 48))
+    lv_obj_t *box = lv_obj_create(parent);
+    lv_obj_set_size(box, s, s);
+    lv_obj_set_style_bg_opa(box, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(box, 0, 0);
+    lv_obj_set_style_pad_all(box, 0, 0);
+    lv_obj_remove_flag(box, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(box, LV_OBJ_FLAG_CLICKABLE);
+
+    // 脸（圆）
+    const int face_d = CF(34);
+    lv_obj_t *face = lv_obj_create(box);
+    lv_obj_set_size(face, face_d, face_d);
+    lv_obj_set_style_bg_opa(face, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(face, 2, 0);
+    lv_obj_set_style_border_color(face, lv_color_black(), 0);
+    lv_obj_set_style_radius(face, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_pad_all(face, 0, 0);
+    lv_obj_remove_flag(face, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_align(face, LV_ALIGN_BOTTOM_MID, 0, 0);
+
+    // 耳朵
+    cf_ear_l[0] = {CF(11), CF(18)};
+    cf_ear_l[1] = {CF(8), CF(3)};
+    cf_ear_l[2] = {CF(22), CF(12)};
+    cf_ear_l[3] = {CF(11), CF(18)};
+    cf_ear_r[0] = {CF(37), CF(18)};
+    cf_ear_r[1] = {CF(40), CF(3)};
+    cf_ear_r[2] = {CF(26), CF(12)};
+    cf_ear_r[3] = {CF(37), CF(18)};
+    CfLine(box, cf_ear_l, 4, s);
+    CfLine(box, cf_ear_r, 4, s);
+
+    // 眼睛
+    CfDot(box, CF(16), CF(24), CF(4), CF(4));
+    CfDot(box, CF(28), CF(24), CF(4), CF(4));
+
+    // 鼻子 + 嘴
+    CfDot(box, CF(22), CF(31), CF(4), CF(3));
+    cf_mouth_v[0] = {CF(24), CF(34)};
+    cf_mouth_v[1] = {CF(24), CF(36)};
+    CfLine(box, cf_mouth_v, 2, s);
+    cf_mouth_v2[0] = {CF(19), CF(39)};
+    cf_mouth_v2[1] = {CF(24), CF(36)};
+    cf_mouth_v2[2] = {CF(29), CF(39)};
+    CfLine(box, cf_mouth_v2, 3, s);
+
+    // 胡须（左右各两根）
+    cf_wsk[0][0] = {CF(9), CF(26)};
+    cf_wsk[0][1] = {CF(14), CF(27)};
+    cf_wsk[1][0] = {CF(9), CF(31)};
+    cf_wsk[1][1] = {CF(14), CF(30)};
+    cf_wsk[2][0] = {CF(39), CF(26)};
+    cf_wsk[2][1] = {CF(34), CF(27)};
+    cf_wsk[3][0] = {CF(39), CF(31)};
+    cf_wsk[3][1] = {CF(34), CF(30)};
+    for (int i = 0; i < 4; i++) {
+        CfLine(box, cf_wsk[i], 2, s);
+    }
+#undef CF
+    return box;
+}
+
 // 声明状态栏图标（从 MyWeatherStation 移植）
 LV_IMAGE_DECLARE(ui_img_wifi);
 LV_IMAGE_DECLARE(ui_img_wifi_low);
@@ -341,6 +442,10 @@ void CustomLcdDisplay::SetupWeatherUI() {
     lv_obj_align(emotion_img_, LV_ALIGN_LEFT_MID, 12, emo_img_dy);
     lv_obj_add_flag(emotion_img_, LV_OBJ_FLAG_HIDDEN);
 
+    // 内置猫脸线稿：资源包不带 emoji 素材时用它兜底（RLCD 只有黑白两色，线稿正合适）
+    ai_face_ = CreateCatFace(chat_inner, emo_img_size);
+    lv_obj_align(ai_face_, LV_ALIGN_LEFT_MID, 12, emo_img_dy);
+
     emotion_label_ = lv_label_create(chat_inner);
     lv_obj_set_style_text_font(emotion_label_, emo_lbl_font, 0);
     lv_obj_set_style_text_color(emotion_label_, lv_color_black(), 0);
@@ -424,8 +529,11 @@ void CustomLcdDisplay::SetupWeatherUI() {
     emoji_image_ = lv_image_create(screen);
     lv_obj_add_flag(emoji_image_, LV_OBJ_FLAG_HIDDEN);
 
-    // chat_message_label_ 指向我们的 AI 状态标签（让基类方法能更新它）
-    chat_message_label_ = chat_status_label_;
+    // 基类的 chat_message_label_ 用独立隐藏标签承接，避免基类直接写空串把我们的状态文案清掉
+    // （小智 SetChatMessage 已被本类重写，真正显示走 chat_status_label_）
+    chat_message_label_ = lv_label_create(screen);
+    lv_label_set_text(chat_message_label_, "");
+    lv_obj_add_flag(chat_message_label_, LV_OBJ_FLAG_HIDDEN);
 
     // 默认「待命」表情图（参考界面左下常驻）
     ApplyDefaultEmotion();

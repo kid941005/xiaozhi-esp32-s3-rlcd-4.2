@@ -1,0 +1,102 @@
+// 屏幕截图 HTTP 服务
+//
+// 目的：RLCD 是 1-bit 单色屏，没法用摄像头/系统截图工具看画面，所以把显存导出成 BMP
+// 走局域网 HTTP，主机侧 curl 一下就能看到设备真实画面（也方便回归对比 UI 改动）。
+//
+// 端点：GET /shot.bmp  → image/bmp，1bpp 黑白，尺寸 = 面板宽高
+// 端口：8080（避开配网页面的 80 端口）
+
+#include "screenshot_server.h"
+
+#include <cstring>
+#include <string>
+#include <esp_err.h>
+#include <esp_heap_caps.h>
+#include <esp_http_server.h>
+#include <esp_log.h>
+
+#include "custom_lcd_display.h"
+
+static const char *TAG = "Screenshot";
+
+static httpd_handle_t s_server = nullptr;
+static CustomLcdDisplay *s_display = nullptr;
+static uint8_t *s_bmp = nullptr;
+static size_t s_bmp_cap = 0;
+static const int kShotPort = 8080;
+
+static esp_err_t ShotBmpHandler(httpd_req_t *req) {
+    if (s_display == nullptr || s_bmp == nullptr) {
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "not ready");
+    }
+    size_t len = 0;
+    if (!s_display->CaptureScreenBmp(s_bmp, s_bmp_cap, &len)) {
+        ESP_LOGE(TAG, "截图失败");
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "capture failed");
+    }
+    httpd_resp_set_type(req, "image/bmp");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    esp_err_t err = httpd_resp_send(req, (const char *)s_bmp, (ssize_t)len);
+    ESP_LOGI(TAG, "已发送截图 %u 字节", (unsigned)len);
+    return err;
+}
+
+// 调试端点：把关键控件状态以文本返回，排查「控件不显示」这类问题
+static esp_err_t DbgHandler(httpd_req_t *req) {
+    if (s_display == nullptr) {
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "not ready");
+    }
+    std::string info = s_display->GetUiDebugInfo();
+    httpd_resp_set_type(req, "text/plain; charset=utf-8");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, info.c_str(), (ssize_t)info.size());
+}
+
+static const httpd_uri_t kShotUri = {
+    .uri = "/shot.bmp",
+    .method = HTTP_GET,
+    .handler = ShotBmpHandler,
+    .user_ctx = nullptr,
+};
+
+static const httpd_uri_t kDbgUri = {
+    .uri = "/dbg",
+    .method = HTTP_GET,
+    .handler = DbgHandler,
+    .user_ctx = nullptr,
+};
+
+bool ScreenshotServerStart(CustomLcdDisplay *display) {
+    if (s_server != nullptr) {
+        return true;
+    }
+    if (display == nullptr) {
+        return false;
+    }
+    RlcdDriver *drv = display->rlcd();
+    const int w = (drv != nullptr) ? drv->width() : 400;
+    const int h = (drv != nullptr) ? drv->height() : 300;
+    s_bmp_cap = 62 + (size_t)(((w + 31) / 32) * 4) * (size_t)h;
+    s_bmp = (uint8_t *)heap_caps_malloc(s_bmp_cap, MALLOC_CAP_SPIRAM);
+    if (s_bmp == nullptr) {
+        ESP_LOGE(TAG, "截图缓冲区分配失败 (%u 字节)", (unsigned)s_bmp_cap);
+        return false;
+    }
+    s_display = display;
+
+    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    config.server_port = kShotPort;
+    config.lru_purge_enable = true;
+    config.stack_size = 8192;          // 截图逐像素遍历在同一线程内完成
+    if (httpd_start(&s_server, &config) != ESP_OK) {
+        ESP_LOGE(TAG, "HTTP 服务启动失败（端口 %d 被占用？）", kShotPort);
+        s_server = nullptr;
+        heap_caps_free(s_bmp);
+        s_bmp = nullptr;
+        return false;
+    }
+    httpd_register_uri_handler(s_server, &kShotUri);
+    httpd_register_uri_handler(s_server, &kDbgUri);
+    ESP_LOGI(TAG, "截图服务已启动: http://<设备IP>:%d/shot.bmp", kShotPort);
+    return true;
+}

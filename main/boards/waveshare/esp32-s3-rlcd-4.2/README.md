@@ -223,3 +223,20 @@ idf.py build flash monitor
 
 
 
+## 屏幕截图（调试用）
+
+设备连上网络后启动一个只读 HTTP 服务（端口 8080），直接把 RLCD 显存按 1bpp 导出成 BMP，方便远程核对界面：
+
+- 串口在拿到 IP 后打印：`设备 IP: 192.168.137.104，截图地址: http://192.168.137.104:8080/shot.bmp`。
+- `GET /shot.bmp` → 400×300 单色 BMP（15662 字节，62 B 文件头 + 52 B/行 × 300）。
+- `GET /dbg` → 纯文本，输出 `chat_status_label_` 文本/隐藏/位置/尺寸、父容器尺寸、`emotion_label_` 文本、`emotion_img_` 状态、主题 emoji 集合数量，用于排查「控件不显示」。
+- 主机侧脚本 `shot_fetch.py`：`python shot_fetch.py <设备IP> [out.png]`，取 BMP 后用 PIL 转 PNG（放大 2 倍便于查看）。
+- 实现：`screenshot_server.{h,cc}` 起 `esp_http_server`（`lru_purge_enable=true`、栈 8192，BMP 缓冲放 PSRAM）；像素读取用 `RlcdDriver::RLCD_GetPixel(x, y)` 直接查显存 LUT，1 = 白、0 = 黑，因此截图就是面板真实画面。
+- 注意：`main/CMakeLists.txt` 的 `PRIV_REQUIRES` 需要 `esp_http_server`；8080 与配网页 80 不冲突。
+
+## AI 卡：内置猫脸（无 emoji 素材时的兜底）
+
+- 小智的表情图片来自 assets 包（`main/assets.cc` 读 `emoji_collection` 数组），本板当前使用的 `generated_assets.bin` 里**不含 emoji 素材**，`theme->emoji_collection()` 为 null。
+- 因此 weather_ui.cc 用 `CreateCatFace()` 以 `lv_obj`（圆脸/眼睛/鼻子）+ `lv_line`（耳朵/嘴/胡须）在 48×48 内画了一只猫脸线稿，位置与 `emotion_img_` 相同（AI 卡左侧、`LEFT_MID(12, -14)`），RLCD 只有黑白两色，线稿正好。
+- `ApplyDefaultEmotion()` / `SetEmotion()` 的规则：assets 有对应表情图 → 显示 `emotion_img_`、隐藏 `ai_face_`；没有 → 隐藏 `emotion_img_`、显示 `ai_face_`。
+- `chat_message_label_`（基类使用）指向一个**独立隐藏标签**，避免基类直接 `lv_label_set_text(chat_message_label_, "")` 把 AI 卡的 `chat_status_label_` 清空（这是之前右侧文字空白的根因）。

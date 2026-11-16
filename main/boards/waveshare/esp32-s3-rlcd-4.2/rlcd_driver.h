@@ -57,6 +57,11 @@ public:
     uint32_t transfer_count() const { return transfer_count_; }
     int display_len() const { return DisplayLen; }
 
+    // 读取显存中的像素（true = 白，false = 黑），用于把当前画面导出成图片
+    bool RLCD_GetPixel(uint16_t x, uint16_t y) const {
+        return (DispBuffer[PixelIndexLUT[x][y]] & PixelBitLUT[x][y]) != 0;
+    }
+
     // 获取 SPI IO 句柄（LVGL 初始化可能需要）
     esp_lcd_panel_io_handle_t io_handle() const { return io_handle_; }
 

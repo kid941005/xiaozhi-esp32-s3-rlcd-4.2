@@ -16,6 +16,7 @@
 #include <vector>
 #include <string>
 #include <cstring>
+#include <cstdio>
 #include <cJSON.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -336,7 +337,7 @@ void CustomLcdDisplay::SetChatMessage(const char* role, const char* content) {
     lv_label_set_long_mode(chat_status_label_, LV_LABEL_LONG_WRAP);
     
     // 先恢复居中对齐（正常模式），计算内容高度
-    lv_obj_align(chat_status_label_, LV_ALIGN_LEFT_MID, 64 + 20, 0);
+    lv_obj_align(chat_status_label_, LV_ALIGN_LEFT_MID, 56 + 20, 0);
     
     // 检查内容是否超出父容器（chat_inner）的可见高度
     lv_obj_update_layout(chat_status_label_);
@@ -348,7 +349,7 @@ void CustomLcdDisplay::SetChatMessage(const char* role, const char* content) {
     if (label_h > visible_h) {
         // 超长内容：切换到 TOP_LEFT 绝对定位后启用滚动
         // （和鱼咬尾同理，LEFT_MID 对齐会干扰动画的 set_y）
-        const int text_x = 64 + 20;
+        const int text_x = 56 + 20;
         lv_obj_align(chat_status_label_, LV_ALIGN_TOP_LEFT, text_x, 0);
         
         lv_anim_t a;
@@ -415,10 +416,11 @@ bool CustomLcdDisplay::SetEmotion(const char* emotion) {
     }
     
     // 2. 尝试加载小智自带的 emoji 图片（天气页 + 音乐页同步更新）
+    bool has_image = false;
     if (current_theme_) {
         auto emoji_collection = static_cast<LvglTheme*>(current_theme_)->emoji_collection();
         auto image = emoji_collection ? emoji_collection->GetEmojiImage(emotion) : nullptr;
-        bool has_image = (image && !image->IsGif());
+        has_image = (image && !image->IsGif());
         
         // 天气页 emoji
         if (emotion_img_) {
@@ -439,20 +441,40 @@ bool CustomLcdDisplay::SetEmotion(const char* emotion) {
             }
         }
     }
+    // 资源包未带 emoji 素材时，用内置猫脸线稿兜底常驻显示
+    if (ai_face_) {
+        if (has_image) {
+            lv_obj_add_flag(ai_face_, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_remove_flag(ai_face_, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
 
     return true;
 }
 
 // 不获取锁：调用者必须已持有 DisplayLock（供 SetupWeatherUI 使用）
 void CustomLcdDisplay::ApplyDefaultEmotion() {
-    if (!current_theme_ || !emotion_img_) return;
-    auto emoji_collection = static_cast<LvglTheme*>(current_theme_)->emoji_collection();
+    auto emoji_collection = current_theme_
+                                ? static_cast<LvglTheme*>(current_theme_)->emoji_collection()
+                                : nullptr;
     auto image = emoji_collection ? emoji_collection->GetEmojiImage("neutral") : nullptr;
-    if (image && !image->IsGif()) {
+    const bool has_image = (image && !image->IsGif());
+    if (has_image && emotion_img_) {
         lv_image_set_src(emotion_img_, image->image_dsc());
         lv_obj_remove_flag(emotion_img_, LV_OBJ_FLAG_HIDDEN);
-        if (emotion_label_) lv_label_set_text(emotion_label_, "待命");
+    } else if (emotion_img_) {
+        lv_obj_add_flag(emotion_img_, LV_OBJ_FLAG_HIDDEN);
     }
+    // 无素材图片 → 显示内置猫脸
+    if (ai_face_) {
+        if (has_image) {
+            lv_obj_add_flag(ai_face_, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_remove_flag(ai_face_, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+    if (emotion_label_) lv_label_set_text(emotion_label_, "待命");
 }
 
 void CustomLcdDisplay::ClearChatMessages() {
@@ -613,4 +635,121 @@ void CustomLcdDisplay::NotifyUserActivity() {
         power_saving_ = false;
         ESP_LOGI(TAG, "用户活动检测到，退出省电模式");
     }
+}
+
+// ===== 调试信息（供 HTTP /dbg 端点排查显示问题） =====
+
+std::string CustomLcdDisplay::GetUiDebugInfo() {
+    DisplayLockGuard lock(this);
+    char buf[1024];
+    const char *txt = chat_status_label_ ? lv_label_get_text(chat_status_label_) : "(null)";
+    lv_obj_t *parent = chat_status_label_ ? lv_obj_get_parent(chat_status_label_) : nullptr;
+    const int pw = parent ? lv_obj_get_width(parent) : -1;
+    const int ph = parent ? lv_obj_get_height(parent) : -1;
+    const int cw = parent ? lv_obj_get_content_width(parent) : -1;
+    const int ch = parent ? lv_obj_get_content_height(parent) : -1;
+    const void *img_src = nullptr;
+    bool img_hidden = true;
+    int iw = 0;
+    int ih = 0;
+    if (emotion_img_) {
+        img_src = (const void *)lv_image_get_src(emotion_img_);
+        img_hidden = lv_obj_has_flag(emotion_img_, LV_OBJ_FLAG_HIDDEN);
+        iw = lv_obj_get_width(emotion_img_);
+        ih = lv_obj_get_height(emotion_img_);
+    }
+    const int csx = chat_status_label_ ? lv_obj_get_x(chat_status_label_) : -1;
+    const int csy = chat_status_label_ ? lv_obj_get_y(chat_status_label_) : -1;
+    const int csw = chat_status_label_ ? lv_obj_get_width(chat_status_label_) : -1;
+    const int csh = chat_status_label_ ? lv_obj_get_height(chat_status_label_) : -1;
+    const bool cs_hidden = chat_status_label_ &&
+                           lv_obj_has_flag(chat_status_label_, LV_OBJ_FLAG_HIDDEN);
+    const char *emo_txt = emotion_label_ ? lv_label_get_text(emotion_label_) : "(null)";
+    bool has_theme = (current_theme_ != nullptr);
+    bool has_collection = false;
+    int emoji_count = -1;
+    if (current_theme_) {
+        auto coll = static_cast<LvglTheme *>(current_theme_)->emoji_collection();
+        has_collection = (coll != nullptr);
+        if (coll) {
+            emoji_count = coll->Count();
+        }
+    }
+    snprintf(buf, sizeof(buf),
+             "chat_status: text=\"%s\" hidden=%d pos=%d,%d size=%dx%d\n"
+             "parent: size=%dx%d content=%dx%d\n"
+             "emotion_label: text=\"%s\"\n"
+             "emotion_img: hidden=%d size=%dx%d src=%p\n"
+             "theme=%d emoji_collection=%d count=%d\n",
+             txt, (int)cs_hidden, csx, csy, csw, csh,
+             pw, ph, cw, ch,
+             emo_txt,
+             (int)img_hidden, iw, ih, img_src,
+             (int)has_theme, (int)has_collection, emoji_count);
+    return std::string(buf);
+}
+
+// ===== 屏幕截图（显存 → 1bpp BMP） =====
+//
+// 直接读 RLCD 显存而不是抓 LVGL 快照：面板是 1-bit 单色，显存就是屏幕上真实的黑白像素，
+// 且只有 15000 字节，导出/传输都很轻。行按 BMP 规范自下而上、4 字节对齐。
+bool CustomLcdDisplay::CaptureScreenBmp(uint8_t *out, size_t cap, size_t *out_len) {
+    if (rlcd_ == nullptr || out == nullptr || out_len == nullptr) {
+        return false;
+    }
+    DisplayLockGuard lock(this);
+
+    const int w = rlcd_->width();
+    const int h = rlcd_->height();
+    const size_t row_bytes = (size_t)(((w + 31) / 32) * 4);
+    const size_t pixel_bytes = row_bytes * (size_t)h;
+    const size_t total = 62 + pixel_bytes;
+    if (total > cap) {
+        ESP_LOGE(TAG, "截图缓冲区不足: 需要 %u, 实际 %u", (unsigned)total, (unsigned)cap);
+        return false;
+    }
+    memset(out, 0, total);
+
+    auto put32 = [out](size_t off, uint32_t v) {
+        out[off]     = (uint8_t)(v & 0xFF);
+        out[off + 1] = (uint8_t)((v >> 8) & 0xFF);
+        out[off + 2] = (uint8_t)((v >> 16) & 0xFF);
+        out[off + 3] = (uint8_t)((v >> 24) & 0xFF);
+    };
+    auto put16 = [out](size_t off, uint16_t v) {
+        out[off]     = (uint8_t)(v & 0xFF);
+        out[off + 1] = (uint8_t)((v >> 8) & 0xFF);
+    };
+
+    // BITMAPFILEHEADER (14 B)
+    out[0] = 'B';
+    out[1] = 'M';
+    put32(2, (uint32_t)total);
+    put32(10, 62);                       // 像素数据偏移
+    // BITMAPINFOHEADER (40 B)
+    put32(14, 40);
+    put32(18, (uint32_t)w);
+    put32(22, (uint32_t)h);              // 正数 = 自下而上
+    put16(26, 1);                        // planes
+    put16(28, 1);                        // 1 bpp
+    put32(34, (uint32_t)pixel_bytes);
+    put32(38, 2835);                     // 72 DPI
+    put32(42, 2835);
+    put32(46, 2);                        // 调色板 2 色
+    put32(50, 2);
+    // 调色板：0 = 黑，1 = 白
+    out[54] = 0; out[55] = 0; out[56] = 0; out[57] = 0;
+    out[58] = 255; out[59] = 255; out[60] = 255; out[61] = 0;
+
+    uint8_t *pix = out + 62;
+    for (int y = 0; y < h; y++) {
+        uint8_t *row = pix + (size_t)(h - 1 - y) * row_bytes;
+        for (int x = 0; x < w; x++) {
+            if (rlcd_->RLCD_GetPixel((uint16_t)x, (uint16_t)y)) {
+                row[x >> 3] |= (uint8_t)(0x80 >> (x & 7));
+            }
+        }
+    }
+    *out_len = total;
+    return true;
 }

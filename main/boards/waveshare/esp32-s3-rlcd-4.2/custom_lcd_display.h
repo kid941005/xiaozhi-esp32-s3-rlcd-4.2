@@ -2,6 +2,7 @@
 #define __CUSTOM_LCD_DISPLAY_H__
 
 #include <atomic>
+#include <cstddef>
 #include <driver/gpio.h>
 #include "config.h"
 #include "lcd_display.h"
@@ -88,6 +89,7 @@ private:
     lv_obj_t *chat_status_label_ = nullptr; // AI 对话文字（右侧）
     lv_obj_t *emotion_label_ = nullptr;     // 表情文字（左侧下方）
     lv_obj_t *emotion_img_ = nullptr;       // 表情图片（左侧上方，小智自带 emoji）
+    lv_obj_t *ai_face_ = nullptr;           // 内置绘制的猫脸（资源包无 emoji 时兜底显示）
 
     // 待办卡片（右侧整高）
     lv_obj_t *memo_rows_ = nullptr;           // 待办列表容器（每行 = ★ + 文本）
@@ -154,6 +156,10 @@ public:
 
     // 获取 RLCD 驱动（供外部调用硬件方法，如对比度调节）
     RlcdDriver* rlcd() const { return rlcd_; }
+
+    // 把当前显存（1-bit）导出成 1bpp BMP（62 字节头 + 行对齐位图），用于远程截图
+    // out 容量需 >= 62 + ((w+31)/32*4) * h；成功返回 true 并写 *out_len
+    bool CaptureScreenBmp(uint8_t *out, size_t cap, size_t *out_len);
     
     // 获取 AI 对话标签（供 CustomBoard 设置滚动模式显示系统信息等）
     lv_obj_t* GetChatStatusLabel() const { return chat_status_label_; }
@@ -189,6 +195,9 @@ public:
     void RefreshMemoDisplayInternal();   // 不获取锁（已持锁时用这个，避免死锁）
     void ApplyDefaultEmotion();          // 应用默认「待命」表情图（不获取锁）
     void CycleDisplayMode();
+
+    // 调试用：返回关键控件状态文本（供 HTTP /dbg 端点排查显示问题）
+    std::string GetUiDebugInfo();
     bool IsMusicMode() const { return display_mode_ == MODE_MUSIC; }
 };
 
