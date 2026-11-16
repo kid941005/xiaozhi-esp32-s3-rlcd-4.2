@@ -65,14 +65,35 @@ idf.py build flash monitor
 
 - 卡片尺寸：时钟卡 199×120 @(10,41)、待办卡 173×249 @(217,41)、AI 卡 199×100 @(10,179)；`pad=10`、`gap=8`。
 - 顶栏（黑底白字）：左侧 `sensor_label_` 显示「环境 温度 湿度」，右侧 `lunar_label_` 显示农历/节气/节日（14px），最右是 WiFi + 电池胶囊（110×24）。
-- 时钟卡内三行：日期行（`day_label_`，16px，居中）→ **反色时间块**（`time_label_`，`alibaba_black_64`，白字 + 黑底 + 横跨卡内宽 `clock_w-16`）→ 天气行（`weather_label_`，16px，居中，「城市 天气 温度°C」）。外框 2px + 内框 2px 双层圆角描边。
+- 时钟卡内三行：日期行（`day_label_`，16px，居中）→ **翻页时钟**（4 张 39×50 黑底圆角卡片，每张一位数字，`alibaba_black_64` 白字，卡片中央叠 1px 白色中缝；两位之间是两个 5×5 黑色圆角冒号方块；数字由 `time_digit_label_[4]` 分别写入时十/时个/分十/分个）→ 天气行（`weather_label_`，16px，居中，「城市 天气 温度°C」）。外框 2px + 内框 2px 双层圆角描边。
 - 待办卡：标题「待办」+ 右上 ☑ ★ 两个 material symbols 图标 + 分隔线 + 列表容器 `memo_rows_`（`LV_FLEX_FLOW_COLUMN`）。每行是「★ + 文本」的横向 flex，文本 `LV_LABEL_LONG_WRAP` 自动换行，最多 6 条，超出显示「…还有N条」。
-- 待办数据来自 NVS `memo/items`（JSON 数组，字段 `t`=时间 `c`=内容），由 MCP 工具 `self.memo.add / list / done / clear` 增删；`RefreshMemoDisplayInternal()` 每次清空容器重建行。
+- 待办数据来自 NVS `memo/items`（JSON 数组，字段 `t`=时间 `c`=内容），由 MCP 工具 `self.memo.add / list / done / clear` 增删，或由 `self.todo.sync` 整批覆盖；`RefreshMemoDisplayInternal()` 每次清空容器重建行。
 - AI 卡：左侧 56px 表情区（48px 表情图 + 情绪标签），竖线分隔（距左边 70px），右侧状态文字左对齐垂直居中；卡片高度 < 90px 时自动切紧凑模式（表情 30px、14px 字体）。
 - 字体：中文文案统一用 `font_puhui_16_4`（7415 常用汉字）和 `font_puhui_14_1`；图标用 `font_material_symbols_16_4`（`material_symbols.h` 的 `MATERIAL_SYMBOLS_STAR` / `MATERIAL_SYMBOLS_CHECK_CIRCLE`）；大字时间用 `alibaba_black_64`。**注意**：`alibaba_puhui_16` 字符集不含「环境」，顶栏必须用 `font_puhui_16_4`，否则整词不显示。
 - 竖屏 300×400 为整宽纵向堆叠：时钟卡 280×140 → 待办卡 280×138 → AI 卡 280×55。
 
-**微调位置**（都在 `weather_ui.cc` 的卡片几何块）：改 `clock_h` / `todo_h` / `ai_h` 可调整三张卡比例；`day_label_` / `time_label_` / `weather_label_` 的 `lv_obj_align` 偏移控制卡内三行位置；`lunar_label_` 的 `-128` 是胶囊左侧的让位量；待办行间距是 `memo_rows_` 的 `lv_obj_set_style_pad_row`。
+**微调位置**（都在 `weather_ui.cc` 的卡片几何块）：改 `clock_h` / `todo_h` / `ai_h` 可调整三张卡比例；`day_label_` / 翻页时钟 / `weather_label_` 的 `lv_obj_align` / `flip_y` 控制卡内三行位置；翻页卡片尺寸是 `flip_card_w`(39) / `flip_card_h`(50) / `flip_gap`(3) / `colon_w`(10)；`lunar_label_` 的 `-128` 是胶囊左侧的让位量；待办行间距是 `memo_rows_` 的 `lv_obj_set_style_pad_row`。
+
+## 天气数据源（免密钥）
+
+固件没有和风天气 Key 时，`WeatherManager::update()` 自动走免密钥链路，**不依赖任何 API Key**：
+
+1. 主源：中国天气网数据接口 `http://t.weather.itboy.net/api/weather/city/<城市代码>`（纯 HTTP，国内直连快），取 `data.wendu` 温度与 `data.forecast[0].type` 天气现象，城市名取 `cityInfo.city` 并去掉结尾「市」。
+2. 备用源：Open-Meteo `https://api.open-meteo.com/v1/forecast?...&current=temperature_2m,weather_code`，WMO 天气代码转中文。
+
+配置项在 `config.h`：`WEATHER_CITY_CODE`（中国天气网城市代码，默认成都 `101270101`）、`WEATHER_LAT` / `WEATHER_LON`（备用源坐标）、`WEATHER_CITY`（兜底显示名）。城市代码可在 weather.com.cn 城市页 URL 里查到（如 `101270101` = 成都）。
+
+拉取由板级独立任务 `weather_fetch`（栈 8192）负责：启动后延迟 15 s 首次拉取，成功每 30 分钟一次、失败 60 秒重试；HTTP 不占用 LVGL 锁，不会卡界面。日志关键字 `天气更新成功(中国天气网)` / `Open-Meteo`。
+
+## 待办同步（MCP）
+
+设备本身**不是** MCP 客户端（没有对任意 MCP 端点做 ws JSON-RPC 的能力），因此待办采用「AI 拉取 → 下发设备」的方式：
+
+1. 后端 AI 用自己的待办工具（如 `list_todos`）取到当日待办；
+2. 调用设备工具 `self.todo.sync`，参数 `items` 为 JSON 字符串数组，每个元素是屏幕上的一行（如 `["10.06(二) 09:00 抢火车票","14:30 周会"]`），最多 10 行；
+3. 设备把它写入 NVS `memo/items` 并立刻重绘待办卡；传 `[]` 清空。
+
+对话里说「把今天的待办同步到屏幕」即可触发这条链路。
 
 ## 硬件核对（对照微雪官方文档与官方示例）
 
