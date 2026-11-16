@@ -166,32 +166,68 @@ void CustomLcdDisplay::SetupWeatherUI() {
     lv_obj_align(day_label_, LV_ALIGN_TOP_MID, 0, 8);
     lv_label_set_text(day_label_, "--月--日 星期-");
 
-    // 大字时钟：反色时间块（白字黑底条），横跨卡片内宽，与参考图一致
-    lv_obj_t *time_block = lv_obj_create(clock_card);
-    lv_obj_set_size(time_block, clock_w - 10, 56);
-    lv_obj_align(time_block, LV_ALIGN_TOP_MID, 0, 30);
-    lv_obj_set_style_bg_color(time_block, lv_color_black(), 0);
-    lv_obj_set_style_bg_opa(time_block, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(time_block, 0, 0);
-    lv_obj_set_style_radius(time_block, 0, 0);
-    lv_obj_set_style_pad_all(time_block, 0, 0);
-    lv_obj_remove_flag(time_block, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_remove_flag(time_block, LV_OBJ_FLAG_CLICKABLE);
+    // 大字时钟：翻页时钟样式（每位一张黑底白字卡片 + 中缝 + 冒号），与微雪成品界面一致
+    const int flip_card_w = 39;   // 单张数字卡片宽
+    const int flip_card_h = 50;   // 单张数字卡片高
+    const int flip_gap    = 3;    // 卡片间距
+    const int colon_w     = 10;   // 冒号区宽
+    const int flip_total  = flip_card_w * 4 + colon_w + flip_gap * 5;
+    int flip_x = (clock_w - flip_total) / 2;
+    const int flip_y = 30;
 
-    time_label_ = lv_label_create(time_block);
-    lv_obj_set_style_text_color(time_label_, lv_color_white(), 0);
-    lv_obj_set_style_bg_opa(time_label_, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_text_font(time_label_, font_clock, 0);
-    lv_obj_set_style_text_letter_space(time_label_, -2, 0);
-    lv_obj_set_style_text_align(time_label_, LV_TEXT_ALIGN_CENTER, 0);
-    lv_label_set_long_mode(time_label_, LV_LABEL_LONG_CLIP);
-    lv_obj_center(time_label_);
-    // 诊断：打印真实文本宽度，确认不会折行
-    lv_label_set_text(time_label_, "17:35");
-    lv_obj_update_layout(time_label_);
-    ESP_LOGI(TAG, "大字时间：文本 \"17:35\" 实测 %dx%d px，时间块可用宽 %d px",
-             (int)lv_obj_get_width(time_label_), (int)lv_obj_get_height(time_label_), clock_w - 10);
-    lv_label_set_text(time_label_, "00:00");
+    for (int i = 0; i < 4; i++) {
+        if (i == 2) {
+            // 冒号：白底上的两个黑色小方块
+            for (int d = 0; d < 2; d++) {
+                lv_obj_t *dot = lv_obj_create(clock_card);
+                lv_obj_set_size(dot, 5, 5);
+                lv_obj_set_pos(dot, flip_x + (colon_w - 5) / 2, flip_y + (d == 0 ? 12 : 31));
+                lv_obj_set_style_bg_color(dot, lv_color_black(), 0);
+                lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
+                lv_obj_set_style_border_width(dot, 0, 0);
+                lv_obj_set_style_radius(dot, 2, 0);
+                lv_obj_set_style_pad_all(dot, 0, 0);
+                lv_obj_remove_flag(dot, LV_OBJ_FLAG_SCROLLABLE);
+                lv_obj_remove_flag(dot, LV_OBJ_FLAG_CLICKABLE);
+            }
+            flip_x += colon_w + flip_gap;
+        }
+
+        lv_obj_t *flip_card = lv_obj_create(clock_card);
+        lv_obj_set_pos(flip_card, flip_x, flip_y);
+        lv_obj_set_size(flip_card, flip_card_w, flip_card_h);
+        lv_obj_set_style_bg_color(flip_card, lv_color_black(), 0);
+        lv_obj_set_style_bg_opa(flip_card, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(flip_card, 0, 0);
+        lv_obj_set_style_radius(flip_card, 6, 0);
+        lv_obj_set_style_pad_all(flip_card, 0, 0);
+        lv_obj_remove_flag(flip_card, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_remove_flag(flip_card, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_style_clip_corner(flip_card, true, 0);
+
+        lv_obj_t *digit = lv_label_create(flip_card);
+        lv_obj_set_style_text_font(digit, font_clock, 0);
+        lv_obj_set_style_text_color(digit, lv_color_white(), 0);
+        lv_obj_set_style_text_letter_space(digit, 0, 0);
+        lv_label_set_long_mode(digit, LV_LABEL_LONG_CLIP);
+        lv_label_set_text(digit, "0");
+        lv_obj_center(digit);
+        time_digit_label_[i] = digit;
+
+        // 翻页中缝：1px 白色横线，贯穿数字中部
+        lv_obj_t *seam = lv_obj_create(flip_card);
+        lv_obj_set_size(seam, flip_card_w, 1);
+        lv_obj_set_style_bg_color(seam, lv_color_white(), 0);
+        lv_obj_set_style_bg_opa(seam, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(seam, 0, 0);
+        lv_obj_set_style_radius(seam, 0, 0);
+        lv_obj_set_style_pad_all(seam, 0, 0);
+        lv_obj_align(seam, LV_ALIGN_CENTER, 0, 0);
+        lv_obj_remove_flag(seam, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_remove_flag(seam, LV_OBJ_FLAG_CLICKABLE);
+
+        flip_x += flip_card_w + flip_gap;
+    }
 
     // 天气行：「成都 晴 23°C」（黑字白底，卡片底部）
     weather_label_ = lv_label_create(clock_card);

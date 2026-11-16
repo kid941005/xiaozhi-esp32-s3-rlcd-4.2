@@ -24,8 +24,21 @@
 LV_FONT_DECLARE(font_puhui_14_1);
 LV_FONT_DECLARE(font_puhui_16_4);
 #include "managers/weather_manager.h"
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 #define TAG "waveshare_rlcd_4_2"
+
+// 天气拉取任务：Open-Meteo 免密钥数据源
+// 成功 30 分钟更新一次，失败 60 秒后重试（启动阶段 WiFi 未就绪也会自动重试）
+static void WeatherFetchTask(void* arg) {
+    vTaskDelay(pdMS_TO_TICKS(15000));
+    for (;;) {
+        bool ok = WeatherManager::getInstance().update();
+        const uint32_t interval_ms = ok ? (30u * 60u * 1000u) : 60000u;
+        vTaskDelay(pdMS_TO_TICKS(interval_ms));
+    }
+}
 
 class CustomBoard : public WifiBoard {
 private:
@@ -538,6 +551,55 @@ private:
                 ESP_LOGI(TAG, "所有备忘已清除");
                 return std::string("所有备忘已清除");
             });
+
+        // 待办同步：AI 侧先用自己的待办工具（如 list_todos）取到当日待办，再整批推给设备
+        // 设备本身不是 MCP 客户端（无 ws 能力），因此由 AI 主动下发
+        mcp_server.AddTool("self.todo.sync",
+            "Replace the todo list shown on the device screen with today's todos.\n"
+            "Call this AFTER fetching the user's todos from your own todo service (e.g. list_todos).\n"
+            "Each array element is one display row, already formatted, e.g. '10.06(二) 09:00 抢火车票'.\n"
+            "Args:\n"
+            "  items: JSON array of strings. Pass [] to clear. Max 10 rows, keep each row short.",
+            PropertyList({
+                Property("items", kPropertyTypeString)
+            }),
+            [this](const PropertyList& properties) -> ReturnValue {
+                auto items = properties["items"].value<std::string>();
+
+                cJSON *src = cJSON_Parse(items.c_str());
+                if (src == nullptr || !cJSON_IsArray(src)) {
+                    if (src) cJSON_Delete(src);
+                    return std::string("参数 items 必须是 JSON 字符串数组");
+                }
+
+                cJSON *arr = cJSON_CreateArray();
+                int count = 0;
+                cJSON *it = nullptr;
+                cJSON_ArrayForEach(it, src) {
+                    if (count >= 10) break;
+                    if (!cJSON_IsString(it)) continue;
+                    const char *text = it->valuestring;
+                    if (text == nullptr || text[0] == 0) continue;
+                    cJSON *item = cJSON_CreateObject();
+                    cJSON_AddStringToObject(item, "t", "");
+                    cJSON_AddStringToObject(item, "c", text);
+                    cJSON_AddItemToArray(arr, item);
+                    count++;
+                }
+                cJSON_Delete(src);
+
+                char *new_json = cJSON_PrintUnformatted(arr);
+                {
+                    Settings settings("memo", true);
+                    settings.SetString("items", new_json);
+                }
+                cJSON_free(new_json);
+                cJSON_Delete(arr);
+
+                if (display_) display_->RefreshMemoDisplay();
+                ESP_LOGI(TAG, "待办已同步: %d 条", count);
+                return std::string("已同步 ") + std::to_string(count) + " 条待办到屏幕";
+            });
     }
 
     void InitializeLcdDisplay() {
@@ -553,6 +615,9 @@ private:
         
         // 启动天气站数据更新任务
         display_->StartDataUpdateTask();
+
+        // 启动天气网络拉取任务（独立任务，避免 HTTP 阻塞 LVGL 刷新）
+        xTaskCreate(WeatherFetchTask, "weather_fetch", 8192, nullptr, 2, nullptr);
     }
 
     uint16_t BatterygetVoltage(void) {

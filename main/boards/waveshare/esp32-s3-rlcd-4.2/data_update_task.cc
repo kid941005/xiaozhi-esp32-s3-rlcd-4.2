@@ -214,7 +214,18 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
             if (minute_changed) {
                 char time_buf[16];
                 strftime(time_buf, sizeof(time_buf), "%H:%M", &timeinfo);
-                if (self->time_label_) lv_label_set_text(self->time_label_, time_buf);
+                // 翻页时钟：4 位数字分别写入各自的卡片
+                {
+                    const int digits[4] = {timeinfo.tm_hour / 10, timeinfo.tm_hour % 10,
+                                           timeinfo.tm_min / 10, timeinfo.tm_min % 10};
+                    char digit_buf[4];
+                    for (int di = 0; di < 4; di++) {
+                        if (self->time_digit_label_[di]) {
+                            snprintf(digit_buf, sizeof(digit_buf), "%d", digits[di]);
+                            lv_label_set_text(self->time_digit_label_[di], digit_buf);
+                        }
+                    }
+                }
                 if (self->music_time_label_) lv_label_set_text(self->music_time_label_, time_buf);
 
                 // 日期行：「10月2日 星期五」

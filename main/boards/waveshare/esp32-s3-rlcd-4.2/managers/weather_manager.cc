@@ -4,6 +4,7 @@
 #include "esp_crt_bundle.h"
 #include "cJSON.h"
 #include "zlib.h"
+#include "../config.h"   // WEATHER_LAT / WEATHER_LON / WEATHER_CITY
 #include <string.h>
 #include <algorithm>
 #include <cctype>
@@ -112,9 +113,16 @@ static std::string pick_city_name_for_display(cJSON* first_city, const std::stri
 }
 
 bool WeatherManager::update() {
-    if (!response_buffer || api_key_.empty() || api_host_.empty()) {
-        ESP_LOGW(TAG, "天气 API 未配置或缓冲区未分配");
+    if (!response_buffer) {
+        ESP_LOGW(TAG, "天气缓冲区未分配");
         return false;
+    }
+    // 未配置和风天气 Key 时，退回免密钥数据源：先中国天气网，失败再试 Open-Meteo
+    if (api_key_.empty() || api_host_.empty()) {
+        if (updateItboy()) {
+            return true;
+        }
+        return updateOpenMeteo();
     }
 
     // 第一步：通过和风天气 GeoAPI 进行 IP 定位
@@ -241,6 +249,194 @@ bool WeatherManager::update() {
     }
     esp_http_client_cleanup(client);
     return success;
+}
+
+// WMO 天气代码 → 中文描述（Open-Meteo 使用的编码）
+static const char* wmo_code_to_zh(int code) {
+    switch (code) {
+        case 0:  return "晴";
+        case 1:  return "晴间多云";
+        case 2:  return "多云";
+        case 3:  return "阴";
+        case 45: case 48: return "雾";
+        case 51: case 53: case 55: return "毛毛雨";
+        case 56: case 57: case 66: case 67: return "冻雨";
+        case 61: return "小雨";
+        case 63: return "中雨";
+        case 65: return "大雨";
+        case 71: return "小雪";
+        case 73: return "中雪";
+        case 75: return "大雪";
+        case 77: return "雪粒";
+        case 80: return "阵雨";
+        case 81: return "强阵雨";
+        case 82: return "暴雨";
+        case 85: case 86: return "阵雪";
+        case 95: return "雷阵雨";
+        case 96: case 99: return "雷阵雨伴冰雹";
+        default: return "未知";
+    }
+}
+
+// 免密钥天气源（主）：中国天气网数据接口（纯 HTTP，国内直连快，无需 Key）
+// 返回结构：{"cityInfo":{"city":"成都市"},"data":{"wendu":"12.8","forecast":[{"type":"小雨",...}]}}
+bool WeatherManager::updateItboy() {
+    if (!response_buffer) {
+        return false;
+    }
+    response_len = 0;
+    memset(response_buffer, 0, RESPONSE_BUFFER_SIZE);
+
+    char url[192];
+    snprintf(url, sizeof(url), "http://t.weather.itboy.net/api/weather/city/%s", WEATHER_CITY_CODE);
+
+    esp_http_client_config_t config = {};
+    config.url = url;
+    config.event_handler = http_event_handler;
+    config.timeout_ms = 8000;
+
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (client == nullptr) {
+        return false;
+    }
+    esp_http_client_set_header(client, "User-Agent", "ESP32-RLCD-Weather");
+
+    esp_err_t err = esp_http_client_perform(client);
+    int status = esp_http_client_get_status_code(client);
+    esp_http_client_cleanup(client);
+
+    if (err != ESP_OK || status != 200 || response_len <= 0) {
+        ESP_LOGW(TAG, "中国天气网请求失败 (err=%d, status=%d, len=%d)", err, status, response_len);
+        return false;
+    }
+    response_buffer[response_len] = 0;
+
+    cJSON* root = cJSON_Parse(response_buffer);
+    if (root == nullptr) {
+        ESP_LOGW(TAG, "中国天气网响应解析失败 (head=%.80s)", response_buffer);
+        return false;
+    }
+
+    cJSON* data = cJSON_GetObjectItem(root, "data");
+    cJSON* wendu = data ? cJSON_GetObjectItem(data, "wendu") : nullptr;
+    cJSON* forecast = data ? cJSON_GetObjectItem(data, "forecast") : nullptr;
+    cJSON* today = (forecast && cJSON_GetArraySize(forecast) > 0) ? cJSON_GetArrayItem(forecast, 0) : nullptr;
+    cJSON* type = today ? cJSON_GetObjectItem(today, "type") : nullptr;
+
+    if (wendu == nullptr || !cJSON_IsString(wendu) || type == nullptr || !cJSON_IsString(type)) {
+        ESP_LOGW(TAG, "中国天气网响应缺少 wendu/type 字段");
+        cJSON_Delete(root);
+        return false;
+    }
+
+    std::string city = WEATHER_CITY;
+    cJSON* city_info = cJSON_GetObjectItem(root, "cityInfo");
+    cJSON* city_name = city_info ? cJSON_GetObjectItem(city_info, "city") : nullptr;
+    if (city_name && cJSON_IsString(city_name) && city_name->valuestring[0] != 0) {
+        city = city_name->valuestring;
+        // "成都市" -> "成都"，避免卡片文案过长
+        if (city.size() > 6) {
+            city = WEATHER_CITY;
+        } else if (city.size() >= 3 &&
+                   city.compare(city.size() - 3, 3, "市") == 0) {
+            city.erase(city.size() - 3);
+        }
+    }
+
+    latest_data_.city = city;
+    latest_data_.temp = wendu->valuestring;
+    latest_data_.text = type->valuestring;
+    latest_data_.update_time = "weather.com.cn";
+    latest_data_.valid = true;
+
+    ESP_LOGI(TAG, "天气更新成功(中国天气网): %s %s %s°C",
+             latest_data_.city.c_str(), latest_data_.text.c_str(),
+             latest_data_.temp.c_str());
+    cJSON_Delete(root);
+    return true;
+}
+
+// 免密钥天气源（备用）：Open-Meteo（无需注册、无 Key）
+// 请求：当前温度 + WMO 天气代码；坐标由 config.h 的 WEATHER_LAT/WEATHER_LON 指定
+bool WeatherManager::updateOpenMeteo() {
+    if (!response_buffer) {
+        return false;
+    }
+    response_len = 0;
+    memset(response_buffer, 0, RESPONSE_BUFFER_SIZE);
+
+    char url[320];
+    snprintf(url, sizeof(url),
+             "https://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f"
+             "&current=temperature_2m,weather_code&timezone=Asia%%2FShanghai",
+             (double)WEATHER_LAT, (double)WEATHER_LON);
+
+    ESP_LOGI(TAG, "使用 Open-Meteo 获取天气 (%.4f, %.4f)", (double)WEATHER_LAT, (double)WEATHER_LON);
+
+    esp_http_client_config_t config = {};
+    config.url = url;
+    config.event_handler = http_event_handler;
+    config.timeout_ms = 10000;
+    config.crt_bundle_attach = esp_crt_bundle_attach;
+
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (client == nullptr) {
+        ESP_LOGE(TAG, "Open-Meteo 客户端创建失败");
+        return false;
+    }
+    esp_http_client_set_header(client, "User-Agent", "ESP32-RLCD-Weather");
+    esp_http_client_set_header(client, "Accept-Encoding", "gzip");
+
+    esp_err_t err = esp_http_client_perform(client);
+    int status = esp_http_client_get_status_code(client);
+    esp_http_client_cleanup(client);
+
+    if (err != ESP_OK || status != 200 || response_len <= 0) {
+        ESP_LOGW(TAG, "Open-Meteo 请求失败 (err=%d, status=%d, len=%d)", err, status, response_len);
+        return false;
+    }
+
+    const char* json = nullptr;
+    int d_len = 0;
+    if (decompressed_buffer &&
+        decompress_gzip_safe((uint8_t*)response_buffer, response_len,
+                             decompressed_buffer, DECOMPRESSED_BUFFER_SIZE, &d_len)) {
+        json = decompressed_buffer;
+    } else {
+        response_buffer[response_len] = '\0';
+        json = response_buffer;
+    }
+
+    cJSON* root = cJSON_Parse(json);
+    if (root == nullptr) {
+        ESP_LOGW(TAG, "Open-Meteo 响应解析失败 (head=%.80s)", json);
+        return false;
+    }
+
+    cJSON* current = cJSON_GetObjectItem(root, "current");
+    cJSON* temp = current ? cJSON_GetObjectItem(current, "temperature_2m") : nullptr;
+    cJSON* wcode = current ? cJSON_GetObjectItem(current, "weather_code") : nullptr;
+    if (temp == nullptr || !cJSON_IsNumber(temp)) {
+        ESP_LOGW(TAG, "Open-Meteo 响应缺少 current.temperature_2m");
+        cJSON_Delete(root);
+        return false;
+    }
+
+    const int code = (wcode && cJSON_IsNumber(wcode)) ? wcode->valueint : -1;
+    char temp_str[16];
+    snprintf(temp_str, sizeof(temp_str), "%.0f", temp->valuedouble);
+
+    latest_data_.city = WEATHER_CITY;
+    latest_data_.temp = temp_str;
+    latest_data_.text = wmo_code_to_zh(code);
+    latest_data_.update_time = "open-meteo";
+    latest_data_.valid = true;
+
+    ESP_LOGI(TAG, "天气更新成功(Open-Meteo): %s %s %s°C (code=%d)",
+             latest_data_.city.c_str(), latest_data_.text.c_str(),
+             latest_data_.temp.c_str(), code);
+    cJSON_Delete(root);
+    return true;
 }
 
 void WeatherManager::parseWeatherJson(const char* json_data) {

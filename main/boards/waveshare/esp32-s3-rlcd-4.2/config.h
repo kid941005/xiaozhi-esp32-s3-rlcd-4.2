@@ -23,6 +23,12 @@
 #define AUDIO_CODEC_ES8311_ADDR  ES8311_CODEC_DEFAULT_ADDR
 #define AUDIO_CODEC_ES7210_ADDR  ES7210_CODEC_DEFAULT_ADDR
 
+// ===== 天气（免密钥 Open-Meteo 源，未配置和风 Key 时使用）=====
+#define WEATHER_LAT   30.6598f    // 纬度（默认成都）
+#define WEATHER_LON   104.0633f   // 经度
+#define WEATHER_CITY  "成都"       // 界面显示的城市名
+#define WEATHER_CITY_CODE "101270101"  // 中国天气网城市代码（成都），免密钥天气源使用
+
 #define BOOT_BUTTON_GPIO        GPIO_NUM_0
 #define USER_BUTTON_GPIO        GPIO_NUM_18  // 用户按键（屏幕右侧 KEY 按钮）
 

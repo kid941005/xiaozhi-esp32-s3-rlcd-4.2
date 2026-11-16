@@ -45,4 +45,7 @@ private:
     
     static esp_err_t http_event_handler(esp_http_client_event_t *evt);
     void parseWeatherJson(const char* json_data);
+    // 无和风 Key 时的免密钥天气源：主用中国天气网(数据接口)，备用 Open-Meteo
+    bool updateItboy();
+    bool updateOpenMeteo();
 };

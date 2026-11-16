@@ -79,7 +79,7 @@ private:
     
     // 时钟卡片（左上/竖屏顶部）
     lv_obj_t *day_label_ = nullptr;         // 日期行 "10月2日 星期五"
-    lv_obj_t *time_label_ = nullptr;        // 大字时钟 "14:30"
+    lv_obj_t *time_digit_label_[4] = {nullptr, nullptr, nullptr, nullptr};  // 翻页时钟 4 位数字（时十/时个/分十/分个）
     lv_obj_t *lunar_label_ = nullptr;       // 农历/节气/节日 "十月初七 小雪"
     lv_obj_t *weather_label_ = nullptr;     // 天气行 "成都 晴 23°C"
     
