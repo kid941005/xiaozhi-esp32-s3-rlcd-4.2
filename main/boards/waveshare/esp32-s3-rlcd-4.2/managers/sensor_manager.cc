@@ -1,5 +1,15 @@
 #include "sensor_manager.h"
+
+// 敏感配置（天气 API Key 等）不入库：有 secret_config.h 就用，没有就用默认值，
+// 保证仓库克隆后可直接编译。
+#if __has_include("../secret_config.h")
 #include "../secret_config.h"
+#else
+#define WEATHER_API_KEY  ""
+#define WEATHER_API_HOST ""
+#define TIMEZONE_STRING  "CST-8"
+#define NTP_SERVER       "ntp.aliyun.com"
+#endif
 #include "esp_log.h"
 #include "esp_sntp.h"
 #include "esp_netif_sntp.h"

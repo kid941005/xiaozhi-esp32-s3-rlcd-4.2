@@ -1006,9 +1006,9 @@ file(GLOB BOARD_SOURCES
 )
 # 递归搜索板子子目录（managers/、assets/ 等）
 file(GLOB_RECURSE BOARD_SUB_SOURCES
-    ${CMAKE_CURRENT_SOURCE_DIR}/boards/${BOARD_TYPE}/managers/*.cc
-    ${CMAKE_CURRENT_SOURCE_DIR}/boards/${BOARD_TYPE}/managers/*.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/boards/${BOARD_TYPE}/assets/*.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/boards/${BOARD_DIR}/managers/*.cc
+    ${CMAKE_CURRENT_SOURCE_DIR}/boards/${BOARD_DIR}/managers/*.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/boards/${BOARD_DIR}/assets/*.c
 )
 list(APPEND SOURCES ${BOARD_SOURCES} ${BOARD_SUB_SOURCES})
 

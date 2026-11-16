@@ -340,7 +340,7 @@ void CustomLcdDisplay::SetupWeatherUI() {
     lv_label_set_text(emoji_label_, "");
     lv_obj_add_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
     
-    emoji_image_ = lv_img_create(screen);
+    emoji_image_ = lv_image_create(screen);
     lv_obj_add_flag(emoji_image_, LV_OBJ_FLAG_HIDDEN);
 
     // chat_message_label_ 指向我们的 AI 状态标签（让基类方法能更新它）
