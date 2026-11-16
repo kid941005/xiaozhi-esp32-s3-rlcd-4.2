@@ -91,12 +91,19 @@ idf.py build flash monitor
 按标准 JSON-RPC 握手后调用 `list_todos`（`view=today`, `limit=10`），把每条待办格式化成
 `11.16(日) 20:00 标题` 的一行，写入 NVS `memo/items` 并重绘右侧待办卡。
 
+- **长连接**：握手（initialize）只做一次，之后在**同一条 websocket 上**每分钟发一次 `tools/call`。
+  早期版本是每次拉取都新建连接（每次都要重做 TLS 握手），实测跑满 5 分钟后第二次握手会被对端
+  在握手阶段关闭 TCP（`mbedtls_ssl_handshake returned -0x7280` = `MBEDTLS_ERR_SSL_CONN_EOF`），
+  所以改成常驻会话 + 断线重连。
+- 断线处理：建连最多重试 3 次（间隔 3 s）；连续 2 次拉取失败或 websocket 报错则关闭会话，
+  等 20 s（或网络恢复事件）后重连。服务端每 20 s 发 ping，客户端自动回 pong 保活。
 - 地址存 NVS `todo/mcp_url`；可用 MCP 工具 `self.todo.set_url`（参数 `url`，必须以 `ws://` 或 `wss://` 开头）修改，改完立即拉一次。
 - 构建期默认值：`config.h` 的 `MCP_TODO_URL`（提交版为空）。本机可把真实地址放进
   `managers/todo_mcp_secret.h`（已在 `.gitignore`，避免 token 入库），首次启动会把编译期地址落到 NVS，
   之后一律以 NVS 为准。
-- 周期：上电延迟 20 s 首次；成功每 5 分钟、失败 30 秒重试；网络刚连上会立刻补一次。
-- 日志关键字：`连接待办 MCP 接入点` / `已拉取当日待办 N 条` / `等待 list_todos 响应超时`。
+- 时序：上电延迟 20 s 首次拉取；之后每 60 s 一次；网络刚连上会立刻补一次。
+- 日志关键字：`连接待办 MCP 接入点(1/3)` / `MCP 会话已建立` / `已拉取当日待办 N 条` /
+  `等待 list_todos 响应超时` / `连接已断开` / `空闲内存 ... 最大连续块 ...`。
 - 协议要点：JSON-RPC 的真实路径是 `/mcp_endpoint/call/`（`/mcp/` 是注册侧，握手不回包）；
   握手 `id=1` initialize、`id=2` tools/call，结果在 `result.content[0].text`（一个 JSON 字符串：
   `{"ok":true,"count":N,"items":[{"title","due_text","all_day",...}]}`）。

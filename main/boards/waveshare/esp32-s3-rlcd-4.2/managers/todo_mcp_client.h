@@ -2,19 +2,26 @@
 #define TODO_MCP_CLIENT_H
 
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/event_groups.h>
 
-// 设备侧 MCP 客户端：周期性连接外部 MCP 接入点（websocket），
-// 调用 list_todos 拉取当日待办，写入 NVS 并刷新右侧待办卡。
+class WebSocket;
+
+// 设备侧 MCP 客户端：连接外部 MCP 接入点（websocket），保持长连接，
+// 周期性调用 list_todos 拉取当日待办，写入 NVS 并刷新右侧待办卡。
+//
+// 之所以保持长连接而不是每次新建：每次新建都要重新做一次 TLS 握手，
+// 实测周期性重连会偶发握手失败（对端在握手阶段关闭 TCP），长连接只需要
+// 在断线后重连，且刷新更快（1 分钟）。
 class TodoMcpClient {
 public:
     static TodoMcpClient& GetInstance();
 
-    // 启动后台拉取任务。on_updated 在成功刷新待办后调用（用于刷新屏幕）
+    // 启动后台任务。on_updated 在成功刷新待办后调用（用于刷新屏幕）
     void Start(std::function<void()> on_updated);
 
     // 立即触发一次拉取（例如网络刚连上时）
@@ -31,15 +38,19 @@ private:
     TodoMcpClient& operator=(const TodoMcpClient&) = delete;
 
     void Run();
-    bool PullOnce();
+    // 建立连接并完成 initialize 握手，失败会内部重试
+    bool OpenSession(std::unique_ptr<WebSocket>& ws, const std::string& url);
+    // 一条长连接内的全部拉取，返回时连接已不可用
+    void RunSession(const std::string& url);
     bool ApplyPayload(const std::string& payload);
     static void TaskEntry(void* arg);
 
     EventGroupHandle_t event_group_ = nullptr;
     std::function<void()> on_updated_;
     std::mutex mutex_;
-    std::string msg_init_;
-    std::string msg_tools_;
+    std::string msg_reply_;
+    int pending_id_ = 0;
+    volatile bool broken_ = false;
 };
 
 #endif  // TODO_MCP_CLIENT_H

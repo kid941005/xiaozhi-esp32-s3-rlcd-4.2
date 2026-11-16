@@ -1,11 +1,12 @@
 #include "todo_mcp_client.h"
 
 #include <cJSON.h>
+#include <esp_heap_caps.h>
 #include <esp_log.h>
+#include <esp_system.h>
 
 #include <cstdio>
 #include <cstring>
-#include <memory>
 
 #include <board.h>
 #include <network_interface.h>
@@ -28,14 +29,16 @@
 namespace {
 constexpr EventBits_t kRefreshBit = BIT0;
 constexpr EventBits_t kInitBit = BIT1;
-constexpr EventBits_t kToolsBit = BIT2;
+constexpr EventBits_t kReplyBit = BIT2;
 
-constexpr int kConnectTimeoutMs = 15000;
 constexpr int kInitTimeoutMs = 10000;
-constexpr int kToolsTimeoutMs = 20000;
-constexpr int kPollOkMs = 5 * 60 * 1000;   // 成功：5 分钟
-constexpr int kPollFailMs = 30 * 1000;     // 失败：30 秒重试
-constexpr int kFirstDelayMs = 20000;       // 上电后先等网络
+constexpr int kCallTimeoutMs = 20000;
+constexpr int kPollMs = 60 * 1000;      // 长连接下的拉取间隔
+constexpr int kRetryMs = 20 * 1000;     // 断线后重连间隔
+constexpr int kFirstDelayMs = 20000;    // 上电后先等网络
+constexpr int kConnectAttempts = 3;     // 建连失败重试次数
+constexpr int kConnectGapMs = 3000;
+constexpr int kMaxConsecFail = 2;       // 连续拉取失败多少次后重连
 constexpr int kMaxRows = 10;
 
 // 0=周日 … 6=周六
@@ -46,7 +49,7 @@ int DayOfWeek(int y, int m, int d) {
     return (w + 7) % 7;
 }
 
-// "2026-11-16 20:00" -> "11.16(日) 20:00 "
+// "2026-11-16 20:00" -> "11.16(一) 20:00 "
 std::string FormatRow(const char* title, const char* due_text, bool all_day) {
     std::string out;
     int y = 0, mo = 0, d = 0;
@@ -76,9 +79,20 @@ const char* kInitRequest =
 const char* kInitializedNote =
     "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}";
 
-const char* kListTodosRequest =
-    "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{"
-    "\"name\":\"list_todos\",\"arguments\":{\"view\":\"today\",\"limit\":10}}}";
+std::string BuildListTodosRequest(int id) {
+    char buf[256];
+    std::snprintf(buf, sizeof(buf),
+                  "{\"jsonrpc\":\"2.0\",\"id\":%d,\"method\":\"tools/call\",\"params\":"
+                  "{\"name\":\"list_todos\",\"arguments\":{\"view\":\"today\",\"limit\":10}}}",
+                  id);
+    return std::string(buf);
+}
+
+void LogHeap(const char* when) {
+    ESP_LOGI(TAG, "%s：空闲内存 %d 字节，最大连续块 %d 字节", when,
+             static_cast<int>(esp_get_free_heap_size()),
+             static_cast<int>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
+}
 }  // namespace
 
 TodoMcpClient& TodoMcpClient::GetInstance() {
@@ -127,102 +141,137 @@ void TodoMcpClient::Start(std::function<void()> on_updated) {
 void TodoMcpClient::Run() {
     vTaskDelay(pdMS_TO_TICKS(kFirstDelayMs));
     for (;;) {
-        const bool ok = PullOnce();
-        // 拉取期间网络事件可能已经置位，先清掉再等，避免紧接着再连一次
-        // （服务端对同一 token 的并发/快速重连会 TLS 握手失败）
+        const std::string url = GetUrl();
+        if (!url.empty()) {
+            RunSession(url);
+        }
+        // 会话结束（断线/未配置），等一会儿或等网络事件再重连
         xEventGroupClearBits(event_group_, kRefreshBit);
-        xEventGroupWaitBits(event_group_, kRefreshBit, pdTRUE, pdFALSE,
-                            pdMS_TO_TICKS(ok ? kPollOkMs : kPollFailMs));
+        xEventGroupWaitBits(event_group_, kRefreshBit, pdTRUE, pdFALSE, pdMS_TO_TICKS(kRetryMs));
     }
 }
 
-bool TodoMcpClient::PullOnce() {
-    const std::string url = GetUrl();
-    if (url.empty()) {
-        // 未配置接入点：安静地待机
-        return true;
-    }
-
+bool TodoMcpClient::OpenSession(std::unique_ptr<WebSocket>& ws, const std::string& url) {
     NetworkInterface* network = Board::GetInstance().GetNetwork();
     if (network == nullptr) {
+        ESP_LOGW(TAG, "网络未就绪");
         return false;
     }
 
-    auto ws = network->CreateWebSocket(2);
-    if (ws == nullptr) {
-        ESP_LOGE(TAG, "创建 websocket 失败");
-        return false;
-    }
-
-    ws->SetReceiveBufferSize(8192);
-    ws->OnData([this](const char* data, size_t len, bool binary) {
-        if (binary || data == nullptr) return;
-        cJSON* root = cJSON_ParseWithLength(data, len);
-        if (root == nullptr) return;
-        cJSON* id = cJSON_GetObjectItem(root, "id");
-        if (cJSON_IsNumber(id)) {
-            std::lock_guard<std::mutex> lock(mutex_);
-            if (id->valueint == 1) {
-                msg_init_.assign(data, len);
-                xEventGroupSetBits(event_group_, kInitBit);
-            } else if (id->valueint == 2) {
-                msg_tools_.assign(data, len);
-                xEventGroupSetBits(event_group_, kToolsBit);
-            }
+    for (int attempt = 1; attempt <= kConnectAttempts; ++attempt) {
+        broken_ = false;
+        ws = network->CreateWebSocket(2);
+        if (ws == nullptr) {
+            ESP_LOGE(TAG, "创建 websocket 失败");
+            return false;
         }
-        cJSON_Delete(root);
-    });
-    ws->OnError([](const NetworkError& error) {
-        ESP_LOGW(TAG, "websocket 错误: %s", error.ToString().c_str());
-    });
+        ws->SetReceiveBufferSize(8192);
+        ws->OnData([this](const char* data, size_t len, bool binary) {
+            if (binary || data == nullptr) return;
+            cJSON* root = cJSON_ParseWithLength(data, len);
+            if (root == nullptr) return;
+            cJSON* id = cJSON_GetObjectItem(root, "id");
+            if (cJSON_IsNumber(id)) {
+                const int got = id->valueint;
+                if (got == 1) {
+                    xEventGroupSetBits(event_group_, kInitBit);
+                } else if (got == pending_id_) {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    msg_reply_.assign(data, len);
+                    xEventGroupSetBits(event_group_, kReplyBit);
+                }
+            }
+            cJSON_Delete(root);
+        });
+        ws->OnError([this](const NetworkError& error) {
+            ESP_LOGW(TAG, "websocket 错误: %s", error.ToString().c_str());
+            broken_ = true;
+        });
 
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        msg_init_.clear();
-        msg_tools_.clear();
+        xEventGroupClearBits(event_group_, kInitBit | kReplyBit);
+        LogHeap("建连前");
+        ESP_LOGI(TAG, "连接待办 MCP 接入点(%d/%d): %s", attempt, kConnectAttempts, url.c_str());
+        if (auto connected = ws->Connect(url.c_str()); connected) {
+            return true;
+        } else {
+            ESP_LOGW(TAG, "连接失败: %s", connected.error().ToString().c_str());
+        }
+        ws->Close();
+        ws.reset();
+        if (attempt < kConnectAttempts) {
+            vTaskDelay(pdMS_TO_TICKS(kConnectGapMs));
+        }
     }
-    xEventGroupClearBits(event_group_, kInitBit | kToolsBit);
+    return false;
+}
 
-    ESP_LOGI(TAG, "连接待办 MCP 接入点: %s", url.c_str());
-    if (auto connected = ws->Connect(url.c_str()); !connected) {
-        ESP_LOGW(TAG, "连接失败: %s", connected.error().ToString().c_str());
-        return false;
+void TodoMcpClient::RunSession(const std::string& url) {
+    std::unique_ptr<WebSocket> ws;
+    if (!OpenSession(ws, url)) {
+        return;
     }
 
     if (!ws->Send(kInitRequest)) {
         ESP_LOGW(TAG, "发送 initialize 失败");
         ws->Close();
-        return false;
+        return;
     }
     EventBits_t bits = xEventGroupWaitBits(event_group_, kInitBit, pdTRUE, pdFALSE,
                                            pdMS_TO_TICKS(kInitTimeoutMs));
     if (!(bits & kInitBit)) {
         ESP_LOGW(TAG, "等待 initialize 响应超时");
         ws->Close();
-        return false;
+        return;
     }
-
     ws->Send(kInitializedNote);
-    if (!ws->Send(kListTodosRequest)) {
-        ESP_LOGW(TAG, "发送 tools/call 失败");
-        ws->Close();
-        return false;
-    }
-    bits = xEventGroupWaitBits(event_group_, kToolsBit, pdTRUE, pdFALSE,
-                               pdMS_TO_TICKS(kToolsTimeoutMs));
-    if (!(bits & kToolsBit)) {
-        ESP_LOGW(TAG, "等待 list_todos 响应超时");
-        ws->Close();
-        return false;
+    ESP_LOGI(TAG, "MCP 会话已建立");
+
+    int consec_fail = 0;
+    for (;;) {
+        if (broken_) {
+            ESP_LOGW(TAG, "连接已断开");
+            break;
+        }
+        pending_id_ = 2;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            msg_reply_.clear();
+        }
+        xEventGroupClearBits(event_group_, kReplyBit);
+
+        const std::string request = BuildListTodosRequest(pending_id_);
+        if (!ws->Send(request)) {
+            ESP_LOGW(TAG, "发送 tools/call 失败");
+            break;
+        }
+        bits = xEventGroupWaitBits(event_group_, kReplyBit, pdTRUE, pdFALSE,
+                                   pdMS_TO_TICKS(kCallTimeoutMs));
+        if (bits & kReplyBit) {
+            std::string payload;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                payload = msg_reply_;
+            }
+            if (ApplyPayload(payload)) {
+                consec_fail = 0;
+            } else {
+                ++consec_fail;
+            }
+        } else {
+            ++consec_fail;
+            ESP_LOGW(TAG, "等待 list_todos 响应超时（连续 %d 次）", consec_fail);
+        }
+        if (consec_fail >= kMaxConsecFail) {
+            ESP_LOGW(TAG, "连续 %d 次拉取失败，重建连接", consec_fail);
+            break;
+        }
+
+        // 等到下一次拉取，期间网络恢复事件可以提前触发
+        xEventGroupClearBits(event_group_, kRefreshBit);
+        xEventGroupWaitBits(event_group_, kRefreshBit, pdTRUE, pdFALSE, pdMS_TO_TICKS(kPollMs));
     }
 
-    std::string payload;
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        payload = msg_tools_;
-    }
     ws->Close();
-    return ApplyPayload(payload);
 }
 
 bool TodoMcpClient::ApplyPayload(const std::string& payload) {
