@@ -17,7 +17,6 @@
 #include <cJSON.h>
 #include "lvgl.h"
 #include "managers/sensor_manager.h"
-#include "managers/sdcard_manager.h"
 #include "managers/pomodoro_manager.h"
 #include "managers/power_manager.h"
 
@@ -79,16 +78,6 @@ private:
         // 初始化传感器（使用同一条 I2C 总线）
         SensorManager::getInstance().init(i2c_bus_);
         ESP_LOGI(TAG, "传感器初始化完成");
-    }
-
-    void InitializeSdcard() {
-        // 初始化 SD 卡（SDMMC 模式，板载 SD 卡槽默认引脚）
-        bool ok = SdcardManager::getInstance().init();
-        if (ok) {
-            ESP_LOGI(TAG, "SD 卡初始化成功");
-        } else {
-            ESP_LOGW(TAG, "SD 卡初始化失败（可能未插卡），白噪音功能不可用");
-        }
     }
 
     void InitializeButtons() { 
@@ -393,24 +382,21 @@ private:
 
         // ===== 番茄钟工具 =====
         mcp_server.AddTool("self.pomodoro.start",
-            "Start a countdown timer with optional white noise from SD card.\n"
+            "Start a countdown timer.\n"
             "Use when user says: '开始番茄钟', '专注25分钟', '倒计时10分钟', 'start pomodoro', '番茄工作法'\n"
             "Args:\n"
-            "  `minutes`: Countdown duration in minutes (default 25, range 1-120)\n"
-            "  `white_noise`: Whether to play white noise from SD card (default true)",
+            "  `minutes`: Countdown duration in minutes (default 25, range 1-120)",
             PropertyList({
-                Property("minutes", kPropertyTypeInteger, 1, 120),
-                Property("white_noise", kPropertyTypeBoolean)
+                Property("minutes", kPropertyTypeInteger, 1, 120)
             }),
             [this](const PropertyList& properties) -> ReturnValue {
                 int minutes = properties["minutes"].value<int>();
-                bool noise = properties["white_noise"].value<bool>();
 
                 if (minutes < 1) minutes = 1;
                 if (minutes > 120) minutes = 120;
 
                 auto& pomo = PomodoroManager::getInstance();
-                bool ok = pomo.start(minutes, noise);
+                bool ok = pomo.start(minutes);
                 
                 // 自动切换到番茄钟页面
                 if (ok && display_) {
@@ -421,15 +407,15 @@ private:
                 if (ok) {
                     char buf[128];
                     snprintf(buf, sizeof(buf), 
-                             "番茄钟已启动：%d 分钟倒计时，白噪音%s",
-                             minutes, noise ? "已开启" : "已关闭");
+                             "番茄钟已启动：%d 分钟倒计时",
+                             minutes);
                     return std::string(buf);
                 }
                 return std::string("番茄钟启动失败");
             });
 
         mcp_server.AddTool("self.pomodoro.stop",
-            "Stop the current Pomodoro timer and white noise.\n"
+            "Stop the current Pomodoro timer.\n"
             "Use when user says: '停止番茄钟', '结束专注', 'stop pomodoro', '不专注了'",
             PropertyList(),
             [this](const PropertyList&) -> ReturnValue {
@@ -730,7 +716,6 @@ public:
     CustomBoard() : boot_button_(BOOT_BUTTON_GPIO), user_button_(USER_BUTTON_GPIO) {    
         InitializeI2c();
         InitializeSensors();  // 在 I2C 初始化后立即初始化传感器
-        InitializeSdcard();   // SD 卡初始化（白噪音播放需要）
         InitializeButtons();     
         InitializeTools();
         InitializeLcdDisplay();

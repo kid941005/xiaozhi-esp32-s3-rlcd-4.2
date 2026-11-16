@@ -549,7 +549,7 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                         if (pomo_state == PomodoroManager::PAUSED) {
                             snprintf(pomo_status_buf, sizeof(pomo_status_buf), "已暂停，说“继续番茄钟”可恢复");
                         } else {
-                            snprintf(pomo_status_buf, sizeof(pomo_status_buf), "白噪音播放中，专注进行中");
+                            snprintf(pomo_status_buf, sizeof(pomo_status_buf), "专注进行中");
                         }
                         lv_label_set_long_mode(self->pomo_chat_status_label_, LV_LABEL_LONG_WRAP);
                         lv_label_set_text(self->pomo_chat_status_label_, pomo_status_buf);
