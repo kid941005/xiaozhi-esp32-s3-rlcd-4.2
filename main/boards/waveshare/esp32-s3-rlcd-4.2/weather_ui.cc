@@ -1,26 +1,40 @@
-// 天气站 2x2 卡片布局 UI
-// 
-// 负责创建天气站的所有 LVGL 控件：
-// - 状态栏（右上角白底胶囊：WiFi + 电池）
-// - 左上角温湿度标签
-// - 时钟卡片（左上）
-// - 日历卡片（右上）
-// - AI 对话卡片（左下）
-// - 备忘录卡片（右下）
-// - 基类占位控件（防止空指针崩溃）
+// 天气站 UI 布局（复刻微雪 RLCD 4.2 成品界面）
+//
+// 横屏 400×300：
+//   状态栏：左上「环境 32.1°C 39%」   右上白底胶囊（WiFi + 电池 + 电量%）
+//   ┌───────────────┬───────────────┐
+//   │ 时钟卡 189×138 │ 待办卡 189×256 │
+//   │ 10月2日 星期五 │ 待办      ☑ ★ │
+//   │     17:18      │ ★ 抢火车票     │
+//   │ 十月初八 小雪  │ ★ 记得吃饭     │
+//   │ 成都 晴 23°C   │               │
+//   ├───────────────┤               │
+//   │ AI 卡 189×112  │               │
+//   └───────────────┴───────────────┘
+// 竖屏 300×400：时钟卡 → 待办卡 → AI 卡，整宽纵向堆叠
+//
+// 控件归属（成员变量定义在 custom_lcd_display.h）：
+//   day_label_     日期行「10月2日 星期五」
+//   time_label_    大字时钟「17:18」
+//   lunar_label_   农历/节气/节日「十月初八 小雪」
+//   weather_label_ 天气行「成都 晴 23°C」
+//   memo_rows_     待办列表容器（RefreshMemoDisplayInternal 动态生成行）
+//   chat_card_ 等  AI 对话卡片
 
 #include "custom_lcd_display.h"
+#include "material_symbols.h"
 #include <esp_log.h>
 
-// 声明天气站专用字体（从 MyWeatherStation 移植，字符集有限但够天气站用）
+// 天气站专用字体（从 MyWeatherStation 移植，字符集有限但够天气站用）
 LV_FONT_DECLARE(alibaba_puhui_16);
 LV_FONT_DECLARE(alibaba_puhui_24);
 LV_FONT_DECLARE(alibaba_puhui_48);
 LV_FONT_DECLARE(alibaba_black_64);
 
-// 声明小智自带字体（7415 个常用汉字，用于 AI 对话区域）
+// 小智自带字体（7415 个常用汉字，用于中文文案）
 LV_FONT_DECLARE(font_puhui_16_4);  // 16px 标准字体
-LV_FONT_DECLARE(font_puhui_14_1);  // 14px 小字体（用于系统信息显示）
+LV_FONT_DECLARE(font_puhui_14_1);  // 14px 小字体
+LV_FONT_DECLARE(font_material_symbols_16_4);  // 16px 图标字体（★ ☑）
 
 // 声明状态栏图标（从 MyWeatherStation 移植）
 LV_IMAGE_DECLARE(ui_img_wifi);
@@ -35,7 +49,7 @@ static const char *TAG = "WeatherUI";
 
 void CustomLcdDisplay::SetupWeatherUI() {
     DisplayLockGuard lock(this);
-    
+
     lv_obj_t *root = lv_screen_active();
     lv_obj_set_style_bg_color(root, lv_color_black(), 0);
     weather_page_ = lv_obj_create(root);
@@ -50,13 +64,12 @@ void CustomLcdDisplay::SetupWeatherUI() {
     lv_obj_t *screen = weather_page_;
 
     const lv_font_t *font_small  = &alibaba_puhui_16;
-    const lv_font_t *font_normal = &alibaba_puhui_24;
-    const lv_font_t *font_large  = &alibaba_puhui_48;
     const lv_font_t *font_clock  = &alibaba_black_64;
-    // 小智完整字库（7415 常用汉字，AI 对话区域专用）
-    const lv_font_t *font_ai     = &font_puhui_16_4;
+    const lv_font_t *font_ai     = &font_puhui_16_4;   // 7415 常用汉字
+    const lv_font_t *font_tiny   = &font_puhui_14_1;   // 14px
+    const lv_font_t *font_icon   = &font_material_symbols_16_4;
 
-    // ===== 状态栏（右上角白底胶囊）=====
+    // ===== 状态栏（右上角白底胶囊：WiFi + 电池 + 电量）=====
     lv_obj_t *status_bar = lv_obj_create(screen);
     lv_obj_set_size(status_bar, 115, 28);
     lv_obj_set_style_bg_opa(status_bar, LV_OPA_COVER, 0);
@@ -72,15 +85,12 @@ void CustomLcdDisplay::SetupWeatherUI() {
     lv_obj_set_flex_align(status_bar, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(status_bar, 5, 0);
 
-    // WiFi 图标（我们自己的图片图标，不给基类用）
     wifi_icon_img_ = lv_image_create(status_bar);
     lv_image_set_src(wifi_icon_img_, &ui_img_wifi_off);
 
-    // 电池图标
     battery_icon_img_ = lv_image_create(status_bar);
     lv_image_set_src(battery_icon_img_, &ui_img_battery_full);
 
-    // 电量百分比文字
     battery_pct_label_ = lv_label_create(status_bar);
     lv_obj_set_style_text_font(battery_pct_label_, font_small, 0);
     lv_obj_set_style_text_color(battery_pct_label_, lv_color_black(), 0);
@@ -91,191 +101,211 @@ void CustomLcdDisplay::SetupWeatherUI() {
     lv_obj_set_style_text_font(sensor_label_, font_small, 0);
     lv_obj_set_style_text_color(sensor_label_, lv_color_white(), 0);
     lv_obj_align(sensor_label_, LV_ALIGN_TOP_LEFT, 10, 8);
-    lv_label_set_text(sensor_label_, "--.-°C  --.-%");
+    lv_label_set_text(sensor_label_, "环境 --.-°C  --%");
 
-    // ===== 卡片布局：横屏 2×2 网格 / 竖屏 单列自上而下堆叠 =====
+    // ===== 卡片几何 =====
     const int pad = 8;
     const int gap = 6;
-    const int top_y = 36;
+    const int top = 36;
 #if UI_PORTRAIT
-    // 竖屏 300×400：时钟 → 日历 → AI → 备忘录 依次纵向堆叠，每张卡片整宽
-    const int col_w        = UI_SCR_W - pad * 2;            // 284
-    const int left_w       = col_w;
-    const int right_w      = col_w;
-    const int top_row_h    = 104;                            // 时钟卡高度
-    const int cal_y        = top_y + top_row_h + gap;        // 日历卡 y = 146
-    const int cal_h        = 100;                            // 日历卡高度
-    const int bot_y        = cal_y + cal_h + gap;            // AI 卡 y = 252
-    const int bot_row_h    = 80;                             // AI 卡高度
-    const int bot_card_w   = col_w;
-    const int music_card_w = col_w;
-    const int right_x      = pad;                            // 日历卡 x
-    const int memo_y       = bot_y + bot_row_h + gap;        // 备忘卡 y = 338
-    const int memo_h       = UI_SCR_H - memo_y - 4;          // 备忘卡高度 = 58
+    // 竖屏 300×400：时钟 → 待办 → AI，整宽纵向堆叠
+    const int col_w   = UI_SCR_W - pad * 2;                  // 284
+    const int clock_x = pad;
+    const int clock_y = top;
+    const int clock_w = col_w;
+    const int clock_h = 140;
+    const int todo_x  = pad;
+    const int todo_y  = clock_y + clock_h + gap;             // 182
+    const int todo_w  = col_w;
+    const int todo_h  = 138;
+    const int ai_x    = pad;
+    const int ai_y    = todo_y + todo_h + gap;               // 326
+    const int ai_w    = col_w;
+    const int ai_h    = UI_SCR_H - ai_y - pad;               // 66
 #else
-    const int top_row_h = 128;
-    const int bot_row_h = UI_SCR_H - top_y - top_row_h - gap - pad;  // = 122
-    const int left_w = 248;
-    const int right_w = UI_SCR_W - pad * 2 - left_w - gap;  // = 130
-    const int bot_y = top_y + top_row_h + gap;
-    const int bot_total_w = UI_SCR_W - pad * 2 - gap;
-    const int bot_card_w = bot_total_w * 2 / 3;  // AI 区域 = 252
-    const int music_card_w = bot_total_w - bot_card_w;  // 音乐区域 = 126
-    const int right_x = pad + left_w + gap;
-    const int cal_y = top_y;
-    const int cal_h = top_row_h;
-    const int memo_y = bot_y;
-    const int memo_h = bot_row_h;
+    // 横屏 400×300：左右两栏，左栏上下分时钟 / AI，右栏整高待办
+    const int col_w   = (UI_SCR_W - pad * 2 - gap) / 2;      // 189
+    const int clock_x = pad;
+    const int clock_y = top;
+    const int clock_w = col_w;
+    const int clock_h = 138;
+    const int todo_x  = pad + col_w + gap;                   // 203
+    const int todo_y  = top;
+    const int todo_w  = UI_SCR_W - pad * 2 - gap - col_w;    // 189
+    const int todo_h  = UI_SCR_H - top - pad;                // 256
+    const int ai_x    = pad;
+    const int ai_y    = clock_y + clock_h + gap;             // 180
+    const int ai_w    = col_w;
+    const int ai_h    = UI_SCR_H - ai_y - pad;               // 112
 #endif
 
-    // --- 左上：时钟卡片 ---
-    lv_obj_t *time_card = lv_obj_create(screen);
-    lv_obj_set_pos(time_card, pad, top_y);
-    lv_obj_set_size(time_card, left_w, top_row_h);
-    lv_obj_set_style_border_width(time_card, 2, 0);
-    lv_obj_set_style_border_color(time_card, lv_color_black(), 0);
-    lv_obj_set_style_radius(time_card, 15, 0);
-    lv_obj_set_style_bg_color(time_card, lv_color_white(), 0);
-    lv_obj_set_style_pad_all(time_card, 0, 0);
-    lv_obj_remove_flag(time_card, LV_OBJ_FLAG_SCROLLABLE);
+    // ===== 时钟卡片：日期 / 大字时间 / 农历 / 天气 =====
+    lv_obj_t *clock_card = lv_obj_create(screen);
+    lv_obj_set_pos(clock_card, clock_x, clock_y);
+    lv_obj_set_size(clock_card, clock_w, clock_h);
+    lv_obj_set_style_border_width(clock_card, 2, 0);
+    lv_obj_set_style_border_color(clock_card, lv_color_black(), 0);
+    lv_obj_set_style_radius(clock_card, 15, 0);
+    lv_obj_set_style_bg_color(clock_card, lv_color_white(), 0);
+    lv_obj_set_style_pad_all(clock_card, 0, 0);
+    lv_obj_remove_flag(clock_card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_clip_corner(clock_card, true, 0);
 
-    // 时钟卡内垂直布局：大字时间在上，农历/节气在下
-#if UI_PORTRAIT
-    const int clock_y = 2;
-    const int lunar_y = -2;
-#else
-    const int clock_y = 10;
-    const int lunar_y = -8;
-#endif
+    // 日期行：「10月2日 星期五」
+    day_label_ = lv_label_create(clock_card);
+    lv_obj_set_style_text_font(day_label_, font_ai, 0);
+    lv_obj_set_style_text_color(day_label_, lv_color_black(), 0);
+    lv_obj_align(day_label_, LV_ALIGN_TOP_MID, 0, 10);
+    lv_label_set_text(day_label_, "--月--日 星期-");
 
-    time_label_ = lv_label_create(time_card);
+    // 大字时钟
+    time_label_ = lv_label_create(clock_card);
     lv_obj_set_style_text_color(time_label_, lv_color_black(), 0);
     lv_obj_set_style_text_font(time_label_, font_clock, 0);
-    lv_obj_set_style_text_letter_space(time_label_, 2, 0);
-    lv_obj_align(time_label_, LV_ALIGN_TOP_MID, 0, clock_y);
+    lv_obj_set_style_text_letter_space(time_label_, 0, 0);
+    lv_obj_align(time_label_, LV_ALIGN_TOP_MID, 0, 26);
     lv_label_set_text(time_label_, "00:00");
 
-    // 农历行：如「十月初七 小雪」「八月十五 中秋」
-    // 必须用 font_puhui_16_4（7415 常用汉字），alibaba_puhui_16 缺节气/节日生僻字
-    lunar_label_ = lv_label_create(time_card);
+    // 农历 / 节气 / 节日（14px，生僻字用 font_puhui_14_1）
+    lunar_label_ = lv_label_create(clock_card);
     lv_obj_set_style_text_color(lunar_label_, lv_color_black(), 0);
-    lv_obj_set_style_text_font(lunar_label_, font_ai, 0);
-    lv_obj_align(lunar_label_, LV_ALIGN_BOTTOM_MID, 0, lunar_y);
+    lv_obj_set_style_text_font(lunar_label_, font_tiny, 0);
+    lv_obj_align(lunar_label_, LV_ALIGN_BOTTOM_MID, 0, -28);
     lv_label_set_text(lunar_label_, "");
 
-    // 时钟卡片内边框装饰
-    lv_obj_t *time_inner = lv_obj_create(time_card);
-    lv_obj_set_size(time_inner, left_w - 14, top_row_h - 14);
-    lv_obj_center(time_inner);
-    lv_obj_set_style_bg_opa(time_inner, 0, 0);
-    lv_obj_set_style_border_width(time_inner, 2, 0);
-    lv_obj_set_style_border_color(time_inner, lv_color_black(), 0);
-    lv_obj_set_style_radius(time_inner, 10, 0);
-    lv_obj_remove_flag(time_inner, LV_OBJ_FLAG_SCROLLABLE);
-
-    // --- 右上（竖屏为第二行）：日历卡片 ---
-    int day_header_h = 40;
-
-    lv_obj_t *calendar_card = lv_obj_create(screen);
-    lv_obj_set_pos(calendar_card, right_x, cal_y);
-    lv_obj_set_size(calendar_card, right_w, cal_h);
-    lv_obj_set_style_border_width(calendar_card, 3, 0);
-    lv_obj_set_style_border_color(calendar_card, lv_color_white(), 0);
-    lv_obj_set_style_radius(calendar_card, 15, 0);
-    lv_obj_set_style_bg_color(calendar_card, lv_color_black(), 0);
-    lv_obj_set_style_pad_all(calendar_card, 0, 0);
-    lv_obj_remove_flag(calendar_card, LV_OBJ_FLAG_SCROLLABLE);
-
-    // "TUE" 星期标签
-    day_label_ = lv_label_create(calendar_card);
-    lv_obj_set_style_text_font(day_label_, font_normal, 0);
-    lv_obj_set_style_text_color(day_label_, lv_color_white(), 0);
-    lv_obj_align(day_label_, LV_ALIGN_TOP_MID, 0, 8);
-    lv_label_set_text(day_label_, "---");
-
-    // 日期数字白色区域
-    int date_area_h = 55;
-    lv_obj_t *date_area = lv_obj_create(calendar_card);
-    lv_obj_set_pos(date_area, 6, day_header_h);
-    lv_obj_set_size(date_area, right_w - 18, date_area_h);
-    lv_obj_set_style_bg_color(date_area, lv_color_white(), 0);
-    lv_obj_set_style_border_width(date_area, 0, 0);
-    lv_obj_set_style_radius(date_area, 10, 0);
-    lv_obj_set_style_pad_all(date_area, 0, 0);
-    lv_obj_remove_flag(date_area, LV_OBJ_FLAG_SCROLLABLE);
-
-    date_num_label_ = lv_label_create(date_area);
-    lv_obj_set_style_text_font(date_num_label_, font_large, 0);
-    lv_obj_set_style_text_color(date_num_label_, lv_color_black(), 0);
-    lv_obj_set_style_text_align(date_num_label_, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_center(date_num_label_);
-    lv_label_set_text(date_num_label_, "--");
-
-    // 天气标签
-    weather_label_ = lv_label_create(calendar_card);
-    lv_obj_set_style_text_font(weather_label_, font_small, 0);
-    lv_obj_set_style_text_color(weather_label_, lv_color_white(), 0);
+    // 天气行：「成都 晴 23°C」
+    weather_label_ = lv_label_create(clock_card);
+    lv_obj_set_style_text_font(weather_label_, font_ai, 0);
+    lv_obj_set_style_text_color(weather_label_, lv_color_black(), 0);
     lv_obj_set_style_text_align(weather_label_, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(weather_label_, LV_ALIGN_BOTTOM_MID, 0, -6);
+    lv_obj_align(weather_label_, LV_ALIGN_BOTTOM_MID, 0, -8);
     lv_label_set_text(weather_label_, "-- --°C");
 
-    // --- 左下：AI 对话卡片（小智接管这里）---
+    // 内框装饰（双边框，和参考图一致）
+    lv_obj_t *clock_inner = lv_obj_create(clock_card);
+    lv_obj_set_size(clock_inner, clock_w - 12, clock_h - 12);
+    lv_obj_center(clock_inner);
+    lv_obj_set_style_bg_opa(clock_inner, 0, 0);
+    lv_obj_set_style_border_width(clock_inner, 2, 0);
+    lv_obj_set_style_border_color(clock_inner, lv_color_black(), 0);
+    lv_obj_set_style_radius(clock_inner, 10, 0);
+    lv_obj_remove_flag(clock_inner, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(clock_inner, LV_OBJ_FLAG_CLICKABLE);
+
+    // ===== 待办卡片（右侧整高）=====
+    lv_obj_t *todo_card = lv_obj_create(screen);
+    lv_obj_set_pos(todo_card, todo_x, todo_y);
+    lv_obj_set_size(todo_card, todo_w, todo_h);
+    lv_obj_set_style_border_width(todo_card, 2, 0);
+    lv_obj_set_style_border_color(todo_card, lv_color_black(), 0);
+    lv_obj_set_style_radius(todo_card, 15, 0);
+    lv_obj_set_style_bg_color(todo_card, lv_color_white(), 0);
+    lv_obj_set_style_pad_all(todo_card, 0, 0);
+    lv_obj_remove_flag(todo_card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_clip_corner(todo_card, true, 0);
+
+    lv_obj_t *todo_title = lv_label_create(todo_card);
+    lv_obj_set_style_text_font(todo_title, font_ai, 0);
+    lv_obj_set_style_text_color(todo_title, lv_color_black(), 0);
+    lv_obj_set_style_text_letter_space(todo_title, 1, 0);
+    lv_obj_align(todo_title, LV_ALIGN_TOP_LEFT, 12, 8);
+    lv_label_set_text(todo_title, "待办");
+
+    // 标题右侧两个图标（☑ ★），与参考图一致
+    lv_obj_t *todo_icon_star = lv_label_create(todo_card);
+    lv_obj_set_style_text_font(todo_icon_star, font_icon, 0);
+    lv_obj_set_style_text_color(todo_icon_star, lv_color_black(), 0);
+    lv_obj_align(todo_icon_star, LV_ALIGN_TOP_RIGHT, -12, 10);
+    lv_label_set_text(todo_icon_star, MATERIAL_SYMBOLS_STAR);
+
+    lv_obj_t *todo_icon_check = lv_label_create(todo_card);
+    lv_obj_set_style_text_font(todo_icon_check, font_icon, 0);
+    lv_obj_set_style_text_color(todo_icon_check, lv_color_black(), 0);
+    lv_obj_align(todo_icon_check, LV_ALIGN_TOP_RIGHT, -34, 10);
+    lv_label_set_text(todo_icon_check, MATERIAL_SYMBOLS_CHECK_CIRCLE);
+
+    // 标题下分隔线
+    lv_obj_t *todo_sep = lv_obj_create(todo_card);
+    lv_obj_set_size(todo_sep, todo_w - 24, 2);
+    lv_obj_set_style_bg_color(todo_sep, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(todo_sep, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(todo_sep, 0, 0);
+    lv_obj_set_style_radius(todo_sep, 1, 0);
+    lv_obj_align(todo_sep, LV_ALIGN_TOP_MID, 0, 38);
+    lv_obj_remove_flag(todo_sep, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(todo_sep, LV_OBJ_FLAG_CLICKABLE);
+
+    // 待办列表容器：每行 = ★ + 文本（文本自动换行）
+    memo_rows_w_ = todo_w - 24;
+    memo_rows_ = lv_obj_create(todo_card);
+    lv_obj_set_pos(memo_rows_, 12, 46);
+    lv_obj_set_size(memo_rows_, memo_rows_w_, todo_h - 54);
+    lv_obj_set_style_bg_opa(memo_rows_, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(memo_rows_, 0, 0);
+    lv_obj_set_style_pad_all(memo_rows_, 0, 0);
+    lv_obj_set_style_pad_row(memo_rows_, 4, 0);
+    lv_obj_remove_flag(memo_rows_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(memo_rows_, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(memo_rows_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+
+    // ===== AI 对话卡片（左下）=====
     // 布局：[左侧表情区 64px | 分隔线 | 右侧对话文字区]
-    const int emotion_w = 64;  // 表情区域宽度
+    const int emotion_w = 64;
+    const bool compact_ai = (ai_h < 100);
+    const int emo_img_size = compact_ai ? 32 : 48;
+    const int emo_img_dy   = compact_ai ? -12 : -16;
+    const int emo_lbl_dy   = compact_ai ? 16 : 26;
+    const lv_font_t *emo_lbl_font = compact_ai ? font_tiny : font_ai;
 
     chat_card_ = lv_obj_create(screen);
-    lv_obj_set_pos(chat_card_, pad, bot_y);
-    lv_obj_set_size(chat_card_, bot_card_w, bot_row_h);
+    lv_obj_set_pos(chat_card_, ai_x, ai_y);
+    lv_obj_set_size(chat_card_, ai_w, ai_h);
     lv_obj_set_style_border_width(chat_card_, 2, 0);
     lv_obj_set_style_border_color(chat_card_, lv_color_black(), 0);
     lv_obj_set_style_radius(chat_card_, 15, 0);
     lv_obj_set_style_bg_color(chat_card_, lv_color_white(), 0);
     lv_obj_set_style_pad_all(chat_card_, 0, 0);
     lv_obj_remove_flag(chat_card_, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_clip_corner(chat_card_, true, 0);  // 裁剪圆角边界（防止子元素溢出）
+    lv_obj_set_style_clip_corner(chat_card_, true, 0);
 
-    // AI 卡片内边框装饰（同时作为文字滚动的裁剪容器）
     lv_obj_t *chat_inner = lv_obj_create(chat_card_);
-    lv_obj_set_size(chat_inner, bot_card_w - 14, bot_row_h - 14);
+    lv_obj_set_size(chat_inner, ai_w - 12, ai_h - 12);
     lv_obj_center(chat_inner);
     lv_obj_set_style_bg_opa(chat_inner, 0, 0);
     lv_obj_set_style_border_width(chat_inner, 2, 0);
     lv_obj_set_style_border_color(chat_inner, lv_color_black(), 0);
     lv_obj_set_style_radius(chat_inner, 10, 0);
-    lv_obj_set_style_pad_all(chat_inner, 0, 0);  // 重要：清除内边距，让子元素可以精确定位
+    lv_obj_set_style_pad_all(chat_inner, 0, 0);
     lv_obj_remove_flag(chat_inner, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_clip_corner(chat_inner, true, 0);  // 🔑 裁剪内边框，防止文字溢出
+    lv_obj_set_style_clip_corner(chat_inner, true, 0);
 
-    // 左侧表情区域（上方 emoji 图片 + 下方文字标签）
-    // 注意：现在所有元素都是 chat_inner 的子元素，位置需要相对 chat_inner 调整
-    emotion_img_ = lv_image_create(chat_inner);  // 父容器改为 chat_inner
-    lv_obj_set_size(emotion_img_, 48, 48);
+    emotion_img_ = lv_image_create(chat_inner);
+    lv_obj_set_size(emotion_img_, emo_img_size, emo_img_size);
     lv_image_set_inner_align(emotion_img_, LV_IMAGE_ALIGN_CENTER);
-    lv_obj_align(emotion_img_, LV_ALIGN_LEFT_MID, 16, -16);
-    lv_obj_add_flag(emotion_img_, LV_OBJ_FLAG_HIDDEN);  // 初始隐藏，等 SetEmotion 设置图片
+    lv_obj_align(emotion_img_, LV_ALIGN_LEFT_MID, 14, emo_img_dy);
+    lv_obj_add_flag(emotion_img_, LV_OBJ_FLAG_HIDDEN);
 
-    emotion_label_ = lv_label_create(chat_inner);  // 父容器改为 chat_inner
-    lv_obj_set_style_text_font(emotion_label_, font_ai, 0);  // 用小智完整字库，确保所有中文都能渲染
+    emotion_label_ = lv_label_create(chat_inner);
+    lv_obj_set_style_text_font(emotion_label_, emo_lbl_font, 0);
     lv_obj_set_style_text_color(emotion_label_, lv_color_black(), 0);
     lv_obj_set_style_text_align(emotion_label_, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_width(emotion_label_, emotion_w);
     lv_label_set_long_mode(emotion_label_, LV_LABEL_LONG_WRAP);
-    lv_obj_align(emotion_label_, LV_ALIGN_LEFT_MID, 8, 28);
+    lv_obj_align(emotion_label_, LV_ALIGN_LEFT_MID, 8, emo_lbl_dy);
     lv_label_set_text(emotion_label_, "待命");
 
-    // 竖分隔线
-    lv_obj_t *divider = lv_obj_create(chat_inner);  // 父容器改为 chat_inner
-    lv_obj_set_size(divider, 2, bot_row_h - 30);
+    lv_obj_t *divider = lv_obj_create(chat_inner);
+    lv_obj_set_size(divider, 2, ai_h - 28);
     lv_obj_set_style_bg_color(divider, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(divider, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(divider, 0, 0);
     lv_obj_set_style_radius(divider, 1, 0);
     lv_obj_align(divider, LV_ALIGN_LEFT_MID, emotion_w + 14, 0);
     lv_obj_remove_flag(divider, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(divider, LV_OBJ_FLAG_CLICKABLE);
 
-    // 右侧对话文字区
-    int text_area_w = bot_card_w - emotion_w - 14 - 2 - 20;  // 减去表情区+间距+分隔线+右边距
-    chat_status_label_ = lv_label_create(chat_inner);  // 🔑 父容器改为 chat_inner（关键修改）
+    int text_area_w = ai_w - emotion_w - 14 - 2 - 20;
+    chat_status_label_ = lv_label_create(chat_inner);
     lv_obj_set_style_text_font(chat_status_label_, font_ai, 0);
     lv_obj_set_style_text_color(chat_status_label_, lv_color_black(), 0);
     lv_obj_set_style_text_align(chat_status_label_, LV_TEXT_ALIGN_LEFT, 0);
@@ -285,50 +315,7 @@ void CustomLcdDisplay::SetupWeatherUI() {
     lv_obj_align(chat_status_label_, LV_ALIGN_LEFT_MID, emotion_w + 20, 0);
     lv_label_set_text(chat_status_label_, "AI 待命");
 
-    // --- 右下：备忘录/待办卡片 ---
-    lv_obj_t *memo_card = lv_obj_create(screen);
-    lv_obj_set_pos(memo_card, right_x, memo_y);
-    lv_obj_set_size(memo_card, music_card_w, memo_h);
-    lv_obj_set_style_border_width(memo_card, 2, 0);
-    lv_obj_set_style_border_color(memo_card, lv_color_black(), 0);
-    lv_obj_set_style_radius(memo_card, 15, 0);
-    lv_obj_set_style_bg_color(memo_card, lv_color_white(), 0);
-    lv_obj_set_style_pad_all(memo_card, 6, 0);
-    lv_obj_remove_flag(memo_card, LV_OBJ_FLAG_SCROLLABLE);
-
-    // 顶部标题 "MEMO"
-    lv_obj_t *memo_title = lv_label_create(memo_card);
-    lv_obj_set_style_text_font(memo_title, font_small, 0);
-    lv_obj_set_style_text_color(memo_title, lv_color_black(), 0);
-    lv_obj_align(memo_title, LV_ALIGN_TOP_LEFT, 2, 0);
-    lv_label_set_text(memo_title, "MEMO");
-
-    // 标题下分隔线
-    lv_obj_t *memo_sep = lv_obj_create(memo_card);
-    lv_obj_set_size(memo_sep, music_card_w - 24, 1);
-    lv_obj_set_style_bg_color(memo_sep, lv_color_black(), 0);
-    lv_obj_set_style_border_width(memo_sep, 0, 0);
-    lv_obj_set_style_radius(memo_sep, 0, 0);
-    lv_obj_align(memo_sep, LV_ALIGN_TOP_MID, 0, 20);
-    lv_obj_remove_flag(memo_sep, LV_OBJ_FLAG_SCROLLABLE);
-
-    // 备忘列表（多行文字，每行一条：时间 + 内容）
-    memo_list_label_ = lv_label_create(memo_card);
-    lv_obj_set_style_text_font(memo_list_label_, font_ai, 0);  // 小智完整字库
-    lv_obj_set_style_text_color(memo_list_label_, lv_color_black(), 0);
-    lv_obj_set_style_text_align(memo_list_label_, LV_TEXT_ALIGN_LEFT, 0);
-    lv_obj_set_width(memo_list_label_, music_card_w - 20);
-    lv_label_set_long_mode(memo_list_label_, LV_LABEL_LONG_CLIP);  // 超出裁剪，不滚动
-    lv_obj_set_height(memo_list_label_, bot_row_h - 32);  // 标题+分隔线占约 26px，留余量
-    lv_obj_align(memo_list_label_, LV_ALIGN_TOP_LEFT, 2, 26);
-    lv_label_set_text(memo_list_label_, "暂无待办");
-
     // 给基类创建隐藏的占位控件（防止基类方法空指针崩溃）
-    // SetTheme / UpdateStatusBar 等方法会操作这些成员变量，
-    // 必须给它们赋值合法的 LVGL 对象
-    
-    // container_ 是 SetTheme 必须操作的（设置背景图/颜色），
-    // 创建一个隐藏的全屏容器
     container_ = lv_obj_create(screen);
     lv_obj_set_size(container_, 1, 1);
     lv_obj_add_flag(container_, LV_OBJ_FLAG_HIDDEN);
@@ -336,11 +323,11 @@ void CustomLcdDisplay::SetupWeatherUI() {
     network_label_ = lv_label_create(screen);
     lv_label_set_text(network_label_, "");
     lv_obj_add_flag(network_label_, LV_OBJ_FLAG_HIDDEN);
-    
+
     battery_label_ = lv_label_create(screen);
     lv_label_set_text(battery_label_, "");
     lv_obj_add_flag(battery_label_, LV_OBJ_FLAG_HIDDEN);
-    
+
     status_label_ = lv_label_create(screen);
     lv_label_set_text(status_label_, "");
     lv_obj_add_flag(status_label_, LV_OBJ_FLAG_HIDDEN);
@@ -348,11 +335,11 @@ void CustomLcdDisplay::SetupWeatherUI() {
     notification_label_ = lv_label_create(screen);
     lv_label_set_text(notification_label_, "");
     lv_obj_add_flag(notification_label_, LV_OBJ_FLAG_HIDDEN);
-    
+
     mute_label_ = lv_label_create(screen);
     lv_label_set_text(mute_label_, "");
     lv_obj_add_flag(mute_label_, LV_OBJ_FLAG_HIDDEN);
-    
+
     low_battery_popup_ = lv_obj_create(screen);
     lv_obj_set_scrollbar_mode(low_battery_popup_, LV_SCROLLBAR_MODE_OFF);
     lv_obj_set_size(low_battery_popup_, (UI_SCR_W - 20) < 320 ? (UI_SCR_W - 20) : 320, 42);
@@ -372,17 +359,21 @@ void CustomLcdDisplay::SetupWeatherUI() {
     lv_obj_set_width(low_battery_label_, UI_SCR_W - 40);
     lv_obj_center(low_battery_label_);
     lv_label_set_text(low_battery_label_, "电量低，请尽快充电");
-    
+
     // emoji 相关（SetEmotion 基类方法会用到）
     emoji_label_ = lv_label_create(screen);
     lv_label_set_text(emoji_label_, "");
     lv_obj_add_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
-    
+
     emoji_image_ = lv_image_create(screen);
     lv_obj_add_flag(emoji_image_, LV_OBJ_FLAG_HIDDEN);
 
     // chat_message_label_ 指向我们的 AI 状态标签（让基类方法能更新它）
     chat_message_label_ = chat_status_label_;
 
-    ESP_LOGI(TAG, "天气站 UI 创建完成");
+    // 首次填充待办列表（已持锁，用 Internal 版本）
+    RefreshMemoDisplayInternal();
+
+    ESP_LOGI(TAG, "天气站 UI 创建完成（时钟卡 %dx%d, 待办卡 %dx%d, AI 卡 %dx%d）",
+             clock_w, clock_h, todo_w, todo_h, ai_w, ai_h);
 }

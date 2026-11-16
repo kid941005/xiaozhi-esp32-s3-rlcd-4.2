@@ -16,16 +16,18 @@
 
 // 天气站 + AI 混合显示
 // 
-// 屏幕布局 (400x300, 1-bit 单色 RLCD)：
-// ┌──────────────────┬──────────────────┐
-// │   时钟卡片(248x128) │  日历卡片(130x128) │
-// │    "14:30"        │   TUE / 15      │
-// │                   │   晴 25°C       │
-// ├──────────────────┼──────────────────┤
-// │   AI 对话(252x122) │  备忘录(126x122)  │
-// │  "聆听中..."      │   MEMO          │
-// └──────────────────┴──────────────────┘
-// 状态栏浮在右上角（WiFi + 电池 + 温湿度）
+// 屏幕布局 (400x300, 1-bit 单色 RLCD)，复刻微雪成品界面：
+// ┌───────────────┬───────────────┐
+// │ 时钟卡(189x138)│ 待办卡(189x256)│
+// │ 10月2日 星期五 │ 待办      ☑ ★ │
+// │     17:18     │ ★ 抢火车票     │
+// │ 十月初八 小雪  │ ★ 记得吃饭     │
+// │ 成都 晴 23°C  │               │
+// ├───────────────┤               │
+// │ AI 卡(189x112)│               │
+// └───────────────┴───────────────┘
+// 状态栏浮在顶部（左温湿度，右上 WiFi + 电池胶囊）
+// 竖屏 300x400：时钟卡 → 待办卡 → AI 卡 整宽纵向堆叠
 //
 // 代码拆分为多个文件：
 //   rlcd_driver.h/cc      - RLCD 硬件驱动层（SPI、像素映射、初始化命令）
@@ -74,14 +76,11 @@ private:
     // 状态栏（右上角浮动胶囊）
     lv_obj_t *sensor_label_ = nullptr;      // 左上角温湿度标签
     
-    // 时钟卡片（左上）
+    // 时钟卡片（左上/竖屏顶部）
+    lv_obj_t *day_label_ = nullptr;         // 日期行 "10月2日 星期五"
     lv_obj_t *time_label_ = nullptr;        // 大字时钟 "14:30"
     lv_obj_t *lunar_label_ = nullptr;       // 农历/节气/节日 "十月初七 小雪"
-    
-    // 日历卡片（右上）
-    lv_obj_t *day_label_ = nullptr;         // 星期 "TUE"
-    lv_obj_t *date_num_label_ = nullptr;    // 日期 "15"
-    lv_obj_t *weather_label_ = nullptr;     // 天气 "晴 25°C"
+    lv_obj_t *weather_label_ = nullptr;     // 天气行 "成都 晴 23°C"
     
     // AI 对话卡片（左下）
     lv_obj_t *chat_card_ = nullptr;         // AI 卡片容器
@@ -89,8 +88,9 @@ private:
     lv_obj_t *emotion_label_ = nullptr;     // 表情文字（左侧下方）
     lv_obj_t *emotion_img_ = nullptr;       // 表情图片（左侧上方，小智自带 emoji）
 
-    // 备忘录卡片（右下）
-    lv_obj_t *memo_list_label_ = nullptr;     // 多行备忘列表文字
+    // 待办卡片（右侧整高）
+    lv_obj_t *memo_rows_ = nullptr;           // 待办列表容器（每行 = ★ + 文本）
+    int memo_rows_w_ = 160;                   // 待办行可用宽度（布局时确定）
     lv_obj_t *music_title_label_ = nullptr;   // 音乐页面：歌名
     lv_obj_t *music_artist_label_ = nullptr;  // 音乐页面：歌手
     lv_obj_t *music_lyric_prev_label_ = nullptr;  // 音乐页面：上一句歌词（淡色）

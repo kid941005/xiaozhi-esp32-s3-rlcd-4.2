@@ -217,12 +217,12 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                 if (self->time_label_) lv_label_set_text(self->time_label_, time_buf);
                 if (self->music_time_label_) lv_label_set_text(self->music_time_label_, time_buf);
 
-                const char *weeks_en[] = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
-                if (self->day_label_) lv_label_set_text(self->day_label_, weeks_en[timeinfo.tm_wday]);
-
-                char date_buf[8];
-                snprintf(date_buf, sizeof(date_buf), "%d", timeinfo.tm_mday);
-                if (self->date_num_label_) lv_label_set_text(self->date_num_label_, date_buf);
+                // 日期行：「10月2日 星期五」
+                const char *weeks_zh[] = {"日", "一", "二", "三", "四", "五", "六"};
+                char date_buf[32];
+                snprintf(date_buf, sizeof(date_buf), "%d月%d日 星期%s",
+                         timeinfo.tm_mon + 1, timeinfo.tm_mday, weeks_zh[timeinfo.tm_wday]);
+                if (self->day_label_) lv_label_set_text(self->day_label_, date_buf);
 
                 // 农历 / 节气 / 节日（跨天自然由分钟刷新带出）
                 // 未校时（1970）不显示，避免出现 1969 年农历
@@ -234,7 +234,7 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                 }
 
                 self->last_min_ = timeinfo.tm_min;
-                ESP_LOGI(TAG, "时间已更新: %s, %s, %d日", time_buf, weeks_en[timeinfo.tm_wday], timeinfo.tm_mday);
+                ESP_LOGI(TAG, "时间已更新: %s, %s", time_buf, date_buf);
             }
         }  // DisplayLockGuard 自动释放
 

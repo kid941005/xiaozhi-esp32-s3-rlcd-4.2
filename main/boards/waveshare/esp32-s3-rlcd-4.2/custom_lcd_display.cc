@@ -31,6 +31,11 @@
 #include "application.h"
 #include "lvgl_theme.h"
 #include "managers/power_manager.h"
+#include "material_symbols.h"
+
+// 中文文案用 7415 常用汉字字库，待办行图标用 material symbols（★ ☑）
+LV_FONT_DECLARE(font_puhui_16_4);
+LV_FONT_DECLARE(font_material_symbols_16_4);
 
 static const char *TAG = "CustomDisplay";
 
@@ -231,56 +236,80 @@ void CustomLcdDisplay::LoadMemoFromNvs() {
 }
 
 // 内部版本：不获取锁（调用者必须已持有 DisplayLock）
+// 每行 = ★ 图标 + 文本（文本自动换行），和参考界面的待办列表一致
 void CustomLcdDisplay::RefreshMemoDisplayInternal() {
-    if (!memo_list_label_) return;
+    if (!memo_rows_) return;
+
+    // 清空旧行（lv_obj_clean 会一并删除子对象）
+    lv_obj_clean(memo_rows_);
 
     // 从 NVS 读取 JSON 数组
     Settings settings("memo", false);
     std::string json_str = settings.GetString("items", "");
 
-    if (json_str.empty()) {
-        lv_label_set_text(memo_list_label_, "暂无待办");
-        return;
-    }
+    cJSON *arr = json_str.empty() ? nullptr : cJSON_Parse(json_str.c_str());
+    const int count = (arr && cJSON_IsArray(arr)) ? cJSON_GetArraySize(arr) : 0;
 
-    cJSON *arr = cJSON_Parse(json_str.c_str());
-    if (!arr || !cJSON_IsArray(arr)) {
-        lv_label_set_text(memo_list_label_, "暂无待办");
+    if (count == 0) {
+        lv_obj_t *empty = lv_label_create(memo_rows_);
+        lv_obj_set_style_text_font(empty, &font_puhui_16_4, 0);
+        lv_obj_set_style_text_color(empty, lv_color_black(), 0);
+        lv_label_set_text(empty, "暂无待办");
         if (arr) cJSON_Delete(arr);
         return;
     }
 
-    // 格式化每条备忘为一行: "时间 内容"
-    // 卡片高度约 90px，16px 字体每行约 18px，最多显示约 5 行
-    std::string display_text;
-    int count = cJSON_GetArraySize(arr);
-    for (int i = 0; i < count && i < 5; i++) {
+    const int row_w = memo_rows_w_;
+
+    for (int i = 0; i < count && i < 6; i++) {
         cJSON *item = cJSON_GetArrayItem(arr, i);
         cJSON *t = cJSON_GetObjectItem(item, "t");
         cJSON *c = cJSON_GetObjectItem(item, "c");
 
-        if (i > 0) display_text += "\n";
+        lv_obj_t *row = lv_obj_create(memo_rows_);
+        lv_obj_set_width(row, row_w);
+        lv_obj_set_height(row, LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(row, 0, 0);
+        lv_obj_set_style_pad_all(row, 0, 0);
+        lv_obj_set_style_pad_column(row, 4, 0);
+        lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 
-        // 格式：[时间] 内容  或  · 内容（无时间时）
+        lv_obj_t *icon = lv_label_create(row);
+        lv_obj_set_style_text_font(icon, &font_material_symbols_16_4, 0);
+        lv_obj_set_style_text_color(icon, lv_color_black(), 0);
+        lv_label_set_text(icon, MATERIAL_SYMBOLS_STAR);
+
+        lv_obj_t *text = lv_label_create(row);
+        lv_obj_set_style_text_font(text, &font_puhui_16_4, 0);
+        lv_obj_set_style_text_color(text, lv_color_black(), 0);
+        lv_obj_set_style_text_line_space(text, 2, 0);
+        lv_obj_set_width(text, row_w - 20);
+        lv_label_set_long_mode(text, LV_LABEL_LONG_WRAP);
+
+        std::string line;
         if (t && cJSON_IsString(t) && strlen(t->valuestring) > 0) {
-            display_text += t->valuestring;
-            display_text += " ";
-        } else {
-            display_text += "· ";
+            line = t->valuestring;
+            line += " ";
         }
         if (c && cJSON_IsString(c)) {
-            display_text += c->valuestring;
+            line += c->valuestring;
         }
+        if (line.empty()) line = "备忘提醒";
+        lv_label_set_text(text, line.c_str());
     }
 
-    // 如果超过 5 条，提示还有更多
-    if (count > 5) {
-        display_text += "\n...还有" + std::to_string(count - 5) + "条";
+    if (count > 6) {
+        lv_obj_t *more = lv_label_create(memo_rows_);
+        lv_obj_set_style_text_font(more, &font_puhui_16_4, 0);
+        lv_obj_set_style_text_color(more, lv_color_black(), 0);
+        lv_label_set_text_fmt(more, "…还有%d条", count - 6);
     }
 
     cJSON_Delete(arr);
-    lv_label_set_text(memo_list_label_, display_text.c_str());
-    ESP_LOGI(TAG, "备忘列表已刷新，共 %d 条", count);
+    ESP_LOGI(TAG, "待办列表已刷新，共 %d 条", count);
 }
 
 // 外部版本：自动获取锁（供 MCP 工具等外部调用）
