@@ -24,6 +24,7 @@
 LV_FONT_DECLARE(font_puhui_14_1);
 LV_FONT_DECLARE(font_puhui_16_4);
 #include "managers/weather_manager.h"
+#include "managers/todo_mcp_client.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
@@ -600,6 +601,28 @@ private:
                 ESP_LOGI(TAG, "待办已同步: %d 条", count);
                 return std::string("已同步 ") + std::to_string(count) + " 条待办到屏幕";
             });
+
+        // 配置待办 MCP 接入点：设备会自己周期拉取 list_todos 并刷新待办卡
+        mcp_server.AddTool("self.todo.set_url",
+            "Configure the MCP endpoint the device uses to pull today's todos by itself.\n"
+            "The device connects to this websocket JSON-RPC endpoint and calls list_todos.\n"
+            "Use only when the user asks to change the todo service address.\n"
+            "Args:\n"
+            "  url: websocket URL starting with ws:// or wss://, usually ending with "
+            "/mcp_endpoint/call/?token=...",
+            PropertyList({
+                Property("url", kPropertyTypeString)
+            }),
+            [this](const PropertyList& properties) -> ReturnValue {
+                auto url = properties["url"].value<std::string>();
+                if (url.rfind("ws://", 0) != 0 && url.rfind("wss://", 0) != 0) {
+                    return std::string("地址必须以 ws:// 或 wss:// 开头");
+                }
+                TodoMcpClient::GetInstance().SetUrl(url);
+                TodoMcpClient::GetInstance().RequestRefresh();
+                ESP_LOGI(TAG, "待办 MCP 地址已更新: %s", url.c_str());
+                return std::string("待办 MCP 地址已保存，稍后自动拉取");
+            });
     }
 
     void InitializeLcdDisplay() {
@@ -618,6 +641,14 @@ private:
 
         // 启动天气网络拉取任务（独立任务，避免 HTTP 阻塞 LVGL 刷新）
         xTaskCreate(WeatherFetchTask, "weather_fetch", 8192, nullptr, 2, nullptr);
+
+        // 启动待办 MCP 拉取任务：周期性调用外部 MCP 接入点的 list_todos，
+        // 把当日待办写到右侧待办卡（独立任务 + 独立 websocket 连接）
+        TodoMcpClient::GetInstance().Start([this]() {
+            if (display_ != nullptr) {
+                display_->RefreshMemoDisplay();
+            }
+        });
     }
 
     uint16_t BatterygetVoltage(void) {
@@ -718,6 +749,8 @@ public:
     virtual void SetNetworkEventCallback(NetworkEventCallback callback) override {
         WifiBoard::SetNetworkEventCallback([callback](NetworkEvent event, const std::string& data) {
             if (event == NetworkEvent::Connected) {
+                // 网络刚连上：立刻拉一次待办
+                TodoMcpClient::GetInstance().RequestRefresh();
                 esp_netif_t* netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
                 if (netif != nullptr) {
                     esp_netif_dns_info_t info = {};

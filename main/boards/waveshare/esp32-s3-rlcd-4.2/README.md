@@ -85,15 +85,23 @@ idf.py build flash monitor
 
 拉取由板级独立任务 `weather_fetch`（栈 8192）负责：启动后延迟 15 s 首次拉取，成功每 30 分钟一次、失败 60 秒重试；HTTP 不占用 LVGL 锁，不会卡界面。日志关键字 `天气更新成功(中国天气网)` / `Open-Meteo`。
 
-## 待办同步（MCP）
+## 待办（MCP 接入点，设备自取）
 
-设备本身**不是** MCP 客户端（没有对任意 MCP 端点做 ws JSON-RPC 的能力），因此待办采用「AI 拉取 → 下发设备」的方式：
+设备本身就是 MCP 客户端：板级任务 `todo_mcp`（栈 8192）用独立 websocket 连外部 MCP 接入点，
+按标准 JSON-RPC 握手后调用 `list_todos`（`view=today`, `limit=10`），把每条待办格式化成
+`11.16(日) 20:00 标题` 的一行，写入 NVS `memo/items` 并重绘右侧待办卡。
 
-1. 后端 AI 用自己的待办工具（如 `list_todos`）取到当日待办；
-2. 调用设备工具 `self.todo.sync`，参数 `items` 为 JSON 字符串数组，每个元素是屏幕上的一行（如 `["10.06(二) 09:00 抢火车票","14:30 周会"]`），最多 10 行；
-3. 设备把它写入 NVS `memo/items` 并立刻重绘待办卡；传 `[]` 清空。
+- 地址存 NVS `todo/mcp_url`；可用 MCP 工具 `self.todo.set_url`（参数 `url`，必须以 `ws://` 或 `wss://` 开头）修改，改完立即拉一次。
+- 构建期默认值：`config.h` 的 `MCP_TODO_URL`（提交版为空）。本机可把真实地址放进
+  `managers/todo_mcp_secret.h`（已在 `.gitignore`，避免 token 入库），首次启动会把编译期地址落到 NVS，
+  之后一律以 NVS 为准。
+- 周期：上电延迟 20 s 首次；成功每 5 分钟、失败 30 秒重试；网络刚连上会立刻补一次。
+- 日志关键字：`连接待办 MCP 接入点` / `已拉取当日待办 N 条` / `等待 list_todos 响应超时`。
+- 协议要点：JSON-RPC 的真实路径是 `/mcp_endpoint/call/`（`/mcp/` 是注册侧，握手不回包）；
+  握手 `id=1` initialize、`id=2` tools/call，结果在 `result.content[0].text`（一个 JSON 字符串：
+  `{"ok":true,"count":N,"items":[{"title","due_text","all_day",...}]}`）。
 
-对话里说「把今天的待办同步到屏幕」即可触发这条链路。
+手动兜底：后端 AI 也可调用设备工具 `self.todo.sync`（`items` 为 JSON 字符串数组，最多 10 行，`[]` 清空）直接覆盖列表。
 
 ## 硬件核对（对照微雪官方文档与官方示例）
 

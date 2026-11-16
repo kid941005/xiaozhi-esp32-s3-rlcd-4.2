@@ -29,6 +29,11 @@
 #define WEATHER_CITY  "成都"       // 界面显示的城市名
 #define WEATHER_CITY_CODE "101270101"  // 中国天气网城市代码（成都），免密钥天气源使用
 
+// 待办 MCP 接入点（websocket JSON-RPC）。留空表示不启用，可在运行时通过
+// MCP 工具 self.todo.set_url 配置（持久化在 NVS namespace "todo", key "mcp_url"）。
+// 例：wss://example.com:59826/mcp_endpoint/call/?token=xxx
+#define MCP_TODO_URL ""
+
 #define BOOT_BUTTON_GPIO        GPIO_NUM_0
 #define USER_BUTTON_GPIO        GPIO_NUM_18  // 用户按键（屏幕右侧 KEY 按钮）
 
