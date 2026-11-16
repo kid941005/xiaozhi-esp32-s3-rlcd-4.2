@@ -138,12 +138,16 @@ NetworkResult<> Ota::CheckVersion() {
         return std::unexpected(status_code.error());
     }
     if (*status_code != 200) {
-        ESP_LOGE(TAG, "Failed to check version, status code: %d", *status_code);
+        ESP_LOGE(TAG, "Failed to check version, status code: %d (method=%s url=%s)", *status_code, method.c_str(), url.c_str());
+        auto err_body = http->ReadAll();
+        ESP_LOGE(TAG, "Error body: %.300s", err_body.c_str());
+        http->Close();
         return std::unexpected(NetworkError::HttpFailed(*status_code));
     }
 
     data = http->ReadAll();
     http->Close();
+    ESP_LOGI(TAG, "OTA response from %s (%d bytes)", url.c_str(), (int)data.size());
 
     // Response: { "firmware": { "version": "1.0.0", "url": "http://" } }
     // Parse the JSON response and check if the version is newer

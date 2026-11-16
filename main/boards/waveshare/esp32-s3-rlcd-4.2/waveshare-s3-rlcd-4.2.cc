@@ -3,6 +3,7 @@
 #include <driver/spi_common.h>
 #include <esp_log.h>
 #include <esp_system.h>
+#include <esp_netif.h>
 #include <string>
 #include <soc/rtc.h>
 #include "custom_lcd_display.h"
@@ -646,6 +647,46 @@ public:
                 PowerManager::GetInstance().SetLevel(PowerManager::Level::kLowPower);
                 break;
         }
+    }
+
+    // 记录 DHCP 下发的 DNS，便于排查无法解析域名的问题
+    virtual void SetNetworkEventCallback(NetworkEventCallback callback) override {
+        WifiBoard::SetNetworkEventCallback([callback](NetworkEvent event, const std::string& data) {
+            if (event == NetworkEvent::Connected) {
+                esp_netif_t* netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+                if (netif != nullptr) {
+                    esp_netif_dns_info_t info = {};
+                    bool dns_missing = true;
+                    if (esp_netif_get_dns_info(netif, ESP_NETIF_DNS_MAIN, &info) == ESP_OK) {
+                        ESP_LOGI(TAG, "STA main DNS: " IPSTR, IP2STR(&info.ip.u_addr.ip4));
+                        dns_missing = (info.ip.u_addr.ip4.addr == 0);
+                    } else {
+                        ESP_LOGW(TAG, "STA main DNS: unavailable");
+                    }
+                    if (esp_netif_get_dns_info(netif, ESP_NETIF_DNS_BACKUP, &info) == ESP_OK) {
+                        ESP_LOGI(TAG, "STA backup DNS: " IPSTR, IP2STR(&info.ip.u_addr.ip4));
+                    }
+                    // 部分热点（如 Windows 移动热点）不下发 DNS，导致域名无法解析，这里兜底公共 DNS
+                    if (dns_missing) {
+                        esp_netif_dns_info_t fallback = {};
+                        fallback.ip.type = ESP_IPADDR_TYPE_V4;
+                        if (esp_netif_str_to_ip4("223.5.5.5", &fallback.ip.u_addr.ip4) == ESP_OK &&
+                            esp_netif_set_dns_info(netif, ESP_NETIF_DNS_MAIN, &fallback) == ESP_OK) {
+                            ESP_LOGW(TAG, "DHCP 未下发 DNS，已兜底使用 223.5.5.5");
+                        }
+                        esp_netif_dns_info_t backup = {};
+                        backup.ip.type = ESP_IPADDR_TYPE_V4;
+                        if (esp_netif_str_to_ip4("119.29.29.29", &backup.ip.u_addr.ip4) == ESP_OK &&
+                            esp_netif_set_dns_info(netif, ESP_NETIF_DNS_BACKUP, &backup) == ESP_OK) {
+                            ESP_LOGI(TAG, "备用 DNS 已设置为 119.29.29.29");
+                        }
+                    }
+                }
+            }
+            if (callback) {
+                callback(event, data);
+            }
+        });
     }
 
     virtual AudioCodec* GetAudioCodec() override {
