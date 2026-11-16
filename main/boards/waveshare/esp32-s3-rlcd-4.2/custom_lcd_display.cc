@@ -203,11 +203,10 @@ CustomLcdDisplay::CustomLcdDisplay(esp_lcd_panel_io_handle_t panel_io,
         return;
     }
 
-    // 4. 创建天气页 + 音乐页 + 番茄钟页 UI
-    ESP_LOGI(TAG, "创建天气页 + 音乐页 + 番茄钟页 UI");
+    // 4. 创建天气页 + 音乐页 UI
+    ESP_LOGI(TAG, "创建天气页 + 音乐页 UI");
     SetupWeatherUI();
     SetupMusicUI();
-    SetupPomodoroUI();
     // 告诉显示框架：当前自定义 UI 已经初始化完成
     // 否则基类的 SetStatus/ShowNotification 会一直误判为“UI 未准备好”
     setup_ui_called_ = true;
@@ -344,11 +343,6 @@ void CustomLcdDisplay::SetChatMessage(const char* role, const char* content) {
         lv_label_set_long_mode(music_chat_status_label_, LV_LABEL_LONG_WRAP);
         lv_label_set_text(music_chat_status_label_, content);
     }
-    // 番茄钟页同步显示 AI 文案
-    if (pomo_chat_status_label_) {
-        lv_label_set_long_mode(pomo_chat_status_label_, LV_LABEL_LONG_WRAP);
-        lv_label_set_text(pomo_chat_status_label_, content);
-    }
 }
 
 bool CustomLcdDisplay::SetEmotion(const char* emotion) {
@@ -390,11 +384,8 @@ bool CustomLcdDisplay::SetEmotion(const char* emotion) {
     if (music_emotion_label_) {
         lv_label_set_text(music_emotion_label_, text);
     }
-    if (pomo_emotion_label_) {
-        lv_label_set_text(pomo_emotion_label_, text);
-    }
     
-    // 2. 尝试加载小智自带的 emoji 图片（天气页 + 音乐页 + 番茄钟页同步更新）
+    // 2. 尝试加载小智自带的 emoji 图片（天气页 + 音乐页同步更新）
     if (current_theme_) {
         auto emoji_collection = static_cast<LvglTheme*>(current_theme_)->emoji_collection();
         auto image = emoji_collection ? emoji_collection->GetEmojiImage(emotion) : nullptr;
@@ -418,18 +409,8 @@ bool CustomLcdDisplay::SetEmotion(const char* emotion) {
                 lv_obj_add_flag(music_emotion_img_, LV_OBJ_FLAG_HIDDEN);
             }
         }
-        // 番茄钟页 emoji
-        if (pomo_emotion_img_) {
-            if (has_image) {
-                lv_image_set_src(pomo_emotion_img_, image->image_dsc());
-                lv_obj_remove_flag(pomo_emotion_img_, LV_OBJ_FLAG_HIDDEN);
-            } else {
-                lv_obj_add_flag(pomo_emotion_img_, LV_OBJ_FLAG_HIDDEN);
-            }
-        }
     }
 
-    return true;
     return true;
 }
 
@@ -437,7 +418,6 @@ void CustomLcdDisplay::ClearChatMessages() {
     DisplayLockGuard lock(this);
     if (chat_status_label_) lv_label_set_text(chat_status_label_, "");
     if (music_chat_status_label_) lv_label_set_text(music_chat_status_label_, "");
-    if (pomo_chat_status_label_) lv_label_set_text(pomo_chat_status_label_, "");
     // 表情不清除，保持常驻
 }
 
@@ -465,7 +445,6 @@ void CustomLcdDisplay::ApplyDisplayMode() {
     // 先隐藏所有页面
     if (weather_page_) lv_obj_add_flag(weather_page_, LV_OBJ_FLAG_HIDDEN);
     if (music_page_) lv_obj_add_flag(music_page_, LV_OBJ_FLAG_HIDDEN);
-    if (pomodoro_page_) lv_obj_add_flag(pomodoro_page_, LV_OBJ_FLAG_HIDDEN);
 
     // 显示当前页面
     switch (display_mode_) {
@@ -475,27 +454,18 @@ void CustomLcdDisplay::ApplyDisplayMode() {
         case MODE_MUSIC:
             if (music_page_) lv_obj_remove_flag(music_page_, LV_OBJ_FLAG_HIDDEN);
             break;
-        case MODE_POMODORO:
-            if (pomodoro_page_) lv_obj_remove_flag(pomodoro_page_, LV_OBJ_FLAG_HIDDEN);
-            break;
     }
 }
 
 void CustomLcdDisplay::CycleDisplayMode() {
     DisplayLockGuard lock(this);
-    // 三页循环：天气 → 音乐 → 番茄钟 → 天气
+    // 两页循环：天气 → 音乐 → 天气
     switch (display_mode_) {
-        case MODE_WEATHER:  display_mode_ = MODE_MUSIC; break;
-        case MODE_MUSIC:    display_mode_ = MODE_POMODORO; break;
-        case MODE_POMODORO: display_mode_ = MODE_WEATHER; break;
+        case MODE_WEATHER: display_mode_ = MODE_MUSIC; break;
+        case MODE_MUSIC:   display_mode_ = MODE_WEATHER; break;
     }
     ApplyDisplayMode();
-    const char* name = "未知";
-    switch (display_mode_) {
-        case MODE_WEATHER:  name = "天气页"; break;
-        case MODE_MUSIC:    name = "音乐页"; break;
-        case MODE_POMODORO: name = "番茄钟"; break;
-    }
+    const char* name = (display_mode_ == MODE_MUSIC) ? "音乐页" : "天气页";
     ESP_LOGI(TAG, "页面切换: %s", name);
 }
 
@@ -590,34 +560,6 @@ void CustomLcdDisplay::SwitchToWeatherPage() {
         display_mode_ = MODE_WEATHER;
         ApplyDisplayMode();
         ESP_LOGI(TAG, "自动切换到天气页");
-    }
-}
-
-// ===== 番茄钟页面方法 =====
-
-void CustomLcdDisplay::SwitchToPomodoroPage() {
-    DisplayLockGuard lock(this);
-    if (display_mode_ != MODE_POMODORO) {
-        display_mode_ = MODE_POMODORO;
-        ApplyDisplayMode();
-        ESP_LOGI(TAG, "自动切换到番茄钟页");
-    }
-}
-
-void CustomLcdDisplay::UpdatePomodoroDisplay(const char* state_text, const char* countdown_text,
-                                              int progress_permille, const char* info_text) {
-    DisplayLockGuard lock(this);
-    if (pomo_state_label_ && state_text) {
-        lv_label_set_text(pomo_state_label_, state_text);
-    }
-    if (pomo_countdown_label_ && countdown_text) {
-        lv_label_set_text(pomo_countdown_label_, countdown_text);
-    }
-    if (pomo_progress_bar_) {
-        lv_bar_set_value(pomo_progress_bar_, progress_permille, LV_ANIM_OFF);
-    }
-    if (pomo_info_label_ && info_text) {
-        lv_label_set_text(pomo_info_label_, info_text);
     }
 }
 
