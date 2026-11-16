@@ -160,6 +160,13 @@ public:
     // 把当前显存（1-bit）导出成 1bpp BMP（62 字节头 + 行对齐位图），用于远程截图
     // out 容量需 >= 62 + ((w+31)/32*4) * h；成功返回 true 并写 *out_len
     bool CaptureScreenBmp(uint8_t *out, size_t cap, size_t *out_len);
+
+    // 1-bit 二值化抖动模式：0=硬阈值(旧行为) 1=Bayer4x4 2=Bayer8x8(默认)
+    void SetDitherMode(int mode);
+    int GetDitherMode() const;
+    void SetThreshold(int thr);      // 模式 0 的二值化阈值
+    int GetThreshold() const;
+    void RedrawAll();   // 请求整屏重绘（切换抖动模式后调用）
     
     // 获取 AI 对话标签（供 CustomBoard 设置滚动模式显示系统信息等）
     lv_obj_t* GetChatStatusLabel() const { return chat_status_label_; }

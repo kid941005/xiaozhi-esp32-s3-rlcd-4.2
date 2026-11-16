@@ -234,6 +234,16 @@ idf.py build flash monitor
 - 实现：`screenshot_server.{h,cc}` 起 `esp_http_server`（`lru_purge_enable=true`、栈 8192，BMP 缓冲放 PSRAM）；像素读取用 `RlcdDriver::RLCD_GetPixel(x, y)` 直接查显存 LUT，1 = 白、0 = 黑，因此截图就是面板真实画面。
 - 注意：`main/CMakeLists.txt` 的 `PRIV_REQUIRES` 需要 `esp_http_server`；8080 与配网页 80 不冲突。
 
+## 1-bit 二值化：阈值与抖动（抗锯齿效果调节）
+
+RLCD 面板只有黑白两态，16bpp 画面必须在 flush 里量化成 1bit（`custom_lcd_display.cc` 的 `Lvgl_flush_cb`）。量化方式直接决定肉眼看到的「锯齿感」：
+
+- 原实现是硬阈值 `*row < 0x7fff`：既直接拿 RGB565 数值比大小（彩色元素会误判），又把所有抗锯齿边缘切成硬阶梯。现改为先转 BT.601 亮度 `rgb565_luma()`，再用可调阈值二值化。
+- 默认：`s_dither_mode = 0`（硬阈值）、`s_threshold = 112`。阈值 96..144 实测扫描（3x 放大对比）：**112 笔画最实、断裂最少**；96 过粗发糊，144 偏细有断笔。
+- 抖动模式（可选）：`1`=Bayer 4x4、`2`=Bayer 8x8、`3`/`4`=带状抖动（只对过渡带抖动，笔画核心保持纯色）。**实测对本 UI 是负优化**：汉字笔画会被点碎/镂空（与阈值版差异像素仅约 1%，但观感更差），只有圆角/圆弧略有改善。因此默认关闭。
+- 在线 A/B（无需重编译）：`GET /dither?mode=0..4&thr=NN`（thr 16..240），切换后整屏重绘；`GET /dbg` 首行也会输出 `dither_mode=… thr=…`。
+- 若要从根上消除文字锯齿：应改用 **16px 1bpp 点阵字库**（当前 `font_puhui_16_4` 是 4bpp 被阈值化，`font_puhui_14_1` 已是 1bpp 所以 14px 文字更锐利）。代价是 +约 250KB flash 且需重新生成字库（原 TTF `puhui-7415-Regular.ttf` 已不在仓库）。
+
 ## AI 卡：内置猫脸（无 emoji 素材时的兜底）
 
 - 小智的表情图片来自 assets 包（`main/assets.cc` 读 `emoji_collection` 数组），本板当前使用的 `generated_assets.bin` 里**不含 emoji 素材**，`theme->emoji_collection()` 为 null。

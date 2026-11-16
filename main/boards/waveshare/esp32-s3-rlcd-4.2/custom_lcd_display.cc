@@ -40,6 +40,60 @@ LV_FONT_DECLARE(font_material_symbols_16_4);
 
 static const char *TAG = "CustomDisplay";
 
+// ===== 1-bit 二值化：有序抖动（Bayer）=====
+//
+// RLCD 面板只有黑白两态，16bpp 画面必须量化成 1bit。硬阈值会把所有抗锯齿边缘
+// （4bpp 中文字形、圆角、圆弧、圆形图标）切成硬阶梯，就是肉眼看到的「锯齿」。
+// 有序抖动用像素坐标做稳定阈值，把中间调变成疏密不同的黑点：远看是灰阶、
+// 边缘过渡连续；纯白/纯黑仍是纯色；图案只与坐标有关，静态区域不闪。
+//   模式 0 = 硬阈值（默认；实测文字最清晰，配合 thr=112 笔画最实）
+//   模式 1 = Bayer 4x4（点更细）
+//   模式 2 = Bayer 8x8（过渡最平滑）
+// 实测结论：本 UI 以汉字/实线为主，抖动会把笔画点碎，故默认关闭抖动，
+// 仅把硬阈值定在 112（96..144 扫描后笔画断裂最少的一档）。
+static volatile int s_dither_mode = 0;  // 0=硬阈值(默认,文字最清晰) 1=Bayer4 2=Bayer8 3/4=带状
+// 模式 0 的二值化阈值（可在线调，配合 /dither?mode=0&thr=NN 做笔画粗细 A/B）
+static volatile int s_threshold = 112;  // 1-bit 最佳平衡点(实测 96..144 扫描)
+
+// 0..63 的 Bayer 矩阵（先乘 4 再加 2 得 2..254 的阈值）
+static const uint8_t kBayer8[8][8] = {
+    { 0, 32,  8, 40,  2, 34, 10, 42},
+    {48, 16, 56, 24, 50, 18, 58, 26},
+    {12, 44,  4, 36, 14, 46,  6, 38},
+    {60, 28, 52, 20, 62, 30, 54, 22},
+    { 3, 35, 11, 43,  1, 33,  9, 41},
+    {51, 19, 59, 27, 49, 17, 57, 25},
+    {15, 47,  7, 39, 13, 45,  5, 37},
+    {63, 31, 55, 23, 61, 29, 53, 21},
+};
+static const uint8_t kBayer4[4][4] = {
+    { 0, 32,  8, 40},
+    {48, 16, 56, 24},
+    {12, 44,  4, 36},
+    {60, 28, 52, 20},
+};
+
+// RGB565 -> 8bit BT.601 亮度（原实现直接拿 RGB565 数值比大小，彩色元素会误判）
+static inline uint8_t rgb565_luma(uint16_t v)
+{
+    const int r5 = (v >> 11) & 0x1F;
+    const int g6 = (v >> 5) & 0x3F;
+    const int b5 = v & 0x1F;
+    const int r8 = (r5 << 3) | (r5 >> 2);
+    const int g8 = (g6 << 2) | (g6 >> 4);
+    const int b8 = (b5 << 3) | (b5 >> 2);
+    return (uint8_t)((r8 * 77 + g8 * 150 + b8 * 29) >> 8);
+}
+
+// 取该像素的抖动阈值（2..254）
+static inline int dither_threshold(int x, int y)
+{
+    if (s_dither_mode == 1) {
+        return (int)kBayer4[y & 3][x & 3] * 4 + 2;
+    }
+    return (int)kBayer8[y & 7][x & 7] * 4 + 2;
+}
+
 // ===== LVGL flush 回调 =====
 
 void CustomLcdDisplay::Lvgl_flush_cb(lv_display_t * disp, const lv_area_t * area, uint8_t * color_p)
@@ -63,10 +117,29 @@ void CustomLcdDisplay::Lvgl_flush_cb(lv_display_t * disp, const lv_area_t * area
         int changed_min_x = scr_w;
         int changed_max_x = -1;
         // 2) 只把该区域写进 1-bit 影子缓冲，同时记录真正发生变化的 x 范围
+        const int dither_mode = s_dither_mode;
         for (int y = y1; y <= y2; y++) {
             uint16_t *row = buffer + (size_t)(y - area->y1) * src_w + (x1 - area->x1);
             for (int x = x1; x <= x2; x++) {
-                uint8_t color = (*row < 0x7fff) ? ColorBlack : ColorWhite;
+                const uint8_t luma = rgb565_luma(*row);
+                uint8_t color;
+                if (dither_mode == 0) {
+                    color = (luma >= s_threshold) ? ColorWhite : ColorBlack;
+                } else if (dither_mode == 3 || dither_mode == 4) {
+                    // 带状抖动：笔画核心与纯背景保持纯色，只对过渡带做抖动。
+                    // 这样圆角/圆弧/斜线得到连续过渡，而汉字笔画不会被点碎。
+                    const int lo = (dither_mode == 3) ? 64 : 96;
+                    const int hi = (dither_mode == 3) ? 192 : 160;
+                    if (luma <= lo) {
+                        color = ColorBlack;
+                    } else if (luma >= hi) {
+                        color = ColorWhite;
+                    } else {
+                        color = (luma > dither_threshold(x, y)) ? ColorWhite : ColorBlack;
+                    }
+                } else {
+                    color = (luma > dither_threshold(x, y)) ? ColorWhite : ColorBlack;
+                }
                 if (rlcd->RLCD_SetPixel((uint16_t)x, (uint16_t)y, color)) {
                     if (x < changed_min_x) changed_min_x = x;
                     if (x > changed_max_x) changed_max_x = x;
@@ -88,6 +161,42 @@ void CustomLcdDisplay::Lvgl_flush_cb(lv_display_t * disp, const lv_area_t * area
         self->FlushCommit();
     }
     lv_display_flush_ready(disp);
+}
+
+// 切换 1-bit 抖动模式（0=硬阈值 1=Bayer4 2=Bayer8），供 /dither 端点在线 A/B 对比
+void CustomLcdDisplay::SetDitherMode(int mode)
+{
+    if (mode < 0 || mode > 4) {
+        return;
+    }
+    s_dither_mode = mode;
+    ESP_LOGI(TAG, "1-bit 抖动模式切换为 %d (0=阈值 1=Bayer4 2=Bayer8 3/4=带状抖动)", mode);
+}
+
+void CustomLcdDisplay::SetThreshold(int thr)
+{
+    if (thr < 16 || thr > 240) {
+        return;
+    }
+    s_threshold = thr;
+    ESP_LOGI(TAG, "1-bit 阈值切换为 %d", thr);
+}
+
+int CustomLcdDisplay::GetThreshold() const
+{
+    return s_threshold;
+}
+
+int CustomLcdDisplay::GetDitherMode() const
+{
+    return s_dither_mode;
+}
+
+// 请求整屏重绘（切换抖动模式后让 LVGL 重新光栅化，截图才会反映新模式）
+void CustomLcdDisplay::RedrawAll()
+{
+    DisplayLockGuard lock(this);
+    lv_obj_invalidate(lv_screen_active());
 }
 
 // 累积/合并脏区条带：间隙小于 kFlushMergeGap 的条带合并，条带过多则退化为整帧

@@ -8,6 +8,8 @@
 
 #include "screenshot_server.h"
 
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <esp_err.h>
@@ -46,10 +48,47 @@ static esp_err_t DbgHandler(httpd_req_t *req) {
     if (s_display == nullptr) {
         return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "not ready");
     }
-    std::string info = s_display->GetUiDebugInfo();
+    char head[64];
+    int hn = snprintf(head, sizeof(head), "dither_mode=%d thr=%d\n",
+                      s_display->GetDitherMode(), s_display->GetThreshold());
+    std::string info = std::string(head, (size_t)(hn > 0 ? hn : 0)) + s_display->GetUiDebugInfo();
     httpd_resp_set_type(req, "text/plain; charset=utf-8");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     return httpd_resp_send(req, info.c_str(), (ssize_t)info.size());
+}
+
+// 在线切换 1-bit 抖动模式：/dither?mode=0|1|2（不带参数只报告当前值），便于 A/B 对比观感
+static esp_err_t DitherHandler(httpd_req_t *req) {
+    if (s_display == nullptr) {
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "not ready");
+    }
+    char query[64] = {0};
+    char value[8] = {0};
+    int mode = -1;
+    int thr = -1;
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        if (httpd_query_key_value(query, "mode", value, sizeof(value)) == ESP_OK) {
+            mode = atoi(value);
+        }
+        if (httpd_query_key_value(query, "thr", value, sizeof(value)) == ESP_OK) {
+            thr = atoi(value);
+        }
+    }
+    if (mode >= 0 && mode <= 4) {
+        s_display->SetDitherMode(mode);
+        s_display->RedrawAll();
+    }
+    if (thr >= 16 && thr <= 240) {
+        s_display->SetThreshold(thr);
+        s_display->RedrawAll();
+    }
+    char out[128];
+    int n = snprintf(out, sizeof(out),
+                     "dither_mode=%d thr=%d (0=threshold 1=bayer4 2=bayer8 3/4=band-dither)\n",
+                     s_display->GetDitherMode(), s_display->GetThreshold());
+    httpd_resp_set_type(req, "text/plain; charset=utf-8");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, out, n);
 }
 
 static const httpd_uri_t kShotUri = {
@@ -63,6 +102,13 @@ static const httpd_uri_t kDbgUri = {
     .uri = "/dbg",
     .method = HTTP_GET,
     .handler = DbgHandler,
+    .user_ctx = nullptr,
+};
+
+static const httpd_uri_t kDitherUri = {
+    .uri = "/dither",
+    .method = HTTP_GET,
+    .handler = DitherHandler,
     .user_ctx = nullptr,
 };
 
@@ -97,6 +143,7 @@ bool ScreenshotServerStart(CustomLcdDisplay *display) {
     }
     httpd_register_uri_handler(s_server, &kShotUri);
     httpd_register_uri_handler(s_server, &kDbgUri);
+    httpd_register_uri_handler(s_server, &kDitherUri);
     ESP_LOGI(TAG, "截图服务已启动: http://<设备IP>:%d/shot.bmp", kShotPort);
     return true;
 }
