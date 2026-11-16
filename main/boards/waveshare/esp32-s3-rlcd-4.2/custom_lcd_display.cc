@@ -443,9 +443,22 @@ bool CustomLcdDisplay::SetEmotion(const char* emotion) {
     return true;
 }
 
+// 不获取锁：调用者必须已持有 DisplayLock（供 SetupWeatherUI 使用）
+void CustomLcdDisplay::ApplyDefaultEmotion() {
+    if (!current_theme_ || !emotion_img_) return;
+    auto emoji_collection = static_cast<LvglTheme*>(current_theme_)->emoji_collection();
+    auto image = emoji_collection ? emoji_collection->GetEmojiImage("neutral") : nullptr;
+    if (image && !image->IsGif()) {
+        lv_image_set_src(emotion_img_, image->image_dsc());
+        lv_obj_remove_flag(emotion_img_, LV_OBJ_FLAG_HIDDEN);
+        if (emotion_label_) lv_label_set_text(emotion_label_, "待命");
+    }
+}
+
 void CustomLcdDisplay::ClearChatMessages() {
     DisplayLockGuard lock(this);
-    if (chat_status_label_) lv_label_set_text(chat_status_label_, "");
+    // 空闲态保留「AI 待命」占位文案（与参考界面一致），不要清成空白
+    if (chat_status_label_) lv_label_set_text(chat_status_label_, "AI 待命");
     if (music_chat_status_label_) lv_label_set_text(music_chat_status_label_, "");
     // 表情不清除，保持常驻
 }

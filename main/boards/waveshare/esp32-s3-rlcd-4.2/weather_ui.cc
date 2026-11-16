@@ -168,8 +168,8 @@ void CustomLcdDisplay::SetupWeatherUI() {
 
     // 大字时钟：反色时间块（白字黑底条），横跨卡片内宽，与参考图一致
     lv_obj_t *time_block = lv_obj_create(clock_card);
-    lv_obj_set_size(time_block, clock_w - 16, 62);
-    lv_obj_align(time_block, LV_ALIGN_TOP_MID, 0, 26);
+    lv_obj_set_size(time_block, clock_w - 10, 56);
+    lv_obj_align(time_block, LV_ALIGN_TOP_MID, 0, 30);
     lv_obj_set_style_bg_color(time_block, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(time_block, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(time_block, 0, 0);
@@ -182,9 +182,15 @@ void CustomLcdDisplay::SetupWeatherUI() {
     lv_obj_set_style_text_color(time_label_, lv_color_white(), 0);
     lv_obj_set_style_bg_opa(time_label_, LV_OPA_TRANSP, 0);
     lv_obj_set_style_text_font(time_label_, font_clock, 0);
-    lv_obj_set_style_text_letter_space(time_label_, 0, 0);
+    lv_obj_set_style_text_letter_space(time_label_, -2, 0);
     lv_obj_set_style_text_align(time_label_, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(time_label_, LV_LABEL_LONG_CLIP);
     lv_obj_center(time_label_);
+    // 诊断：打印真实文本宽度，确认不会折行
+    lv_label_set_text(time_label_, "17:35");
+    lv_obj_update_layout(time_label_);
+    ESP_LOGI(TAG, "大字时间：文本 \"17:35\" 实测 %dx%d px，时间块可用宽 %d px",
+             (int)lv_obj_get_width(time_label_), (int)lv_obj_get_height(time_label_), clock_w - 10);
     lv_label_set_text(time_label_, "00:00");
 
     // 天气行：「成都 晴 23°C」（黑字白底，卡片底部）
@@ -384,6 +390,9 @@ void CustomLcdDisplay::SetupWeatherUI() {
 
     // chat_message_label_ 指向我们的 AI 状态标签（让基类方法能更新它）
     chat_message_label_ = chat_status_label_;
+
+    // 默认「待命」表情图（参考界面左下常驻）
+    ApplyDefaultEmotion();
 
     // 首次填充待办列表（已持锁，用 Internal 版本）
     RefreshMemoDisplayInternal();
