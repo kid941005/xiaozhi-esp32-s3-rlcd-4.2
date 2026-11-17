@@ -25,19 +25,8 @@
 #include "custom_lcd_display.h"
 #include "ui_cat_face.h"
 #include "ui_widgets.h"
+#include "ui_assets.h"
 #include <esp_log.h>
-
-// 字体：只用小智自带完整字库 + 天气站字体（仅用于非中文场景如时间数字）
-LV_FONT_DECLARE(alibaba_puhui_16);   // 16px（用于时间数字、电量等纯 ASCII 场景）
-LV_FONT_DECLARE(alibaba_puhui_24);   // 24px（用于时钟数字）
-LV_FONT_DECLARE(font_puhui_16_4);    // 16px 小智完整字库（所有中文文字用这个）
-LV_FONT_DECLARE(font_puhui_14_1);    // 14px 小字体
-LV_FONT_DECLARE(font_puhui_16_1);    // 16px 1bpp 点阵（静态文案用，1-bit 屏上无毛边）
-
-// 状态栏图标
-LV_IMAGE_DECLARE(ui_img_wifi);
-LV_IMAGE_DECLARE(ui_img_wifi_off);
-LV_IMAGE_DECLARE(ui_img_battery_full);
 
 static const char *TAG = "MusicUI";
 

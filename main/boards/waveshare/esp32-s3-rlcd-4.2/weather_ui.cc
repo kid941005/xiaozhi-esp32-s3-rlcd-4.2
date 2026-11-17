@@ -25,19 +25,8 @@
 #include "material_symbols.h"
 #include "ui_cat_face.h"
 #include "ui_widgets.h"
+#include "ui_assets.h"
 #include <esp_log.h>
-
-// 天气站专用字体（从 MyWeatherStation 移植，字符集有限但够天气站用）
-LV_FONT_DECLARE(alibaba_puhui_16);
-LV_FONT_DECLARE(alibaba_puhui_24);
-LV_FONT_DECLARE(alibaba_puhui_48);
-LV_FONT_DECLARE(alibaba_black_64);
-
-// 小智自带字体（7415 个常用汉字，用于中文文案）
-LV_FONT_DECLARE(font_puhui_16_4);  // 16px 标准字体
-LV_FONT_DECLARE(font_puhui_14_1);  // 14px 小字体
-LV_FONT_DECLARE(font_puhui_16_1);  // 16px 1bpp 点阵（静态文案专用：无抗锯齿，二值化后不糊）
-LV_FONT_DECLARE(font_material_symbols_16_4);  // 16px 图标字体（★ ☑）
 
 // ===== 内置猫脸线稿（资源包没有 emoji 素材时的兜底图形）=====
 // 全部用 lv_obj/lv_line 画，不依赖任何图片资源；坐标按 48x48 设计，按 size 等比缩放。
@@ -157,14 +146,7 @@ lv_obj_t *CreateCatFace(lv_obj_t *parent, int size) {
     return box;
 }
 
-// 声明状态栏图标（从 MyWeatherStation 移植）
-LV_IMAGE_DECLARE(ui_img_wifi);
-LV_IMAGE_DECLARE(ui_img_wifi_low);
-LV_IMAGE_DECLARE(ui_img_wifi_off);
-LV_IMAGE_DECLARE(ui_img_battery_full);
-LV_IMAGE_DECLARE(ui_img_battery_medium);
-LV_IMAGE_DECLARE(ui_img_battery_low);
-LV_IMAGE_DECLARE(ui_img_battery_charging);
+// 状态栏图标声明已统一到 ui_assets.h
 
 static const char *TAG = "WeatherUI";
 
@@ -185,6 +167,8 @@ void CustomLcdDisplay::SetupWeatherUI() {
     lv_obj_t *screen = weather_page_;
 
     const lv_font_t *font_small  = &alibaba_puhui_16;
+    // 64px 字体的数字实际墨高约 44px，39x50 翻页卡内上下各留约 3px；
+    // 已按最新实机截图复核无裁切。若后续换字体或改卡高，需重新按墨高（不是 font_size）复核。
     const lv_font_t *font_clock  = &alibaba_black_64;
     const lv_font_t *font_ai     = &font_puhui_16_4;   // 7415 常用汉字
     const lv_font_t *font_tiny   = &font_puhui_14_1;   // 14px
@@ -199,7 +183,8 @@ void CustomLcdDisplay::SetupWeatherUI() {
                        &wifi_icon_img_, &battery_icon_img_, &battery_pct_label_);
 
     // ===== 左上角「环境 温度 湿度」（白字，直接在黑底上）=====
-    // 注意：必须用 font_puhui_16_4（7415 常用汉字），alibaba_puhui_16 字符集缺「环境」二字
+    // 静态文案用 16px 1bpp 点阵（font_static）：字形本身是二值点阵，1-bit 屏上无毛边；
+    // 若改回 4bpp（font_puhui_16_4），抗锯齿灰边会被二值化阈值切碎。
     sensor_label_ = lv_label_create(screen);
     lv_obj_set_style_text_font(sensor_label_, font_static, 0);
     lv_obj_set_style_text_color(sensor_label_, lv_color_white(), 0);

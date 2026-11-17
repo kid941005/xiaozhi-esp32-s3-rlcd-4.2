@@ -72,9 +72,21 @@ void SensorManager::init(i2c_master_bus_handle_t bus_handle) {
 }
 
 void SensorManager::initSHTC3() {
-    // SHTC3 软件复位命令
-    uint8_t cmd[] = {0x35, 0x17}; 
+    // 0x3517 是 SHTC3 的 Wake-up 命令（软复位是 0x805D）；初始化后先唤醒再测量
+    uint8_t cmd[] = {0x35, 0x17};
     i2c_master_transmit(shtc3_handle_, cmd, sizeof(cmd), pdMS_TO_TICKS(100));
+}
+
+// SHTC3 数据 CRC-8：多项式 0x31，初值 0xFF
+static uint8_t shtc3_crc8(const uint8_t *data, size_t len) {
+    uint8_t crc = 0xFF;
+    for (size_t i = 0; i < len; i++) {
+        crc ^= data[i];
+        for (int b = 0; b < 8; b++) {
+            crc = (crc & 0x80) ? (uint8_t)((crc << 1) ^ 0x31) : (uint8_t)(crc << 1);
+        }
+    }
+    return crc;
 }
 
 void SensorManager::initRTC() {
@@ -135,6 +147,12 @@ SensorData SensorManager::getTempHumidity() {
         vTaskDelay(pdMS_TO_TICKS(20)); // 等待测量完成
         uint8_t buf[6];
         if (i2c_master_receive(shtc3_handle_, buf, sizeof(buf), pdMS_TO_TICKS(100)) == ESP_OK) {
+            // 两个 16bit 读数各带 1 字节 CRC；校验失败时保持 valid=false，避免把坏数据送 UI
+            if (shtc3_crc8(buf, 2) != buf[2] || shtc3_crc8(buf + 3, 2) != buf[5]) {
+                ESP_LOGW(TAG, "SHTC3 CRC 校验失败: %02X/%02X %02X/%02X",
+                         buf[0], buf[1], buf[3], buf[4]);
+                return data;
+            }
             uint16_t t_raw = (buf[0] << 8) | buf[1];
             uint16_t h_raw = (buf[3] << 8) | buf[4];
             data.temperature = -45 + 175 * ((float)t_raw / 65536.0);

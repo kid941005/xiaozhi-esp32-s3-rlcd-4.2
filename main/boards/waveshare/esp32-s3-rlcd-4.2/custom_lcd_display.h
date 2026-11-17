@@ -73,6 +73,10 @@ private:
 
     void FlushAddRange(int x1, int x2);   // 累积/合并脏区条带
     void FlushCommit();                   // 帧末提交：整帧或逐条带局部刷新 + 统计
+
+    // 1-bit 二值化参数（/dither 可在线修改；LVGL flush 任务与 HTTP 任务并发读写）
+    std::atomic<int> dither_mode_{0};     // 0=硬阈值 1=Bayer4 2=Bayer8 3/4=带状
+    std::atomic<int> threshold_{112};     // 模式 0 的阈值
     lv_obj_t *weather_page_ = nullptr;
     lv_obj_t *music_page_ = nullptr;
 

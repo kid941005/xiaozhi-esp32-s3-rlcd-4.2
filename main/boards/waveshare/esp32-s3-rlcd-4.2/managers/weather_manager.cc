@@ -5,6 +5,7 @@
 #include "cJSON.h"
 #include "zlib.h"
 #include "../config.h"   // WEATHER_LAT / WEATHER_LON / WEATHER_CITY
+#include "../date_utils.h"
 #include <settings.h>
 #if __has_include("weather_qweather_secret.h")
 #include "weather_qweather_secret.h"
@@ -203,8 +204,7 @@ static std::string DateToWeek(const std::string& date) {
         y -= 1;
     }
     int w = (y + y / 4 - y / 100 + y / 400 + t[m - 1] + d) % 7;
-    static const char* names[] = {"周日", "周一", "周二", "周三", "周四", "周五", "周六"};
-    return names[(w < 0) ? 0 : w];
+    return std::string("周") + date_utils::WeekdayCharZh(w);
 }
 
 // 只保留数字："高温 17℃" -> "17"

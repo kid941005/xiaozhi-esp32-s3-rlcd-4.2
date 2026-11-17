@@ -14,4 +14,11 @@
 constexpr int kTodoFetchMaxRows   = 10;   // 从 MCP 一次最多抓取的待办条数
 constexpr int kTodoDisplayMaxItems = 6;   // 待办卡片一屏最多渲染的条数
 
+// ---- AI 卡片文字起始 x（CODE_REVIEW P3 #13）----
+// AI 卡内左侧表情区 56px + 文字与表情间距 20px；原先三处写死 56 + 20，
+// 现已统一引用此常量，改布局只需改这里。
+constexpr int kAiIconSize        = 56;
+constexpr int kAiTextGap         = 20;
+constexpr int kAiChatTextOffsetX = kAiIconSize + kAiTextGap;
+
 #endif  // __UI_LIMITS_H__

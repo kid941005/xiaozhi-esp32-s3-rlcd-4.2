@@ -271,7 +271,7 @@ NVS weather/city（手动配置 self.weather.set_city）> 上次 IP 定位缓存
 | 功放 PA | GPIO46（ES8311 输出 + ES7210 输入，见 `codec_board/board_cfg.txt` 的 `Board: S3_RLCD_4_2`） | `AUDIO_CODEC_PA_PIN` | 一致 |
 | SHTC3 | I2C 0x70 | `managers/sensor_manager.cc` | 一致 |
 | PCF85063 | I2C 0x51 | `managers/sensor_manager.cc` | 一致 |
-| 电池 ADC | ADC1_CH3（GPIO4），电压 = 校准值 × 3（`03_ADC_Test/components/port_bsp/adc_bsp.cpp`） | `BatterygetVoltage()` 同通道、同系数 | 一致 |
+| 电池 ADC | ADC1_CH3（GPIO4），电压 = 校准值 × 3（`03_ADC_Test/components/port_bsp/adc_bsp.cpp`） | `BatteryGetVoltage()` 同通道、同系数 | 一致 |
 | SD 卡 | SDMMC 1-bit，CLK 38 / CMD 21 / D0 39（`06_SD_Card/components/port_bsp/sdcard_bsp.h`） | 未启用（白噪音功能已移除） | 引脚一致、固件不使用 |
 | 按键 | BOOT GPIO0 / KEY GPIO18 | `BOOT_BUTTON_GPIO` / `USER_BUTTON_GPIO` | 一致 |
 | 分辨率 | 面板原生 300×400；官方 LVGL 示例按 400×300 横屏使用 | 默认 `RLCD_WIDTH 400` / `RLCD_HEIGHT 300`，`RLCD_PORTRAIT=1` 时切 300×400 | 一致（支持双方向） |
@@ -289,9 +289,9 @@ NVS weather/city（手动配置 self.weather.set_city）> 上次 IP 定位缓存
 （待补充：电池标称容量）官方未公布 18650 容量（Zephyr 上游 dts 的 2600 mAh 只是假设值，不作官方参数）。`config.h` 的 `BATTERY_CAPACITY_MAH` / `BATTERY_AVG_CURRENT_MA` 默认 **0**；两者为 0 时只显示**百分比 + 电压**，**不输出 mAh 与续航**（避免编造）。填入实测标称容量与工作平均电流后，会自动显示剩余 mAh 与可续航时间。
 
 - **百分比**（`BatteryPercentFromMv`）：单节锂电 OCV 分段线性表 4200→100% / 4150→97 / 4100→93 / 4050→88 / 4000→82 / 3950→74 / 3900→65 / 3850→56 / 3800→46 / 3750→35 / 3700→25 / 3650→15 / 3600→8 / 3500→4 / 3400→2 / 3300→0，段内线性插值；放电时先加 `BATTERY_LOAD_COMP_MV`（30 mV）补偿带载压降，再留 1% 死区防抖。取代原来的抛物线公式（≈3.44V→0、4.14V→100，低端偏高、中段偏乐观）。
-- **采样**（`BatterygetVoltage`）：ADC1_CH3 / 12 dB / 12 bit / curve fitting，`BATTERY_ADC_SAMPLES`（16）次过采样，去掉最大最小各一个后取平均，再 ×`BATTERY_ADC_DIVIDER`（3.0）。
+- **采样**（`BatteryGetVoltage`）：ADC1_CH3 / 12 dB / 12 bit / curve fitting，`BATTERY_ADC_SAMPLES`（16）次过采样，去掉最大最小各一个后取平均，再 ×`BATTERY_ADC_DIVIDER`（3.0）。
 - **充电判断**（`GetBatteryStatus`，三态）：60 格 × 10 s（≈10 分钟窗口）电压历史；窗口 Δ≥+10 mV 判充电、≤−10 mV 判放电；**证据不足时保持「未知」**（`known=false`，不硬猜成放电，避免开机瞬间误报、误触发低电量弹窗），仅当电压停在满电平台（`v+20 mV ≥ BATTERY_FULL_MV`(4180)，只有接了充电器才可能）才直接判充电。`full = charging && v+20 mV ≥ FULL`。采样满 30 次（≈5 分钟）仍无趋势时按放电处理（纯电池放电电压下降很慢，短窗口测不出）。低电量弹窗只在「已知放电且 <20%」时提示；`self.system.info` 对未知态显示「状态待判定」。
-- **出口**：`GetBatteryLevel()` / `BatterygetPercent()` / `GetBatteryStatus()`；`ShowSystemInfo()` 与 MCP `self.system.info` 的电池文案由 `battery_detail` 统一生成。
+- **出口**：`GetBatteryLevel()` / `GetBatteryStatus()`；`ShowSystemInfo()` 与 MCP `self.system.info` 的电池文案由 `battery_detail` 统一生成。
 
 限制：纯软件推断，插拔瞬间负载跳变会影响判断精度；这不是电量计，不能给出真实充电电流。
 
@@ -401,7 +401,7 @@ NVS weather/city（手动配置 self.weather.set_city）> 上次 IP 定位缓存
 RLCD 面板只有黑白两态，16bpp 画面必须在 flush 里量化成 1bit（`custom_lcd_display.cc` 的 `Lvgl_flush_cb`）。量化方式直接决定肉眼看到的「锯齿感」：
 
 - 原实现是硬阈值 `*row < 0x7fff`：既直接拿 RGB565 数值比大小（彩色元素会误判），又把所有抗锯齿边缘切成硬阶梯。现改为先转 BT.601 亮度 `rgb565_luma()`，再用可调阈值二值化。
-- 默认：`s_dither_mode = 0`（硬阈值）、`s_threshold = 112`。阈值 96..144 实测扫描（3x 放大对比）：**112 笔画最实、断裂最少**；96 过粗发糊，144 偏细有断笔。
+- 默认：`dither_mode_ = 0`（硬阈值）、`threshold_ = 112`（两者为 `std::atomic<int>`，可在任意任务安全读写）。阈值 96..144 实测扫描（3x 放大对比）：**112 笔画最实、断裂最少**；96 过粗发糊，144 偏细有断笔。
 - 抖动模式（可选）：`1`=Bayer 4x4、`2`=Bayer 8x8、`3`/`4`=带状抖动（只对过渡带抖动，笔画核心保持纯色）。**实测对本 UI 是负优化**：汉字笔画会被点碎/镂空（与阈值版差异像素仅约 1%，但观感更差），只有圆角/圆弧略有改善。因此默认关闭。
 - 在线 A/B（无需重编译）：`GET /dither?mode=0..4&thr=NN`（thr 16..240），切换后整屏重绘；`GET /dbg` 首行也会输出 `dither_mode=… thr=…`。
 - 从根上消除文字锯齿：静态文案改用 **16px 1bpp 点阵字库**（见下一节）。`font_puhui_16_4` 是 4bpp、二值化后必然带毛边；`font_puhui_14_1` 本身就是 1bpp，所以 14px 文字一直比 16px 锐利。

@@ -20,10 +20,7 @@
 #include "lvgl.h"
 #include "managers/sensor_manager.h"
 #include "managers/power_manager.h"
-
-// 声明小智字体（用于系统信息显示时临时切换字体大小）
-LV_FONT_DECLARE(font_puhui_14_1);
-LV_FONT_DECLARE(font_puhui_16_4);
+#include "ui_assets.h"
 #include "managers/weather_manager.h"
 #include "managers/todo_mcp_client.h"
 #include "screenshot_server.h"
@@ -760,10 +757,10 @@ private:
     }
 
     // --- 电池读取封装边界（P2 #7）---
-    // BatterygetVoltage 只做 ADC 采样（调用方须持 battery_mutex_）；
+    // BatteryGetVoltage 只做 ADC 采样（调用方须持 battery_mutex_）；
     // GetBatteryStatus() 是唯一对外线程安全快照入口，状态机/历史队列封装在其内部。
     // 电池电压（mV）：过采样 + 去极值平均，再按分压比还原到电池端
-    uint16_t BatterygetVoltage(void) {
+    uint16_t BatteryGetVoltage(void) {
         static bool initialized = false;
         static adc_oneshot_unit_handle_t adc_handle;
         static adc_cali_handle_t cali_handle = NULL;
@@ -833,7 +830,7 @@ private:
 
     BatteryStatus GetBatteryStatusLocked() {
         BatteryStatus st;
-        uint16_t mv = BatterygetVoltage();
+        uint16_t mv = BatteryGetVoltage();
         st.voltage_mv = mv;
 
         // 充电芯片 STAT 未接 SoC：用电压趋势 + 满电平台判定；证据不足时保持「未知」，
@@ -876,7 +873,7 @@ private:
         static int last_pct = -1;
         if (last_pct >= 0) {
             int diff = (pct > last_pct) ? (pct - last_pct) : (last_pct - pct);
-            if (diff < 1) pct = last_pct;
+            if (diff <= 1) pct = last_pct;
         }
         last_pct = pct;
         st.percent = pct;
@@ -887,10 +884,6 @@ private:
         st.runtime_min = st.remaining_mah * 60 / BATTERY_AVG_CURRENT_MA;
 #endif
         return st;
-    }
-
-    uint8_t BatterygetPercent() {
-        return (uint8_t)GetBatteryStatus().percent;
     }
 
 public:

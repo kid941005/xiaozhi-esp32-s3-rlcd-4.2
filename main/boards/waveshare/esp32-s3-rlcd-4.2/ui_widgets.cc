@@ -3,9 +3,7 @@
 #include "ui_widgets.h"
 
 #include "ui_cat_face.h"
-
-LV_IMAGE_DECLARE(ui_img_wifi_off);
-LV_IMAGE_DECLARE(ui_img_battery_full);
+#include "ui_assets.h"
 
 lv_obj_t *BuildStatusCapsule(lv_obj_t *parent,
                              int w, int h,

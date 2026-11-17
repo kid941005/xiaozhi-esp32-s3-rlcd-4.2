@@ -33,11 +33,7 @@
 #include "lvgl_theme.h"
 #include "managers/power_manager.h"
 #include "material_symbols.h"
-
-// 中文文案用 7415 常用汉字字库，待办行图标用 material symbols（★ ☑）
-LV_FONT_DECLARE(font_puhui_16_4);
-LV_FONT_DECLARE(font_puhui_16_1);  // 16px 1bpp 点阵（静态文案用）
-LV_FONT_DECLARE(font_material_symbols_16_4);
+#include "ui_assets.h"
 
 static const char *TAG = "CustomDisplay";
 
@@ -52,9 +48,6 @@ static const char *TAG = "CustomDisplay";
 //   模式 2 = Bayer 8x8（过渡最平滑）
 // 实测结论：本 UI 以汉字/实线为主，抖动会把笔画点碎，故默认关闭抖动，
 // 仅把硬阈值定在 112（96..144 扫描后笔画断裂最少的一档）。
-static volatile int s_dither_mode = 0;  // 0=硬阈值(默认,文字最清晰) 1=Bayer4 2=Bayer8 3/4=带状
-// 模式 0 的二值化阈值（可在线调，配合 /dither?mode=0&thr=NN 做笔画粗细 A/B）
-static volatile int s_threshold = 112;  // 1-bit 最佳平衡点(实测 96..144 扫描)
 
 // 0..63 的 Bayer 矩阵（先乘 4 再加 2 得 2..254 的阈值）
 static const uint8_t kBayer8[8][8] = {
@@ -87,9 +80,9 @@ static inline uint8_t rgb565_luma(uint16_t v)
 }
 
 // 取该像素的抖动阈值（2..254）
-static inline int dither_threshold(int x, int y)
+static inline int dither_threshold(int x, int y, int mode)
 {
-    if (s_dither_mode == 1) {
+    if (mode == 1) {
         return (int)kBayer4[y & 3][x & 3] * 4 + 2;
     }
     return (int)kBayer8[y & 7][x & 7] * 4 + 2;
@@ -118,14 +111,15 @@ void CustomLcdDisplay::Lvgl_flush_cb(lv_display_t * disp, const lv_area_t * area
         int changed_min_x = scr_w;
         int changed_max_x = -1;
         // 2) 只把该区域写进 1-bit 影子缓冲，同时记录真正发生变化的 x 范围
-        const int dither_mode = s_dither_mode;
+        const int dither_mode = self->dither_mode_.load();
+        const int threshold = self->threshold_.load();
         for (int y = y1; y <= y2; y++) {
             uint16_t *row = buffer + (size_t)(y - area->y1) * src_w + (x1 - area->x1);
             for (int x = x1; x <= x2; x++) {
                 const uint8_t luma = rgb565_luma(*row);
                 uint8_t color;
                 if (dither_mode == 0) {
-                    color = (luma >= s_threshold) ? ColorWhite : ColorBlack;
+                    color = (luma >= threshold) ? ColorWhite : ColorBlack;
                 } else if (dither_mode == 3 || dither_mode == 4) {
                     // 带状抖动：笔画核心与纯背景保持纯色，只对过渡带做抖动。
                     // 这样圆角/圆弧/斜线得到连续过渡，而汉字笔画不会被点碎。
@@ -136,10 +130,10 @@ void CustomLcdDisplay::Lvgl_flush_cb(lv_display_t * disp, const lv_area_t * area
                     } else if (luma >= hi) {
                         color = ColorWhite;
                     } else {
-                        color = (luma > dither_threshold(x, y)) ? ColorWhite : ColorBlack;
+                        color = (luma > dither_threshold(x, y, dither_mode)) ? ColorWhite : ColorBlack;
                     }
                 } else {
-                    color = (luma > dither_threshold(x, y)) ? ColorWhite : ColorBlack;
+                    color = (luma > dither_threshold(x, y, dither_mode)) ? ColorWhite : ColorBlack;
                 }
                 if (rlcd->RLCD_SetPixel((uint16_t)x, (uint16_t)y, color)) {
                     if (x < changed_min_x) changed_min_x = x;
@@ -170,7 +164,7 @@ void CustomLcdDisplay::SetDitherMode(int mode)
     if (mode < 0 || mode > 4) {
         return;
     }
-    s_dither_mode = mode;
+    dither_mode_.store(mode);
     ESP_LOGI(TAG, "1-bit 抖动模式切换为 %d (0=阈值 1=Bayer4 2=Bayer8 3/4=带状抖动)", mode);
 }
 
@@ -179,18 +173,18 @@ void CustomLcdDisplay::SetThreshold(int thr)
     if (thr < 16 || thr > 240) {
         return;
     }
-    s_threshold = thr;
+    threshold_.store(thr);
     ESP_LOGI(TAG, "1-bit 阈值切换为 %d", thr);
 }
 
 int CustomLcdDisplay::GetThreshold() const
 {
-    return s_threshold;
+    return threshold_.load();
 }
 
 int CustomLcdDisplay::GetDitherMode() const
 {
-    return s_dither_mode;
+    return dither_mode_.load();
 }
 
 // 请求整屏重绘（切换抖动模式后让 LVGL 重新光栅化，截图才会反映新模式）
@@ -211,6 +205,26 @@ void CustomLcdDisplay::FlushAddRange(int x1, int x2)
             x2 + kFlushMergeGap >= flush_ranges_[i].x1) {
             if (x1 < flush_ranges_[i].x1) flush_ranges_[i].x1 = x1;
             if (x2 > flush_ranges_[i].x2) flush_ranges_[i].x2 = x2;
+            // 合并后可能与后面的条带再次相邻/重叠，反复归并直到稳定
+            bool merged = true;
+            while (merged) {
+                merged = false;
+                for (int a = 0; a < flush_range_count_ && !merged; a++) {
+                    for (int b = a + 1; b < flush_range_count_; b++) {
+                        if (flush_ranges_[a].x1 <= flush_ranges_[b].x2 + kFlushMergeGap &&
+                            flush_ranges_[b].x1 <= flush_ranges_[a].x2 + kFlushMergeGap) {
+                            if (flush_ranges_[b].x1 < flush_ranges_[a].x1) flush_ranges_[a].x1 = flush_ranges_[b].x1;
+                            if (flush_ranges_[b].x2 > flush_ranges_[a].x2) flush_ranges_[a].x2 = flush_ranges_[b].x2;
+                            for (int k = b; k < flush_range_count_ - 1; k++) {
+                                flush_ranges_[k] = flush_ranges_[k + 1];
+                            }
+                            flush_range_count_--;
+                            merged = true;
+                            break;
+                        }
+                    }
+                }
+            }
             return;
         }
     }
@@ -527,7 +541,7 @@ void CustomLcdDisplay::SetChatMessage(const char* role, const char* content) {
     lv_label_set_long_mode(chat_status_label_, LV_LABEL_LONG_WRAP);
     
     // 先恢复居中对齐（正常模式），计算内容高度
-    lv_obj_align(chat_status_label_, LV_ALIGN_LEFT_MID, 56 + 20, 0);
+    lv_obj_align(chat_status_label_, LV_ALIGN_LEFT_MID, kAiChatTextOffsetX, 0);
     
     // 检查内容是否超出父容器（chat_inner）的可见高度
     lv_obj_update_layout(chat_status_label_);
@@ -539,7 +553,7 @@ void CustomLcdDisplay::SetChatMessage(const char* role, const char* content) {
     if (label_h > visible_h) {
         // 超长内容：切换到 TOP_LEFT 绝对定位后启用滚动
         // （和鱼咬尾同理，LEFT_MID 对齐会干扰动画的 set_y）
-        const int text_x = 56 + 20;
+        const int text_x = kAiChatTextOffsetX;
         lv_obj_align(chat_status_label_, LV_ALIGN_TOP_LEFT, text_x, 0);
         
         lv_anim_t a;
@@ -895,7 +909,7 @@ std::string CustomLcdDisplay::GetUiDebugInfo() {
             emoji_count = coll->Count();
         }
     }
-    snprintf(buf, sizeof(buf),
+    const int n = snprintf(buf, sizeof(buf),
              "chat_status: text=\"%s\" hidden=%d pos=%d,%d size=%dx%d\n"
              "parent: size=%dx%d content=%dx%d\n"
              "emotion_label: text=\"%s\"\n"
@@ -906,6 +920,9 @@ std::string CustomLcdDisplay::GetUiDebugInfo() {
              emo_txt,
              (int)img_hidden, iw, ih, img_src,
              (int)has_theme, (int)has_collection, emoji_count);
+    if (n < 0 || (size_t)n >= sizeof(buf)) {
+        return std::string(buf) + "\n(truncated: debug buffer 1024 bytes)";
+    }
     return std::string(buf);
 }
 

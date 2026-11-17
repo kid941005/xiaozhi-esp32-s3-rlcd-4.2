@@ -9,12 +9,9 @@
 #include <esp_log.h>
 
 #include "managers/weather_manager.h"
+#include "ui_assets.h"
 
-LV_FONT_DECLARE(font_puhui_16_4);
-LV_FONT_DECLARE(font_puhui_14_1);
-LV_FONT_DECLARE(font_puhui_16_1);
-
-#define TAG "WeatherDetail"
+static const char *TAG = "WeatherDetail";
 
 namespace {
 

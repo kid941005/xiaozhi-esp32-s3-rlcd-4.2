@@ -26,6 +26,8 @@
 #include "managers/sensor_manager.h"
 #include "managers/weather_manager.h"
 #include "managers/lunar_calendar.h"
+#include "date_utils.h"
+#include "ui_assets.h"
 // 敏感配置（天气 API Key 等）不入库：有 secret_config.h 就用，没有就用默认值
 #if __has_include("secret_config.h")
 #include "secret_config.h"
@@ -36,15 +38,6 @@
 #define NTP_SERVER       "ntp.aliyun.com"
 #endif
 
-// 声明状态栏图标（DataUpdateTask 需要更新图标）
-LV_IMAGE_DECLARE(ui_img_wifi);
-LV_IMAGE_DECLARE(ui_img_wifi_low);
-LV_IMAGE_DECLARE(ui_img_wifi_off);
-LV_IMAGE_DECLARE(ui_img_battery_full);
-LV_IMAGE_DECLARE(ui_img_battery_medium);
-LV_IMAGE_DECLARE(ui_img_battery_low);
-LV_IMAGE_DECLARE(ui_img_battery_charging);
-
 static const char *TAG = "DataUpdate";
 
 void CustomLcdDisplay::StartDataUpdateTask() {
@@ -53,7 +46,7 @@ void CustomLcdDisplay::StartDataUpdateTask() {
     //     WEATHER_API_KEY,
     //     WEATHER_API_HOST
     // );
-    
+
     // 栈从 16KB 下调到 8KB，给音频/MQTT 留更多 SRAM 余量
     // 优先级保持较低，避免与语音收发实时链路抢占 CPU
     xTaskCreate(DataUpdateTask, "weather_ui_update", 8192, this, 2, &update_task_handle_);
@@ -62,7 +55,7 @@ void CustomLcdDisplay::StartDataUpdateTask() {
 void CustomLcdDisplay::DataUpdateTask(void *arg) {
     CustomLcdDisplay *self = (CustomLcdDisplay *)arg;
     bool time_synced = false;
-    
+
     // NTP 指数退避重试参数
     int ntp_retry_count = 0;
     const int NTP_MAX_RETRIES = 5;            // 前 5 次做快速退避重试
@@ -71,39 +64,40 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
     uint32_t ntp_last_sync_ms = 0;            // 上次 NTP 同步成功的时间（用于 24 小时校准）
     const uint32_t NTP_RESYNC_INTERVAL = 24 * 60 * 60 * 1000;  // 24 小时（毫秒）
     const uint32_t NTP_SLOW_RETRY_INTERVAL = 5 * 60 * 1000;    // 失败后每 5 分钟重试，不再永久放弃
-    
+
     // 电池电量变化很慢，降频采样可显著减轻 ADC 和 UI 刷新压力
     const uint32_t BATTERY_POLL_INTERVAL = 10 * 1000;           // 每 10 秒采样一次
     uint32_t last_battery_poll_ms = 0;
     int cached_battery_level = 0;
     bool cached_charging = false, cached_discharging = false;
     bool battery_cached = false;
-    
+
     // 等待一会让系统启动完成
     vTaskDelay(pdMS_TO_TICKS(3000));
-    
+
     // 记录进入 idle 的时刻，用于"连续 idle 足够久才发网络请求"的保护
     uint32_t idle_since_ms = 0;
-    
+
     // 初始化活动时间（系统启动算一次活动）
     self->last_activity_ms_ = xTaskGetTickCount() * portTICK_PERIOD_MS;
-    
+
     // 用于备忘闹钟检查的时间信息（在锁外使用）
     struct tm timeinfo;
-    
+    int last_memo_min = -1;   // 备忘检查独立计分钟（不受 showing_system_info_ 跳过 UI 影响）
+
     // 时区设置只需初始化一次，避免每秒 setenv/tzset 带来的系统开销
     setenv("TZ", TIMEZONE_STRING, 1);
     tzset();
-    
+
     while (1) {
         auto& app = Application::GetInstance();
         DeviceState ds = app.GetDeviceState();
-        
+
         // 判断网络是否已连接（必须不是 starting、配网、未知等前期状态）
-        bool network_connected = (ds != kDeviceStateStarting && 
+        bool network_connected = (ds != kDeviceStateStarting &&
                                   ds != kDeviceStateWifiConfiguring &&
                                   ds != kDeviceStateUnknown);
-        
+
         uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
         const bool in_audio_session = (ds == kDeviceStateConnecting ||
                                        ds == kDeviceStateListening ||
@@ -121,12 +115,12 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
             idle_since_ms = 0;  // 非 idle 立刻重置
         }
         bool idle_long_enough = (idle_since_ms > 0 && (now_ms - idle_since_ms >= IDLE_GUARD_MS));
-        
+
         // ===== NTP 时间同步 =====
         // 仅在连续 idle 足够久后同步，避免与 AI 对话抢网络/内存
         if (network_connected && idle_long_enough) {
             bool should_sync = false;
-            
+
             if (!time_synced && ntp_retry_count < NTP_MAX_RETRIES) {
                 // 首次同步：快速退避重试阶段
                 should_sync = true;
@@ -134,17 +128,17 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                        (int)(now_ms - ntp_next_retry_ms) >= 0) {
                 // 快速重试用尽后，每 NTP_SLOW_RETRY_INTERVAL 毫秒慢速重试，不再永久放弃
                 should_sync = true;
-            } else if (time_synced && ntp_last_sync_ms > 0 && 
+            } else if (time_synced && ntp_last_sync_ms > 0 &&
                        (now_ms - ntp_last_sync_ms > NTP_RESYNC_INTERVAL)) {
                 // 定期校准：已同步但超过 24 小时，重新同步一次
                 ESP_LOGI(TAG, "距上次 NTP 同步已超过 24 小时，重新校准...");
                 should_sync = true;
             }
-            
+
             if (should_sync) {
                 ESP_LOGI(TAG, "同步 NTP 时间 (第 %d 次)...", ntp_retry_count + 1);
                 SensorManager::getInstance().syncNtpTime();
-                
+
                 // 检查时间是否合理（年份 > 2024 说明同步成功了）
                 time_t now_check;
                 struct tm check_info;
@@ -163,7 +157,7 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                              check_info.tm_hour, check_info.tm_min);
                 } else {
                     ntp_retry_count++;
-                    ESP_LOGW(TAG, "NTP 同步失败（年份=%d），第 %d/%d 次，%d 秒后重试", 
+                    ESP_LOGW(TAG, "NTP 同步失败（年份=%d），第 %d/%d 次，%d 秒后重试",
                              check_info.tm_year + 1900, ntp_retry_count, NTP_MAX_RETRIES,
                              (int)(ntp_retry_delay_ms / 1000));
                     // 指数退避等待后再继续循环（仅快速重试阶段阻塞任务；慢速重试不阻塞）
@@ -172,7 +166,7 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                     }
                     ntp_retry_delay_ms *= 2;  // 下次翻倍：1s → 2s → 4s → 8s → 16s
                     if (ntp_retry_delay_ms > 16000) ntp_retry_delay_ms = 16000;
-                    
+
                     if (ntp_retry_count >= NTP_MAX_RETRIES) {
                         // 快速重试用尽：改为每 NTP_SLOW_RETRY_INTERVAL 毫秒重试，不再永久放弃
                         ntp_next_retry_ms = (xTaskGetTickCount() * portTICK_PERIOD_MS) + NTP_SLOW_RETRY_INTERVAL;
@@ -182,18 +176,18 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                 }
             }
         }
-        
+
         // ===== 天气更新 =====
         // 暂时停用板载和风天气自动拉取，天气由 AI 通过 MCP 主动写入
-        
+
         // ===== 时间获取（在锁外也需要用，所以先获取）=====
         time_t now;
         time(&now);
         localtime_r(&now, &timeinfo);
-        
+
         // 记录本轮是否分钟变了（备忘闹钟检查也要用）
         bool minute_changed = (timeinfo.tm_min != self->last_min_);
-        
+
         // ===== 系统信息滚动超时自动恢复（防止标志置位后 UI 永久停更）=====
         if (self->PollSystemInfoTimeout()) {
             {
@@ -208,7 +202,7 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
         // 🔑 如果正在显示系统信息滚动，跳过整个 UI 更新块（避免锁竞争）
         if (!self->showing_system_info_) {
             DisplayLockGuard lock(self);
-            
+
             // 时间跳变保护：NTP 同步后，如果系统 epoch 被外部改了（偏差>2小时），
             // 从硬件 RTC 恢复正确时间
             if (time_synced && self->last_valid_epoch_ > 0) {
@@ -233,7 +227,7 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                 }
                 self->last_valid_epoch_ = now;
             }
-            
+
             // 每分钟或强制刷新时更新 UI
             if (minute_changed) {
                 char time_buf[16];
@@ -253,10 +247,10 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                 if (self->music_time_label_) lv_label_set_text(self->music_time_label_, time_buf);
 
                 // 日期行：「10月2日 星期五」
-                const char *weeks_zh[] = {"日", "一", "二", "三", "四", "五", "六"};
                 char date_buf[32];
                 snprintf(date_buf, sizeof(date_buf), "%d月%d日 星期%s",
-                         timeinfo.tm_mon + 1, timeinfo.tm_mday, weeks_zh[timeinfo.tm_wday]);
+                         timeinfo.tm_mon + 1, timeinfo.tm_mday,
+                         date_utils::WeekdayCharZh(timeinfo.tm_wday));
                 if (self->day_label_) lv_label_set_text(self->day_label_, date_buf);
 
                 // 农历 / 节气 / 节日（跨天自然由分钟刷新带出）
@@ -274,24 +268,27 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
         }  // DisplayLockGuard 自动释放
 
         // ===== 备忘闹钟检查（在锁外执行，避免长时间持锁）=====
-        if (minute_changed) {
+        // 单独用 last_memo_min 计分钟：showing_system_info_ 期间 last_min_ 不更新，
+        // 若复用 minute_changed 会每秒都判定「分钟变了」，导致 NVS 被每秒解析一次。
+        if (timeinfo.tm_min != last_memo_min) {
+            last_memo_min = timeinfo.tm_min;
             if (time_synced) {
                 Settings memo_rd("memo", false);
                 std::string memo_json = memo_rd.GetString("items", "");
-                
+
                 // 🔍 调试：打印当前时间和备忘录 JSON
                 char time_buf[16];
                 strftime(time_buf, sizeof(time_buf), "%H:%M", &timeinfo);
-                ESP_LOGI(TAG, "⏰ 备忘闹钟检查: 当前时间=%s, NVS数据=%s", 
+                ESP_LOGD(TAG, "⏰ 备忘闹钟检查: 当前时间=%s, NVS数据=%s",
                          time_buf, memo_json.empty() ? "(空)" : memo_json.c_str());
-                
+
                 if (!memo_json.empty()) {
                     cJSON *memo_arr = cJSON_Parse(memo_json.c_str());
                     if (memo_arr && cJSON_IsArray(memo_arr)) {
                         bool memo_changed = false;
                         int total_items = cJSON_GetArraySize(memo_arr);
-                        ESP_LOGI(TAG, "⏰ 备忘列表共 %d 条", total_items);
-                        
+                        ESP_LOGD(TAG, "⏰ 备忘列表共 %d 条", total_items);
+
                         // 倒序遍历，这样删除不会打乱前面的索引
                         for (int mi = total_items - 1; mi >= 0; mi--) {
                             cJSON *memo_item = cJSON_GetArrayItem(memo_arr, mi);
@@ -303,23 +300,23 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                                 strcmp(mtype->valuestring, "todo") == 0) {
                                 continue;
                             }
-                            
+
                             // 🔍 调试：打印每条备忘的时间
                             if (mt && mt->valuestring) {
-                                ESP_LOGI(TAG, "⏰ 检查备忘[%d]: 时间=%s, 内容=%s", 
-                                         mi, mt->valuestring, 
+                                ESP_LOGD(TAG, "⏰ 检查备忘[%d]: 时间=%s, 内容=%s",
+                                         mi, mt->valuestring,
                                          (mc && mc->valuestring) ? mc->valuestring : "(空)");
                             }
-                            
+
                             // 只匹配 "HH:MM" 格式（5个字符，中间是冒号）
-                            if (mt && mt->valuestring && strlen(mt->valuestring) == 5 
+                            if (mt && mt->valuestring && strlen(mt->valuestring) == 5
                                 && mt->valuestring[2] == ':') {
                                 if (strcmp(mt->valuestring, time_buf) == 0) {
                                     const char *memo_text = (mc && mc->valuestring) ? mc->valuestring : "备忘提醒";
                                     char alert_buf[128];
                                     snprintf(alert_buf, sizeof(alert_buf), "备忘提醒: %s %s", mt->valuestring, memo_text);
                                     ESP_LOGI(TAG, "🔔 触发备忘闹钟: %s", alert_buf);
-                                    
+
                                     // 播放提示音 + 屏幕显示提醒
                                     app.Alert("提醒", alert_buf, "happy", Lang::Sounds::OGG_POPUP);
 
@@ -370,7 +367,6 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                         snprintf(buf, sizeof(buf), "环境 %.1f°C %.0f%%", sd.temperature, sd.humidity);
                         if (self->sensor_label_) lv_label_set_text(self->sensor_label_, buf);
                         // 音乐页顶栏左侧也显示「环境」前缀（与天气页一致）
-                        snprintf(buf, sizeof(buf), "环境 %.1f°C %.0f%%", sd.temperature, sd.humidity);
                         if (self->music_sensor_label_) lv_label_set_text(self->music_sensor_label_, buf);
                         self->last_temp_ = sd.temperature;
                         self->last_humi_ = sd.humidity;
@@ -382,7 +378,14 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                 // 与 detail_ui.cc 一致改为 static 复用同一块存储
                 static WeatherData wd;
                 wd = WeatherManager::getInstance().getLatestData();
-                if (wd.valid && self->weather_label_) {
+                static std::string last_weather_line;
+                if (!wd.valid) {
+                    // 断网/数据失效时清掉旧文案，避免过期天气长期停留在屏幕上
+                    if (last_weather_line != "-- --°C") {
+                        if (self->weather_label_) lv_label_set_text(self->weather_label_, "-- --°C");
+                        last_weather_line = "-- --°C";
+                    }
+                } else if (self->weather_label_) {
                     std::string line = wd.city;
                     if (!wd.text.empty()) {
                         line += " " + wd.text;
@@ -393,7 +396,6 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                     if (line.empty()) {
                         line = "-- --°C";
                     }
-                    static std::string last_weather_line;
                     if (last_weather_line != line) {
                         lv_label_set_text(self->weather_label_, line.c_str());
                         last_weather_line = line;
@@ -495,7 +497,7 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
             static DeviceState last_ds = kDeviceStateUnknown;
             if (ds != last_ds) {
                 // AI 状态发生变化（对话、聆听等），视为用户活动
-                if (ds == kDeviceStateListening || ds == kDeviceStateSpeaking || 
+                if (ds == kDeviceStateListening || ds == kDeviceStateSpeaking ||
                     ds == kDeviceStateConnecting) {
                     self->NotifyUserActivity();
                 }
@@ -528,7 +530,7 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                     self->SetShowingSystemInfo(false);
                     lv_anim_delete(self->chat_status_label_, nullptr);
                     lv_label_set_long_mode(self->chat_status_label_, LV_LABEL_LONG_WRAP);
-                    lv_obj_align(self->chat_status_label_, LV_ALIGN_LEFT_MID, 56 + 20, 0);
+                    lv_obj_align(self->chat_status_label_, LV_ALIGN_LEFT_MID, kAiChatTextOffsetX, 0);
                     lv_label_set_text(self->chat_status_label_, status_text);
                 }
                 if (ds != kDeviceStateSpeaking && ds != kDeviceStateWifiConfiguring &&
@@ -555,7 +557,7 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                 }
             }
         }
-        
+
         // 动态刷新间隔：正常 1 秒，省电 5 秒
         int delay_ms = self->power_saving_ ? self->SAVING_REFRESH_MS : self->NORMAL_REFRESH_MS;
         vTaskDelay(pdMS_TO_TICKS(delay_ms));
