@@ -146,20 +146,29 @@ idf.py build flash monitor
 | `/v7/weather/3d?location=<LocationID>&lang=zh` | 未来 3 天（含日出日落，取第 1 天） | ~1.7 KB |
 | `/v7/warning/now?location=<LocationID>&lang=zh` | 灾害预警（`warning[0].typeName` + `severityColor`，无预警为空数组） | ~250 B |
 
-### 城市从哪来（IP 定位优先）
+### 城市从哪来（手动配置优先，多源 IP 定位兜底）
 
-首次更新时 `WeatherManager::LocateByIp()` 会 GET `WEATHER_IP_GEO_URL`（`http://ip-api.com/json/?lang=zh-CN&fields=status,country,regionName,city,lat,lon`，纯 HTTP、免密钥），拿到**出口 IP 所在城市**与经纬度。城市来源优先级：
+城市来源优先级（高 → 低）：
 
 ```
-IP 定位城市（ip-api）> NVS weather/city（手动配置）> config.h WEATHER_CITY
+NVS weather/city（手动配置 self.weather.set_city）> 上次 IP 定位缓存（NVS weather/ip_city）
+  > IP 定位（ip-api → ipapi.co → ipinfo.io）> config.h WEATHER_CITY
 ```
 
-- 手动配置走 MCP 工具 `self.weather.set_city`（参数 `city`），会置 `manual_city_`，之后**跳过** IP 定位。
-- IP 定位拿到的经纬度作为 `geo/city/lookup` 的第二路参数兜底（城市名查不到时用 `lat,lon` 反查）。
-- IP 定位失败（无网络 / 接口不可用）自动退回 NVS 城市、再退回 `config.h` 的 `WEATHER_CITY`，**不阻塞**天气更新。
-- 日志：`IP 定位成功: 江苏 南京 (32.0607, 118.7630)` / `IP 定位失败`。
+**为什么之前不准**：IP 定位只能定位到**运营商出口 IP** 所在城市（NAT/CGNAT 会把一片区域的用户汇聚到同一出口，常见偏差到省会或邻近地市，城市级精度经验值约 55–80%）；而早期固件把默认城市写死为「成都/苏州」，与实际所在地无关。所以改成**手动配置优先**：用户明确指定过城市就以手动值为准，永不被 IP 定位覆盖；没手动配置时才走 IP 定位。
 
-LocationID 由 `/geo/v2/city/lookup?location=<城市名或 lat,lon>&key=…` 解析并缓存进 NVS（`weather/loc_id`、`weather/loc_name`），解析失败兜底 `WEATHER_CITY_CODE`。响应缓冲 8192 B + gzip 解压，足够。
+- 手动配置：MCP 工具 `self.weather.set_city`（`city` 必填、`province` 可选，用于重名城市消歧），置 `manual_city_ = true` 并持久化 NVS `weather/city`、`weather/adm`，同时清空缓存的 LocationID；`self.weather.get_city` 可查当前城市 / 来源 / LocationID 做诊断。
+- IP 定位：`LocateByIp()` 依次试 `WEATHER_IP_GEO_URL`（`http://ip-api.com/json/?lang=zh-CN&fields=status,country,regionName,city,lat,lon`，纯 HTTP 免密钥）→ `WEATHER_IP_GEO_URL_ALT1`（`https://ipapi.co/json/`）→ `WEATHER_IP_GEO_URL_ALT2`（`https://ipinfo.io/json`），各 8 s 超时，全失败退回 NVS 缓存城市；成功写回 NVS `weather/ip_city` / `ip_region` / `ip_coord` 作为“上次定位缓存”。
+- LocationID 解析顺序：缓存 `weather/loc_id` → 有经纬度先按 `lon,lat` 反查（比城市名更准）→ 城市名（`province` 为中文时附 `&adm=` 消歧）→ 城市名单独 → 兜底 `WEATHER_CITY_CODE`；解析结果优先取 `adm2` 作显示名并去掉结尾「市」，`adm1` 记入上级，避免显示成区县名。
+- 全部失败时退回上次定位缓存 → `config.h` 的 `WEATHER_CITY`，**不阻塞**天气更新。
+- 日志：`天气配置: 城市=…(来源=手动配置/上次定位缓存/IP 定位/默认)` / `IP 定位成功: 江苏 南京 (32.0607, 118.7630)` / `和风 geo 定位成功: 南京 (101190101, 上级=江苏省)`。
+
+参考项目（GitHub 同类天气时钟的位置处理，均以手动/配置城市为主、IP 仅作首次默认，并取 city + region 双字段消歧）：
+- [xinnan-tech/xiaozhi-esp32-server](https://github.com/xinnan-tech/xiaozhi-esp32-server) — `plugins_func/functions/get_weather.py`：先 `geo/v2/city/lookup` 拿 LocationID，失败直接回「暂时查不到 X 的天气」（我们借此发现后端天气也受错误 host 影响）。
+- [leezicai/DuDuClock](https://github.com/leezicai/DuDuClock) — 城市写死在配置里，配网页改城市。
+- [timschneeb/esp32-weather-clock-cube](https://github.com/timschneeb/esp32-weather-clock-cube) — 首次用 IP 服务定位、之后可手动覆盖。
+- [nicholaswilde/cyd-weather-station](https://github.com/nicholaswilde/cyd-weather-station) — 城市/经纬度与 API key 一起存 NVS。
+- [Kerrbty/ESP32C3Clock](https://github.com/Kerrbty/ESP32C3Clock)、[JHershey69/OpenWeatherOneCall](https://github.com/JHershey69/OpenWeatherOneCall) — 经纬度直传，避免城市名重名。
 
 ### 免密钥兜底（和风不可用时）
 
@@ -223,8 +232,7 @@ LocationID 由 `/geo/v2/city/lookup?location=<城市名或 lat,lon>&key=…` 解
 ## 待办（MCP 接入点，设备自取）
 
 设备本身就是 MCP 客户端：板级任务 `todo_mcp`（栈 8192）用独立 websocket 连外部 MCP 接入点，
-按标准 JSON-RPC 握手后调用 `list_todos`（`view=today`, `limit=10`），把每条待办格式化成
-`20:00 标题` 的一行（**只保留今天**：`IsToday()` 拿 `due_text` 的日期和本地 `localtime_r` 的年月日比较，没有日期的视为今天；全天待办只显示标题，不再带日期与星期），写入 NVS `memo/items` 并重绘右侧待办卡。
+按标准 JSON-RPC 握手后调用 `list_todos`（`view=today`, `limit=10`），把每条待办格式化成**两行**：第一行 `★ 20:00`（`t` 字段，全天为「全天」），第二行事项标题（`c` 字段）；**只保留今天**（`IsToday()` 拿 `due_text` 的日期和本地 `localtime_r` 的年月日比较，没有日期的视为今天），写入 NVS `memo/items` 并重绘右侧待办卡。
 
 - **长连接**：握手（initialize）只做一次，之后在**同一条 websocket 上**每分钟发一次 `tools/call`。
   早期版本是每次拉取都新建连接（每次都要重做 TLS 握手），实测跑满 5 分钟后第二次握手会被对端
@@ -242,6 +250,8 @@ LocationID 由 `/geo/v2/city/lookup?location=<城市名或 lat,lon>&key=…` 解
 - 协议要点：JSON-RPC 的真实路径是 `/mcp_endpoint/call/`（`/mcp/` 是注册侧，握手不回包）；
   握手 `id=1` initialize、`id=2` tools/call，结果在 `result.content[0].text`（一个 JSON 字符串：
   `{"ok":true,"count":N,"items":[{"title","due_text","all_day",...}]}`）。
+
+- **排序与溢出**：设备侧按时间线升序显示（`std::stable_sort`：全天项最前 → 有具体时间的按 HH:MM → 无时间的排最后；同一时间保持服务端原始顺序）。屏幕**不再显示「…还有 N 条」**：渲染时按容器高度裁剪，能放几项放几项，勾掉/完成一项后下一项依次顶上。
 
 手动兜底：后端 AI 也可调用设备工具 `self.todo.sync`（`items` 为 JSON 字符串数组，最多 10 行，`[]` 清空）直接覆盖列表。
 
@@ -272,17 +282,18 @@ LocationID 由 `/geo/v2/city/lookup?location=<城市名或 lat,lon>&key=…` 解
 - **CHG / WRN 指示灯**：由充电芯片驱动，SoC 读不到充电状态。固件改用**电池电压趋势**推断充电状态（见下节），不依赖 STAT 引脚。
 - **RTC 备用电池、18650 电池座、2×8 排母**：纯硬件，无固件动作。
 
-## 充电状态检测（电压趋势推断）
+## 电量检测与充电状态（无 STAT 引脚）
 
-硬件没有把充电芯片的 STAT 引脚接到 SoC，所以固件用电池电压的变化趋势来推断是否在充电，实现在 `waveshare-s3-rlcd-4.2.cc` 的 `GetBatteryLevel()`：
+**硬件事实**：电池经 R21=200KΩ / R23=100KΩ 分压（比 3.0×，±1%）进 GPIO4（ADC1_CH3）；充电 IC 是 ETA6098，其 STAT 引脚只经 R51 驱动板上绿灯 LED2，**没有连到 SoC 任何 GPIO**；板上无库仑计、无电流采样电阻。因此软件只能做「电压 → 电量」换算 + 「电压趋势」推断充电状态，测不到真实电流或充电功率。
 
-- 12 槽环形缓冲记录电压采样，采样间隔 5 s（窗口约 60 s）。
-- 窗口内电压上升 ≥ 30 mV → 判为充电中；下降 ≥ 30 mV → 判为放电中。
-- 变化小于阈值时**保持上一次状态**，所以充电进入 CV 阶段（电压几乎不动）、或静置时，图标不会来回跳。
+（待补充：电池标称容量）官方未公布 18650 容量（Zephyr 上游 dts 的 2600 mAh 只是假设值，不作官方参数）。`config.h` 的 `BATTERY_CAPACITY_MAH` / `BATTERY_AVG_CURRENT_MA` 默认 **0**；两者为 0 时只显示**百分比 + 电压**，**不输出 mAh 与续航**（避免编造）。填入实测标称容量与工作平均电流后，会自动显示剩余 mAh 与可续航时间。
 
-状态栏电池图标因此会在 `battery_charging` 与 `battery_full/medium/low` 之间正确切换；低电量弹窗也只在既非充电、又在放电时才提示。
+- **百分比**（`BatteryPercentFromMv`）：单节锂电 OCV 分段线性表 4200→100% / 4150→97 / 4100→93 / 4050→88 / 4000→82 / 3950→74 / 3900→65 / 3850→56 / 3800→46 / 3750→35 / 3700→25 / 3650→15 / 3600→8 / 3500→4 / 3400→2 / 3300→0，段内线性插值；放电时先加 `BATTERY_LOAD_COMP_MV`（30 mV）补偿带载压降，再留 1% 死区防抖。取代原来的抛物线公式（≈3.44V→0、4.14V→100，低端偏高、中段偏乐观）。
+- **采样**（`BatterygetVoltage`）：ADC1_CH3 / 12 dB / 12 bit / curve fitting，`BATTERY_ADC_SAMPLES`（16）次过采样，去掉最大最小各一个后取平均，再 ×`BATTERY_ADC_DIVIDER`（3.0）。
+- **充电判断**（`GetBatteryStatus`，三态）：60 格 × 10 s（≈10 分钟窗口）电压历史；窗口 Δ≥+10 mV 判充电、≤−10 mV 判放电；**证据不足时保持「未知」**（`known=false`，不硬猜成放电，避免开机瞬间误报、误触发低电量弹窗），仅当电压停在满电平台（`v+20 mV ≥ BATTERY_FULL_MV`(4180)，只有接了充电器才可能）才直接判充电。`full = charging && v+20 mV ≥ FULL`。采样满 30 次（≈5 分钟）仍无趋势时按放电处理（纯电池放电电压下降很慢，短窗口测不出）。低电量弹窗只在「已知放电且 <20%」时提示；`self.system.info` 对未知态显示「状态待判定」。
+- **出口**：`GetBatteryLevel()` / `BatterygetPercent()` / `GetBatteryStatus()`；`ShowSystemInfo()` 与 MCP `self.system.info` 的电池文案由 `battery_detail` 统一生成。
 
-限制：纯软件推断，插拔瞬间的负载跳变会影响判断精度；它不是电量计，不能给出真实充电电流。
+限制：纯软件推断，插拔瞬间负载跳变会影响判断精度；这不是电量计，不能给出真实充电电流。
 
 ## 竖屏 300×400 模式切换
 

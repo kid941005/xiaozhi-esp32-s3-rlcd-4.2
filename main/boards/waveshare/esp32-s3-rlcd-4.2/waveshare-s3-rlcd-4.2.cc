@@ -51,6 +51,19 @@ static void WeatherFetchTask(void* arg) {
     }
 }
 
+// 电池状态快照：百分比 / 电压 / 充电判断 / 剩余电量与可续航估算
+struct BatteryStatus {
+    int percent = 0;          // 0-100
+    uint16_t voltage_mv = 0;  // 电池端电压 mV
+    bool known = false;       // 是否已能判定充电/放电（否则 charging/discharging 都为 false）
+    bool charging = false;    // 是否外接电源（充电中或已充满）
+    bool full = false;        // 是否已充满（充电且到达满电平台）
+    bool discharging = false; // 是否纯电池供电（仅 known 时有意义）
+    bool has_capacity = false;// 是否已知电池容量（否则不输出 mAh/续航，避免编造）
+    int remaining_mah = 0;    // 估算剩余容量
+    int runtime_min = 0;      // 估算可续航分钟
+};
+
 class CustomBoard : public WifiBoard {
 private:
     i2c_master_bus_handle_t i2c_bus_;
@@ -154,10 +167,19 @@ private:
         rtc_clk_cpu_freq_get_config(&cpu_freq_conf);
         uint32_t cpu_freq_mhz = cpu_freq_conf.freq_mhz;
         
-        // 电池信息
-        int battery_level = 0;
-        bool charging = false, discharging = false;
-        GetBatteryLevel(battery_level, charging, discharging);
+        // 电池信息（百分比 / 电压 / 充电状态 / 剩余电量与可续航）
+        BatteryStatus bat = GetBatteryStatus();
+        char battery_detail[128];
+        if (bat.has_capacity) {
+            snprintf(battery_detail, sizeof(battery_detail), "%d%% %s %.2fV 剩余%dmAh 约%dh%02dmin",
+                     bat.percent, (!bat.known ? "状态待判定" : (bat.charging ? (bat.full ? "已充满" : "充电中") : "放电中")),
+                     bat.voltage_mv / 1000.0f, bat.remaining_mah,
+                     bat.runtime_min / 60, bat.runtime_min % 60);
+        } else {
+            snprintf(battery_detail, sizeof(battery_detail), "%d%% %s %.2fV",
+                     bat.percent, (!bat.known ? "状态待判定" : (bat.charging ? (bat.full ? "已充满" : "充电中") : "放电中")),
+                     bat.voltage_mv / 1000.0f);
+        }
         
         // WiFi 信息
         auto& app = Application::GetInstance();
@@ -184,7 +206,7 @@ private:
                  "运行: %luh%lumin\n"
                  "SRAM: \n %dKB/%dKB (%d%%)\n"
                  "PSRAM: \n %dMB/%dMB (%d%%)\n"
-                 "电池: %d%% %s\n"
+                 "电池: %s\n"
                  "WiFi: %s\n"
                  "==============\n"
                  "\n",  // 分隔符
@@ -192,8 +214,7 @@ private:
                  uptime_hours, uptime_mins,
                  (total_heap - free_heap) / 1024, total_heap / 1024, heap_percent,
                  (total_psram - free_psram) / 1024 / 1024, total_psram / 1024 / 1024, psram_percent,
-                 battery_level, charging ? "充电中" : "放电中",
-                 wifi_status);
+                 battery_detail, wifi_status);
         
         if (display_) {
             lv_obj_t* chat_label = display_->GetChatStatusLabel();
@@ -248,7 +269,7 @@ private:
         }
         
         ESP_LOGI(TAG, "系统信息: CPU=%luMHz, 运行=%luh%lumin, SRAM=%d%%, PSRAM=%d%%, 电量=%d%%", 
-                 cpu_freq_mhz, uptime_hours, uptime_mins, heap_percent, psram_percent, battery_level);
+                 cpu_freq_mhz, uptime_hours, uptime_mins, heap_percent, psram_percent, bat.percent);
     }
 
     void RefreshAllData() {
@@ -287,9 +308,18 @@ private:
                 rtc_clk_cpu_freq_get_config(&cpu_freq_conf);
                 uint32_t cpu_freq_mhz = cpu_freq_conf.freq_mhz;
                 
-                int battery_level = 0;
-                bool charging = false, discharging = false;
-                GetBatteryLevel(battery_level, charging, discharging);
+                BatteryStatus bat = GetBatteryStatus();
+                char battery_detail[128];
+                if (bat.has_capacity) {
+                    snprintf(battery_detail, sizeof(battery_detail), "电池电量%d%%，电压%.2fV，当前%s，估算剩余%dmAh、可续航约%d小时%d分钟",
+                             bat.percent, bat.voltage_mv / 1000.0f,
+                             (!bat.known ? "状态待判定" : (bat.charging ? (bat.full ? "已充满" : "正在充电") : "使用电池供电")),
+                             bat.remaining_mah, bat.runtime_min / 60, bat.runtime_min % 60);
+                } else {
+                    snprintf(battery_detail, sizeof(battery_detail), "电池电量%d%%，电压%.2fV，当前%s",
+                             bat.percent, bat.voltage_mv / 1000.0f,
+                             (!bat.known ? "状态待判定" : (bat.charging ? (bat.full ? "已充满" : "正在充电") : "使用电池供电")));
+                }
                 
                 auto& app = Application::GetInstance();
                 const char* wifi_status = "未连接";
@@ -312,12 +342,11 @@ private:
                          "系统运行正常。CPU频率%luMHz，已运行%lu小时%lu分钟。"
                          "内存方面，SRAM使用了%dKB，占总量%dKB的%d%%；"
                          "PSRAM使用了%dMB，占总量%dMB的%d%%。"
-                         "电池电量%d%%，当前%s。WiFi%s。",
+                         "%s。WiFi%s。",
                          cpu_freq_mhz, uptime_hours, uptime_mins,
                          (total_heap - free_heap) / 1024, total_heap / 1024, heap_percent,
                          (total_psram - free_psram) / 1024 / 1024, total_psram / 1024 / 1024, psram_percent,
-                         battery_level, charging ? "正在充电" : "使用电池供电",
-                         wifi_status);
+                         battery_detail, wifi_status);
                 
                 ESP_LOGI(TAG, "AI查询系统信息");
                 return std::string(info);
@@ -404,23 +433,47 @@ private:
             }
         );
 
-        // ===== 天气城市设置（语音可调用，覆盖 IP 定位）=====
+        // ===== 天气城市设置（语音可调用，覆盖 IP 定位，持久化到 NVS）=====
         mcp_server.AddTool(
             "self.weather.set_city",
-            "Set the city used for weather queries (overrides IP-based location).\n"
-            "Use when user says: '天气城市改成南京', 'set weather city'.\n"
+            "Set the city used for weather queries (overrides IP-based location, persisted in NVS).\n"
+            "Use when user says: 天气城市改成南京, set weather city.\n"
             "Args:\n"
-            "  `city`: city name, e.g. '南京'",
+            "  `city`: city name, e.g. 南京\n"
+            "  `province`: optional province/municipality to disambiguate duplicate city names (e.g. 江苏 for 常州), can be empty",
             PropertyList({
-                Property("city", kPropertyTypeString, std::string(""))
+                Property("city", kPropertyTypeString, std::string("")),
+                Property("province", kPropertyTypeString, std::string(""))
             }),
             [this](const PropertyList& properties) -> ReturnValue {
                 auto city = properties["city"].value<std::string>();
+                auto province = properties["province"].value<std::string>();
                 if (city.empty()) {
                     return std::string("请提供城市名，例如：南京");
                 }
-                WeatherManager::getInstance().SetCity(city);
-                return std::string("天气城市已设置为 ") + city + "，稍后自动刷新";
+                WeatherManager::getInstance().SetCity(city, province);
+                return std::string("天气城市已设置为 ") + city +
+                       (province.empty() ? std::string("") : ("（" + province + "）")) +
+                       "，稍后自动刷新";
+            }
+        );
+
+        // ===== 天气城市查询（诊断：当前城市 / 来源 / LocationID）=====
+        mcp_server.AddTool(
+            "self.weather.get_city",
+            "Report the city currently used for weather and where it came from.\n"
+            "Use when user asks: 天气城市是哪里, which city is the weather for",
+            PropertyList(),
+            [this](const PropertyList&) -> ReturnValue {
+                auto& wm = WeatherManager::getInstance();
+                WeatherData data = wm.getLatestData();
+                char buf[256];
+                snprintf(buf, sizeof(buf),
+                         "天气城市：%s（来源：%s，LocationID：%s），最新显示：%s %s %s°C",
+                         wm.city().c_str(), wm.citySource().c_str(),
+                         wm.locationId().empty() ? "(未解析)" : wm.locationId().c_str(),
+                         data.city.c_str(), data.text.c_str(), data.temp.c_str());
+                return std::string(buf);
             }
         );
 
@@ -687,6 +740,27 @@ private:
         });
     }
 
+    // 电压 → 电量百分比：单节锂电静置 OCV 曲线，分段线性插值（比原来的抛物线拟合更贴近实际）
+    static int BatteryPercentFromMv(int mv) {
+        static const int kTable[][2] = {
+            {4200, 100}, {4150, 97}, {4100, 93}, {4050, 88}, {4000, 82},
+            {3950, 74},  {3900, 65}, {3850, 56}, {3800, 46}, {3750, 35},
+            {3700, 25},  {3650, 15}, {3600, 8},  {3500, 4},  {3400, 2}, {3300, 0},
+        };
+        const int n = (int)(sizeof(kTable) / sizeof(kTable[0]));
+        if (mv >= kTable[0][0]) return 100;
+        if (mv <= kTable[n - 1][0]) return 0;
+        for (int i = 0; i < n - 1; i++) {
+            int hi_mv = kTable[i][0], hi_pct = kTable[i][1];
+            int lo_mv = kTable[i + 1][0], lo_pct = kTable[i + 1][1];
+            if (mv <= hi_mv && mv >= lo_mv) {
+                return lo_pct + (int)((long)(mv - lo_mv) * (hi_pct - lo_pct) / (hi_mv - lo_mv));
+            }
+        }
+        return 0;
+    }
+
+    // 电池电压（mV）：过采样 + 去极值平均，再按分压比还原到电池端
     uint16_t BatterygetVoltage(void) {
         static bool initialized = false;
         static adc_oneshot_unit_handle_t adc_handle;
@@ -696,13 +770,13 @@ private:
                 .unit_id = ADC_UNIT_1,
             };
             adc_oneshot_new_unit(&init_config, &adc_handle);
-    
+
             adc_oneshot_chan_cfg_t ch_config = {
                 .atten = ADC_ATTEN_DB_12,
                 .bitwidth = ADC_BITWIDTH_12,
             };
             adc_oneshot_config_channel(adc_handle, ADC_CHANNEL_3, &ch_config);
-    
+
             adc_cali_curve_fitting_config_t cali_config = {
                 .unit_id = ADC_UNIT_1,
                 .atten = ADC_ATTEN_DB_12,
@@ -712,45 +786,90 @@ private:
                 initialized = true;
             }
         }
-
-        if (initialized) {
-            int raw_value = 0;
-            int raw_voltage = 0;
-            int voltage = 0;
-            adc_oneshot_read(adc_handle, ADC_CHANNEL_3, &raw_value);
-            adc_cali_raw_to_voltage(cali_handle, raw_value, &raw_voltage);
-            voltage = raw_voltage * 3;  // 分压电阻比例
-            return (uint16_t)voltage;
+        if (!initialized) {
+            return 0;
         }
-        return 0;
+        int sum_mv = 0, cnt = 0;
+        int min_mv = 0x7fffffff, max_mv = -1;
+        for (int i = 0; i < BATTERY_ADC_SAMPLES; i++) {
+            int raw_value = 0, pin_mv = 0;
+            if (adc_oneshot_read(adc_handle, ADC_CHANNEL_3, &raw_value) != ESP_OK) continue;
+            if (adc_cali_raw_to_voltage(cali_handle, raw_value, &pin_mv) != ESP_OK) continue;
+            if (pin_mv < min_mv) min_mv = pin_mv;
+            if (pin_mv > max_mv) max_mv = pin_mv;
+            sum_mv += pin_mv;
+            cnt++;
+        }
+        if (cnt == 0) {
+            return 0;
+        }
+        // 去掉最大、最小各一个，抑制接触抖动/毛刺
+        int avg_pin_mv = (cnt > 2) ? (sum_mv - min_mv - max_mv) / (cnt - 2) : sum_mv / cnt;
+        int battery_mv = (int)((float)avg_pin_mv * BATTERY_ADC_DIVIDER + 0.5f);
+        return (uint16_t)battery_mv;
+    }
+
+    // 采集一次电池状态（百分比 / 充电判断 / 剩余电量）
+    BatteryStatus GetBatteryStatus() {
+        BatteryStatus st;
+        uint16_t mv = BatterygetVoltage();
+        st.voltage_mv = mv;
+
+        // 充电芯片 STAT 未接 SoC：用电压趋势 + 满电平台判定；证据不足时保持「未知」，
+        // 不硬猜成放电（否则开机瞬间会误报放电、并可能误触发低电量弹窗）。
+        static uint32_t last_sample_ms = 0;
+        static uint16_t hist_mv[60] = {0};        // 10 s/格 → 窗口约 10 分钟
+        static int hist_count = 0, hist_pos = 0;
+        static int charge_state = -1;             // -1=未知 0=放电 1=充电
+        const uint32_t kSampleIntervalMs = 9000;  // 与主循环 10 s 对齐
+        const int kTrendUpMv = 10, kTrendDownMv = 10;
+
+        uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+        if (last_sample_ms == 0 || now_ms - last_sample_ms >= kSampleIntervalMs) {
+            last_sample_ms = now_ms;
+            hist_mv[hist_pos] = mv;
+            hist_pos = (hist_pos + 1) % 60;
+            if (hist_count < 60) hist_count++;
+            if (hist_count >= 6) {
+                int newest = (hist_pos + 60 - 1) % 60;
+                int oldest = (hist_pos + 60 - hist_count) % 60;
+                int delta_mv = (int)hist_mv[newest] - (int)hist_mv[oldest];
+                if (delta_mv >= kTrendUpMv) charge_state = 1;
+                else if (delta_mv <= -kTrendDownMv) charge_state = 0;
+            }
+        }
+        // 没有趋势证据时，只有电压停在满电平台（CV 阶段，只有接了充电器才可能）才判充电
+        if (charge_state < 0 && mv + 20 >= BATTERY_FULL_MV) charge_state = 1;
+        // 采满 30 次（约 5 分钟）仍无趋势：纯电池放电时电压下降很慢、短窗口测不出，按放电处理
+        if (charge_state < 0 && hist_count >= 30) charge_state = 0;
+
+        st.known = (charge_state >= 0);
+        st.charging = (charge_state == 1);
+        st.discharging = (charge_state == 0);
+        st.full = st.charging && (mv + 20 >= BATTERY_FULL_MV);
+
+        // 放电时按负载压降补偿回静置电压，充电/未知时不补偿
+        int comp_mv = st.discharging ? (int)BATTERY_LOAD_COMP_MV : 0;
+        int pct = BatteryPercentFromMv((int)mv + comp_mv);
+        // 1% 死区：读数抖动不来回跳数字
+        static int last_pct = -1;
+        if (last_pct >= 0) {
+            int diff = (pct > last_pct) ? (pct - last_pct) : (last_pct - pct);
+            if (diff < 1) pct = last_pct;
+        }
+        last_pct = pct;
+        st.percent = pct;
+
+#if (BATTERY_CAPACITY_MAH > 0) && (BATTERY_AVG_CURRENT_MA > 0)
+        st.has_capacity = true;
+        st.remaining_mah = (int)((long)BATTERY_CAPACITY_MAH * pct / 100);
+        st.runtime_min = st.remaining_mah * 60 / BATTERY_AVG_CURRENT_MA;
+#endif
+        return st;
     }
 
     uint8_t BatterygetPercent() {
-        // 静态变量用于指数移动平均（EMA）滤波，消除 ADC 噪声导致的电量漂移
-        static float ema_voltage = 0.0f;    // 平滑后的电压值
-        static bool ema_initialized = false;
-        const float alpha = 0.1f;           // 平滑系数：越小越平滑（0.1 ≈ 约 10 次采样才能跟上真实变化）
-
-        // 采样 10 次取平均（减少瞬时噪声）
-        int voltage = 0;
-        for (uint8_t i = 0; i < 10; i++) {
-            voltage += BatterygetVoltage();
-        }
-        voltage /= 10;
-
-        // EMA 滤波：new_value = alpha * 当前值 + (1-alpha) * 历史值
-        if (!ema_initialized) {
-            ema_voltage = (float)voltage;
-            ema_initialized = true;
-        } else {
-            ema_voltage = alpha * (float)voltage + (1.0f - alpha) * ema_voltage;
-        }
-
-        int smoothed = (int)(ema_voltage + 0.5f);  // 四舍五入
-        // 电压→百分比映射（抛物线拟合）
-        int percent = (-1 * smoothed * smoothed + 9016 * smoothed - 19189000) / 10000;
-        percent = (percent > 100) ? 100 : (percent < 0) ? 0 : percent;
-        return (uint8_t)percent;
+        return (uint8_t)GetBatteryStatus().percent;
     }
 
 public:
@@ -855,41 +974,21 @@ public:
     }
 
     virtual bool GetBatteryLevel(int &level, bool& charging, bool& discharging) override {
-        // 本板没有把充电芯片的 STAT 脚接到 SoC，只能靠电池电压趋势推断：
-        //   电压在观察窗口内明显上升 → 正在充电（插上充电器时会有一次明显抬升）
-        //   明显下降              → 正在放电（拔掉充电器时会有一次明显跌落）
-        //   变化不明显            → 保持上一次状态（充电 CV 阶段、静置时都不会误翻转图标）
-        static uint32_t last_sample_ms = 0;
-        static uint16_t hist_mv[12] = {0};
-        static int hist_count = 0;
-        static int hist_pos = 0;
-        static bool charging_state = false;
-
-        const uint32_t kSampleIntervalMs = 5000;   // 采样间隔
-        const int kTrendThresholdMv = 30;          // 窗口内变化超过该值才判定状态切换
-
-        uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
-        if (last_sample_ms == 0 || now_ms - last_sample_ms >= kSampleIntervalMs) {
-            last_sample_ms = now_ms;
-            hist_mv[hist_pos] = BatterygetVoltage();
-            hist_pos = (hist_pos + 1) % 12;
-            if (hist_count < 12) hist_count++;
-
-            if (hist_count >= 4) {
-                int newest = (hist_pos + 12 - 1) % 12;
-                int oldest = (hist_pos + 12 - hist_count) % 12;
-                int delta_mv = (int)hist_mv[newest] - (int)hist_mv[oldest];
-                if (delta_mv >= kTrendThresholdMv) {
-                    charging_state = true;
-                } else if (delta_mv <= -kTrendThresholdMv) {
-                    charging_state = false;
-                }
-            }
+        // 本板未把充电芯片 STAT 脚接到 SoC，改用电压趋势 + 满电平台判定（见 GetBatteryStatus）
+        BatteryStatus st = GetBatteryStatus();
+        level = st.percent;
+        charging = st.charging;
+        discharging = st.discharging;
+        // 诊断日志：状态变化或电量每跨 5% 打印一次（不算高频）
+        static int last_logged_pct = -1;
+        static int last_logged_chg = -1;
+        int pct_delta = (last_logged_pct < 0) ? 100 : (st.percent > last_logged_pct ? st.percent - last_logged_pct : last_logged_pct - st.percent);
+        if ((int)st.charging != last_logged_chg || pct_delta >= 5) {
+            ESP_LOGI(TAG, "电池: %d%% %umV known=%d charging=%d full=%d discharging=%d",
+                     st.percent, (unsigned)st.voltage_mv, (int)st.known, (int)st.charging, (int)st.full, (int)st.discharging);
+            last_logged_pct = st.percent;
+            last_logged_chg = (int)st.charging;
         }
-
-        charging = charging_state;
-        discharging = !charging_state;
-        level = (int)BatterygetPercent();
         return true;
     }
 };

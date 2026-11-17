@@ -38,13 +38,34 @@
 #define WEATHER_CITY  "成都"       // 查询/显示的城市名（和风 geo 定位也用它）
 #define WEATHER_CITY_CODE "101270101"
 
-// IP 定位（ip-api.com 免费接口，HTTP，45 次/分钟）：开机定位一次，得到实际所在城市与经纬度
-#define WEATHER_IP_GEO_URL "http://ip-api.com/json/?lang=zh-CN&fields=status,country,regionName,city,lat,lon"  // 中国天气网城市代码（成都），免密钥天气源使用
+// IP 定位（ip-api.com 免费接口，HTTP，45 次/分钟）：仅作最后兜底。
+// 注意：IP 定位得到的是「出口 IP」的注册地，设备在 Windows 热点/运营商 NAT 后面时常常与真实
+// 所在地不一致（实测出口 IP 判为南京、实际在常州），因此手动配置城市（NVS weather/city 或
+// MCP self.weather.set_city）优先，IP 定位只在没配置时使用。
+#define WEATHER_IP_GEO_URL "http://ip-api.com/json/?lang=zh-CN&fields=status,country,regionName,city,lat,lon"
+// 备用 IP 定位源（主源失败时依次尝试，字段名各不相同，解析层已兼容）
+//   ipapi.co:  city / region / latitude / longitude（失败时含 error 字段）
+//   ipinfo.io: city / region / loc="lat,lon"
+#define WEATHER_IP_GEO_URL_ALT1 "https://ipapi.co/json/"
+#define WEATHER_IP_GEO_URL_ALT2 "https://ipinfo.io/json"
 
 // 待办 MCP 接入点（websocket JSON-RPC）。留空表示不启用，可在运行时通过
 // MCP 工具 self.todo.set_url 配置（持久化在 NVS namespace "todo", key "mcp_url"）。
 // 例：wss://example.com:59826/mcp_endpoint/call/?token=xxx
 #define MCP_TODO_URL ""
+
+// ===== 电池检测 =====
+// 采样：ADC1 通道 3（ESP32-S3 上 ADC1_CH3 = GPIO4），12 dB 衰减、12 bit、硬件曲线拟合校准。
+// 待补充（需原理图/实测确认）：采样引脚、分压比、是否有充电 IC 的 STAT 引脚接到 SoC。
+// 分压比若与原理图不符，只改 BATTERY_ADC_DIVIDER 即可（电池电压 = ADC 引脚电压 × 该系数）。
+#define BATTERY_ADC_DIVIDER   3.0f    // 分压系数（实测校准：4.2V 电池对应 ADC ≈1.40V）
+#define BATTERY_ADC_SAMPLES   16      // 过采样次数（去最大最小后平均）
+#define BATTERY_LOAD_COMP_MV  30.0f   // 放电时的负载压降补偿（mV），充电时不补偿
+#define BATTERY_FULL_MV       4180    // 满电/接 USB 平台电压（持续≥该值视为充电/已充满）
+// 待补充（需硬件规格确认）：电池标称容量与整机平均电流。填 0 时界面/接口只显示百分比，
+// 不输出「剩余 xx mAh / 预计可用 xx 小时」，避免用假设值误导。
+#define BATTERY_CAPACITY_MAH  0       // 例如 2000（单节锂电）
+#define BATTERY_AVG_CURRENT_MA 0      // 例如 120（整机平均放电电流）
 
 #define BOOT_BUTTON_GPIO        GPIO_NUM_0
 #define USER_BUTTON_GPIO        GPIO_NUM_18  // 用户按键（屏幕右侧 KEY 按钮）

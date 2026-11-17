@@ -70,7 +70,13 @@ public:
     const std::string& city() const { return city_; }
 
     // 手动指定城市（MCP self.weather.set_city 用）：清定位缓存并跳过后续 IP 定位
-    void SetCity(const std::string& city);
+    // adm：可选上级行政区划（省/市），用于同名城市消歧（参考 DuDuClock 的做法）
+    void SetCity(const std::string& city, const std::string& adm = "");
+
+    // 当前城市来源（手动配置 / 上次定位缓存 / IP 定位 / 默认）——诊断用
+    const std::string& citySource() const { return city_source_; }
+    // 当前解析到的和风 LocationID——诊断用
+    const std::string& locationId() const { return loc_id_; }
 
     // 通过外部工具（如 MCP）直接写入天气数据
     // 适用于不走板载 HTTP 天气接口，而由 AI 侧先查好天气再下发到设备
@@ -89,6 +95,10 @@ private:
     std::string city_;
     std::string loc_id_;    // 和风天气 LocationID（geo 查询结果，缓存在 NVS）
     std::string loc_name_;  // 和风返回的城市名（用于显示）
+    std::string adm_;       // 上级行政区划（手动配置或 geo 返回的 adm1），同名城市消歧用
+    std::string city_source_ = "默认";   // 城市来源描述
+    std::string ip_cache_city_;          // NVS 缓存的上次 IP 定位城市
+    std::string ip_cache_region_;        // NVS 缓存的上次 IP 定位省份
 
     // IP 定位状态（ip-api.com）
     bool manual_city_ = false;   // 城市被手动指定，跳过 IP 定位

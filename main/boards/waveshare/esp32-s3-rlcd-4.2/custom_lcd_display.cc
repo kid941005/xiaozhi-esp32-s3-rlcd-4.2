@@ -465,7 +465,7 @@ void CustomLcdDisplay::RefreshMemoDisplayInternal() {
     for (int i = 0; i < built; i++) {
         const int h = lv_obj_get_height(boxes[i]);
         if (used_h + h > avail_h) break;
-        used_h += h + 4;   // 4 = memo_rows_ 的 pad_row
+        used_h += h + 3;   // 3 = memo_rows_ 的 pad_row
         keep++;
     }
     for (int i = keep; i < built; i++) {
@@ -488,12 +488,7 @@ void CustomLcdDisplay::RefreshMemoDisplayInternal() {
         ESP_LOGI(TAG, "%s", dbg);
     }
 
-    if (keep < count) {
-        lv_obj_t *more = lv_label_create(memo_rows_);
-        lv_obj_set_style_text_font(more, &font_puhui_16_1, 0);
-        lv_obj_set_style_text_color(more, lv_color_black(), 0);
-        lv_label_set_text_fmt(more, "…还有%d条", count - keep);
-    }
+    // 不再显示「…还有N条」：用户按时间线依次完成，未显示的下一条会依次顶上
 
     cJSON_Delete(arr);
     ESP_LOGI(TAG, "待办列表已刷新，共 %d 条", count);

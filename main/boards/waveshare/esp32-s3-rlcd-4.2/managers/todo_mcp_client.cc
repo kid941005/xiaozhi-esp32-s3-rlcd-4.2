@@ -5,6 +5,7 @@
 #include <esp_log.h>
 #include <esp_system.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
@@ -285,9 +286,15 @@ bool TodoMcpClient::ApplyPayload(const std::string& payload) {
     cJSON* root = cJSON_Parse(payload.c_str());
     if (root == nullptr) return false;
 
+    // 先收进临时行，按时间线排序后再写 NVS（服务端返回顺序不保证时间序）
+    struct Row {
+        int minutes;            // 排序键：全天 = -1，有具体时间 = 时*60+分，无时间 = 24*60+1
+        std::string time_text;  // 显示用：HH:MM / 全天 / 空
+        std::string title;
+    };
+    static Row rows[kMaxRows];  // 任务栈有限，放静态区避免大栈帧
     bool ok = false;
     int count = 0;
-    cJSON* arr = cJSON_CreateArray();
 
     cJSON* result = cJSON_GetObjectItem(root, "result");
     cJSON* content = (result != nullptr) ? cJSON_GetObjectItem(result, "content") : nullptr;
@@ -318,13 +325,20 @@ bool TodoMcpClient::ApplyPayload(const std::string& payload) {
                     if (!IsToday(due_text)) {
                         continue;   // 非今天的待办不上屏
                     }
-                    std::string tstr = FormatTime(due_text, cJSON_IsTrue(all_day));
-                    ESP_LOGI(TAG, "待办行: %s %s", tstr.c_str(), title->valuestring);
-
-                    cJSON* item = cJSON_CreateObject();
-                    cJSON_AddStringToObject(item, "t", tstr.c_str());
-                    cJSON_AddStringToObject(item, "c", title->valuestring);
-                    cJSON_AddItemToArray(arr, item);
+                    const bool is_all_day = cJSON_IsTrue(all_day);
+                    std::string tstr = FormatTime(due_text, is_all_day);
+                    int minutes = 24 * 60 + 1;          // 无时间 → 排最后
+                    if (is_all_day) {
+                        minutes = -1;                    // 全天 → 排最前
+                    } else if (std::strlen(due_text) >= 16) {
+                        int hh = 0, mm = 0;
+                        if (std::sscanf(due_text + 11, "%d:%d", &hh, &mm) == 2) {
+                            minutes = hh * 60 + mm;
+                        }
+                    }
+                    rows[count].minutes = minutes;
+                    rows[count].time_text = tstr;
+                    rows[count].title = title->valuestring;
                     count++;
                 }
             }
@@ -332,6 +346,20 @@ bool TodoMcpClient::ApplyPayload(const std::string& payload) {
         }
     }
     cJSON_Delete(root);
+
+    // 按时间线升序（std::stable_sort 保证同一时间的多条保持服务端原顺序）
+    std::stable_sort(rows, rows + count, [](const Row& a, const Row& b) {
+        return a.minutes < b.minutes;
+    });
+
+    cJSON* arr = cJSON_CreateArray();
+    for (int i = 0; i < count; i++) {
+        ESP_LOGI(TAG, "待办行: %s %s", rows[i].time_text.c_str(), rows[i].title.c_str());
+        cJSON* item = cJSON_CreateObject();
+        cJSON_AddStringToObject(item, "t", rows[i].time_text.c_str());
+        cJSON_AddStringToObject(item, "c", rows[i].title.c_str());
+        cJSON_AddItemToArray(arr, item);
+    }
 
     if (!ok) {
         cJSON_Delete(arr);
