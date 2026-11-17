@@ -242,7 +242,21 @@ RLCD 面板只有黑白两态，16bpp 画面必须在 flush 里量化成 1bit（
 - 默认：`s_dither_mode = 0`（硬阈值）、`s_threshold = 112`。阈值 96..144 实测扫描（3x 放大对比）：**112 笔画最实、断裂最少**；96 过粗发糊，144 偏细有断笔。
 - 抖动模式（可选）：`1`=Bayer 4x4、`2`=Bayer 8x8、`3`/`4`=带状抖动（只对过渡带抖动，笔画核心保持纯色）。**实测对本 UI 是负优化**：汉字笔画会被点碎/镂空（与阈值版差异像素仅约 1%，但观感更差），只有圆角/圆弧略有改善。因此默认关闭。
 - 在线 A/B（无需重编译）：`GET /dither?mode=0..4&thr=NN`（thr 16..240），切换后整屏重绘；`GET /dbg` 首行也会输出 `dither_mode=… thr=…`。
-- 若要从根上消除文字锯齿：应改用 **16px 1bpp 点阵字库**（当前 `font_puhui_16_4` 是 4bpp 被阈值化，`font_puhui_14_1` 已是 1bpp 所以 14px 文字更锐利）。代价是 +约 250KB flash 且需重新生成字库（原 TTF `puhui-7415-Regular.ttf` 已不在仓库）。
+- 从根上消除文字锯齿：静态文案改用 **16px 1bpp 点阵字库**（见下一节）。`font_puhui_16_4` 是 4bpp、二值化后必然带毛边；`font_puhui_14_1` 本身就是 1bpp，所以 14px 文字一直比 16px 锐利。
+
+## 静态文案的 16px 1bpp 点阵字库
+
+- 文件：`assets/fonts/font_puhui_16_1.c`（LVGL 字体名 `font_puhui_16_1`，16px、1bpp、`--no-compress`，447 个字符）。字形本身就是二值点阵，flush 阈值不会在笔画边缘切出灰阶毛边。
+- 字符集来源：扫描板级 `d/*.c|*.cc|*.h|*.cpp` 的字符串字面量（**排除 `assets/` 目录**，否则会把旧字库注释里的几千汉字扫进来）+ 固定补充字（闰/廿/卅、星期、年月日等）。当前 447 字。
+- 生成命令（源 TTF 为阿里巴巴普惠体 `puhui_deepseek.ttf`，取自 xiaozhi-server 的 `main/manager-web/public/generator/static/fonts/`）：
+  ```
+  node <lv_font_conv.js> --font <ttf> --size 16 --bpp 1 --format lvgl --no-compress --no-prefilter \
+       --lv-font-name font_puhui_16_1 -r 0x20-0x7F -r 0xA0-0xFF --symbols <447字> -o font_puhui_16_1.c
+  ```
+- 使用范围（内容固定的控件）：顶栏「环境 …°C …%」、时钟卡日期行、待办卡标题、待办空态「暂无待办」/「…还有N条」、电量低提示、AI 卡情绪标签。
+- **动态文本仍用 `font_puhui_16_4`**（城市/天气、AI 状态文案、待办条目）：内容不可预知，用 447 字点阵会缺字。
+- 缺字风险：**新增静态中文文案必须把新字补进字符集重新生成**，否则该字显示空白（字库里没有 fallback）。
+- flash 代价：字库 obj 39,960 B，`xiaozhi.bin` 由 0x461d40 增至 0x468d40（仍余 11%）。
 
 ## AI 卡：内置猫脸（无 emoji 素材时的兜底）
 

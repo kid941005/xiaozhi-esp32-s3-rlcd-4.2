@@ -34,6 +34,7 @@ LV_FONT_DECLARE(alibaba_black_64);
 // 小智自带字体（7415 个常用汉字，用于中文文案）
 LV_FONT_DECLARE(font_puhui_16_4);  // 16px 标准字体
 LV_FONT_DECLARE(font_puhui_14_1);  // 14px 小字体
+LV_FONT_DECLARE(font_puhui_16_1);  // 16px 1bpp 点阵（静态文案专用：无抗锯齿，二值化后不糊）
 LV_FONT_DECLARE(font_material_symbols_16_4);  // 16px 图标字体（★ ☑）
 
 // ===== 内置猫脸线稿（资源包没有 emoji 素材时的兜底图形）=====
@@ -168,6 +169,9 @@ void CustomLcdDisplay::SetupWeatherUI() {
     const lv_font_t *font_clock  = &alibaba_black_64;
     const lv_font_t *font_ai     = &font_puhui_16_4;   // 7415 常用汉字
     const lv_font_t *font_tiny   = &font_puhui_14_1;   // 14px
+    // 静态文案（内容固定的控件）用 16px 1bpp 点阵字体：字形本身就是二值点阵，
+    // 不会像 4bpp 字体那样被 flush 阈值切出毛边，RLCD 上更清晰。
+    const lv_font_t *font_static = &font_puhui_16_1;
     const lv_font_t *font_icon   = &font_material_symbols_16_4;
 
     // ===== 状态栏（右上角白底胶囊：WiFi + 电池 + 电量）=====
@@ -200,7 +204,7 @@ void CustomLcdDisplay::SetupWeatherUI() {
     // ===== 左上角「环境 温度 湿度」（白字，直接在黑底上）=====
     // 注意：必须用 font_puhui_16_4（7415 常用汉字），alibaba_puhui_16 字符集缺「环境」二字
     sensor_label_ = lv_label_create(screen);
-    lv_obj_set_style_text_font(sensor_label_, font_ai, 0);
+    lv_obj_set_style_text_font(sensor_label_, font_static, 0);
     lv_obj_set_style_text_color(sensor_label_, lv_color_white(), 0);
     lv_obj_align(sensor_label_, LV_ALIGN_TOP_LEFT, 10, 10);
     lv_label_set_text(sensor_label_, "环境 --.-°C --%");
@@ -262,7 +266,7 @@ void CustomLcdDisplay::SetupWeatherUI() {
 
     // 日期行：「10月2日 星期五」（黑字白底，卡片顶部）
     day_label_ = lv_label_create(clock_card);
-    lv_obj_set_style_text_font(day_label_, font_ai, 0);
+    lv_obj_set_style_text_font(day_label_, font_static, 0);
     lv_obj_set_style_text_color(day_label_, lv_color_black(), 0);
     lv_obj_align(day_label_, LV_ALIGN_TOP_MID, 0, 8);
     lv_label_set_text(day_label_, "--月--日 星期-");
@@ -362,7 +366,7 @@ void CustomLcdDisplay::SetupWeatherUI() {
     lv_obj_set_style_clip_corner(todo_card, true, 0);
 
     lv_obj_t *todo_title = lv_label_create(todo_card);
-    lv_obj_set_style_text_font(todo_title, font_ai, 0);
+    lv_obj_set_style_text_font(todo_title, font_static, 0);
     lv_obj_set_style_text_color(todo_title, lv_color_black(), 0);
     lv_obj_set_style_text_letter_space(todo_title, 1, 0);
     lv_obj_align(todo_title, LV_ALIGN_TOP_LEFT, 12, 8);
@@ -412,7 +416,7 @@ void CustomLcdDisplay::SetupWeatherUI() {
     const int emo_img_size = compact_ai ? 30 : 48;
     const int emo_img_dy   = compact_ai ? -8 : -14;
     const int emo_lbl_dy   = compact_ai ? 14 : 28;
-    const lv_font_t *emo_lbl_font = compact_ai ? font_tiny : font_ai;
+    const lv_font_t *emo_lbl_font = compact_ai ? font_tiny : font_static;
 
     chat_card_ = lv_obj_create(screen);
     lv_obj_set_pos(chat_card_, ai_x, ai_y);
@@ -514,7 +518,7 @@ void CustomLcdDisplay::SetupWeatherUI() {
     lv_obj_remove_flag(low_battery_popup_, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(low_battery_popup_, LV_OBJ_FLAG_HIDDEN);
     low_battery_label_ = lv_label_create(low_battery_popup_);
-    lv_obj_set_style_text_font(low_battery_label_, font_ai, 0);
+    lv_obj_set_style_text_font(low_battery_label_, font_static, 0);
     lv_obj_set_style_text_color(low_battery_label_, lv_color_black(), 0);
     lv_obj_set_style_text_align(low_battery_label_, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_width(low_battery_label_, UI_SCR_W - 40);

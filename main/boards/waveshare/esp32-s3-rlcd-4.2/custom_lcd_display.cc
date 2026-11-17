@@ -36,6 +36,7 @@
 
 // 中文文案用 7415 常用汉字字库，待办行图标用 material symbols（★ ☑）
 LV_FONT_DECLARE(font_puhui_16_4);
+LV_FONT_DECLARE(font_puhui_16_1);  // 16px 1bpp 点阵（静态文案用）
 LV_FONT_DECLARE(font_material_symbols_16_4);
 
 static const char *TAG = "CustomDisplay";
@@ -362,7 +363,7 @@ void CustomLcdDisplay::RefreshMemoDisplayInternal() {
 
     if (count == 0) {
         lv_obj_t *empty = lv_label_create(memo_rows_);
-        lv_obj_set_style_text_font(empty, &font_puhui_16_4, 0);
+        lv_obj_set_style_text_font(empty, &font_puhui_16_1, 0);
         lv_obj_set_style_text_color(empty, lv_color_black(), 0);
         lv_label_set_text(empty, "暂无待办");
         if (arr) cJSON_Delete(arr);
@@ -413,7 +414,7 @@ void CustomLcdDisplay::RefreshMemoDisplayInternal() {
 
     if (count > 6) {
         lv_obj_t *more = lv_label_create(memo_rows_);
-        lv_obj_set_style_text_font(more, &font_puhui_16_4, 0);
+        lv_obj_set_style_text_font(more, &font_puhui_16_1, 0);
         lv_obj_set_style_text_color(more, lv_color_black(), 0);
         lv_label_set_text_fmt(more, "…还有%d条", count - 6);
     }
