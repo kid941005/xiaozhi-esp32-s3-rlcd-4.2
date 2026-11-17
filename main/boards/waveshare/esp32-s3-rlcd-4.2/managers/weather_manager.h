@@ -113,7 +113,6 @@ private:
     float ip_lon_ = 0.0f;
 
     static esp_err_t http_event_handler(esp_http_client_event_t *evt);
-    void parseWeatherJson(const char* json_data);
 
     // 通用 HTTP(S) GET：把响应体原始字节写入 out（verify_tls=false 时不校验证书）
     bool httpGetRaw(const std::string& url, int timeout_ms, bool verify_tls, std::string& out);

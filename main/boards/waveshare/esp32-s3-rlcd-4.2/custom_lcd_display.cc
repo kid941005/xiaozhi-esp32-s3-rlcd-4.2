@@ -311,7 +311,10 @@ CustomLcdDisplay::CustomLcdDisplay(esp_lcd_panel_io_handle_t panel_io,
 
     // 3. 初始化 RLCD 屏幕
     ESP_LOGI(TAG, "初始化 RLCD 屏幕");
-    rlcd_->RLCD_Init();
+    // P2 #19：显存/LUT 分配失败时 RLCD_Init 返回 false，这里只告警降级，绝不 panic
+    if (rlcd_ == nullptr || !rlcd_->RLCD_Init()) {
+        ESP_LOGE(TAG, "RLCD 初始化失败，显示功能降级（不 panic），继续创建 UI");
+    }
 
     lvgl_port_unlock();
     if (display_ == nullptr) {
@@ -372,7 +375,9 @@ void CustomLcdDisplay::RefreshMemoDisplayInternal() {
     }
 
     const int row_w = memo_rows_w_;
-    const int kMaxItems = 6;
+    // P2 #26：与抓取侧共享上限；显示侧受卡片高度限制最多 kTodoDisplayMaxItems(6) 条，
+    // 第 7~10 条为已知的上屏裁剪（抓取侧仍缓冲 10 条），非静默丢数据。
+    const int kMaxItems = kTodoDisplayMaxItems;
 
     lv_obj_t *boxes[kMaxItems] = {nullptr};
     lv_obj_t *dashes[kMaxItems] = {nullptr};
@@ -912,7 +917,6 @@ bool CustomLcdDisplay::CaptureScreenBmp(uint8_t *out, size_t cap, size_t *out_le
     if (rlcd_ == nullptr || out == nullptr || out_len == nullptr) {
         return false;
     }
-    DisplayLockGuard lock(this);
 
     const int w = rlcd_->width();
     const int h = rlcd_->height();
@@ -923,6 +927,30 @@ bool CustomLcdDisplay::CaptureScreenBmp(uint8_t *out, size_t cap, size_t *out_le
         ESP_LOGE(TAG, "截图缓冲区不足: 需要 %u, 实际 %u", (unsigned)total, (unsigned)cap);
         return false;
     }
+
+    // P2 #17：把「持锁逐像素读 12 万次」改为「锁内一次性 memcpy 显存快照（约 15KB）→ 解锁后再展开 BMP」。
+    // 快照放在堆上（-Werror=frame-larger-than=1536，禁止 15KB 大数组上栈）。
+    const size_t snap_len = ((size_t)w * (size_t)h) >> 3;   // 1bpp 显存字节数（400x300 = 15000）
+    if (snap_len == 0) {
+        ESP_LOGE(TAG, "截图失败: 显存未就绪");
+        return false;
+    }
+    uint8_t *snap = (uint8_t *)heap_caps_malloc(snap_len, MALLOC_CAP_SPIRAM);
+    if (snap == nullptr) {
+        ESP_LOGE(TAG, "截图失败: 快照缓冲分配失败 (%u 字节)", (unsigned)snap_len);
+        return false;
+    }
+    bool snap_ok = false;
+    {
+        DisplayLockGuard lock(this);
+        snap_ok = rlcd_->CopyDisplayBuffer(snap, snap_len);
+    }
+    if (!snap_ok) {
+        heap_caps_free(snap);
+        ESP_LOGE(TAG, "截图失败: 显存快照拷贝失败（驱动未就绪？）");
+        return false;
+    }
+
     memset(out, 0, total);
 
     auto put32 = [out](size_t off, uint32_t v) {
@@ -956,15 +984,17 @@ bool CustomLcdDisplay::CaptureScreenBmp(uint8_t *out, size_t cap, size_t *out_le
     out[54] = 0; out[55] = 0; out[56] = 0; out[57] = 0;
     out[58] = 255; out[59] = 255; out[60] = 255; out[61] = 0;
 
+    // 解锁后基于堆快照展开 BMP，避免长时间持有显示锁
     uint8_t *pix = out + 62;
     for (int y = 0; y < h; y++) {
         uint8_t *row = pix + (size_t)(h - 1 - y) * row_bytes;
         for (int x = 0; x < w; x++) {
-            if (rlcd_->RLCD_GetPixel((uint16_t)x, (uint16_t)y)) {
+            if (rlcd_->GetPixelFrom(snap, snap_len, (uint16_t)x, (uint16_t)y)) {
                 row[x >> 3] |= (uint8_t)(0x80 >> (x & 7));
             }
         }
     }
+    heap_caps_free(snap);
     *out_len = total;
     return true;
 }

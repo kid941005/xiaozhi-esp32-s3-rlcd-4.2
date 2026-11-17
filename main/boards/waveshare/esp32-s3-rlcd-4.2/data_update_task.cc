@@ -65,10 +65,12 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
     
     // NTP 指数退避重试参数
     int ntp_retry_count = 0;
-    const int NTP_MAX_RETRIES = 5;            // 最多重试 5 次后放弃
+    const int NTP_MAX_RETRIES = 5;            // 前 5 次做快速退避重试
     uint32_t ntp_retry_delay_ms = 1000;       // 初始延迟 1 秒，每次翻倍（1s, 2s, 4s, 8s, 16s）
+    uint32_t ntp_next_retry_ms = 0;           // 快速重试用尽后，下一次慢速重试的时刻
     uint32_t ntp_last_sync_ms = 0;            // 上次 NTP 同步成功的时间（用于 24 小时校准）
     const uint32_t NTP_RESYNC_INTERVAL = 24 * 60 * 60 * 1000;  // 24 小时（毫秒）
+    const uint32_t NTP_SLOW_RETRY_INTERVAL = 5 * 60 * 1000;    // 失败后每 5 分钟重试，不再永久放弃
     
     // 电池电量变化很慢，降频采样可显著减轻 ADC 和 UI 刷新压力
     const uint32_t BATTERY_POLL_INTERVAL = 10 * 1000;           // 每 10 秒采样一次
@@ -126,7 +128,11 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
             bool should_sync = false;
             
             if (!time_synced && ntp_retry_count < NTP_MAX_RETRIES) {
-                // 首次同步：未同步且未超过最大重试次数
+                // 首次同步：快速退避重试阶段
+                should_sync = true;
+            } else if (!time_synced && ntp_next_retry_ms != 0 &&
+                       (int)(now_ms - ntp_next_retry_ms) >= 0) {
+                // 快速重试用尽后，每 NTP_SLOW_RETRY_INTERVAL 毫秒慢速重试，不再永久放弃
                 should_sync = true;
             } else if (time_synced && ntp_last_sync_ms > 0 && 
                        (now_ms - ntp_last_sync_ms > NTP_RESYNC_INTERVAL)) {
@@ -148,6 +154,7 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                     time_synced = true;
                     ntp_retry_count = 0;           // 重置重试计数
                     ntp_retry_delay_ms = 1000;     // 重置退避延迟
+                    ntp_next_retry_ms = 0;         // 清除慢速重试计划
                     ntp_last_sync_ms = now_ms;     // 记录同步成功时间
                     self->last_min_ = -1;          // 强制刷新 UI
                     time(&self->last_valid_epoch_);
@@ -159,13 +166,18 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                     ESP_LOGW(TAG, "NTP 同步失败（年份=%d），第 %d/%d 次，%d 秒后重试", 
                              check_info.tm_year + 1900, ntp_retry_count, NTP_MAX_RETRIES,
                              (int)(ntp_retry_delay_ms / 1000));
-                    // 指数退避等待后再继续循环
-                    vTaskDelay(pdMS_TO_TICKS(ntp_retry_delay_ms));
+                    // 指数退避等待后再继续循环（仅快速重试阶段阻塞任务；慢速重试不阻塞）
+                    if (ntp_retry_count <= NTP_MAX_RETRIES) {
+                        vTaskDelay(pdMS_TO_TICKS(ntp_retry_delay_ms));
+                    }
                     ntp_retry_delay_ms *= 2;  // 下次翻倍：1s → 2s → 4s → 8s → 16s
                     if (ntp_retry_delay_ms > 16000) ntp_retry_delay_ms = 16000;
                     
                     if (ntp_retry_count >= NTP_MAX_RETRIES) {
-                        ESP_LOGE(TAG, "NTP 同步已失败 %d 次，放弃重试（使用 RTC 时间）", NTP_MAX_RETRIES);
+                        // 快速重试用尽：改为每 NTP_SLOW_RETRY_INTERVAL 毫秒重试，不再永久放弃
+                        ntp_next_retry_ms = (xTaskGetTickCount() * portTICK_PERIOD_MS) + NTP_SLOW_RETRY_INTERVAL;
+                        ESP_LOGW(TAG, "NTP 快速重试用尽，改为每 %d 分钟重试一次",
+                                 (int)(NTP_SLOW_RETRY_INTERVAL / 60000));
                     }
                 }
             }
@@ -366,7 +378,10 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                 }
 
                 // 3. 天气行：时钟卡下方只显示「地址 + 当前天气」，其余维度见天气详情页
-                WeatherData wd = WeatherManager::getInstance().getLatestData();
+                // WeatherData 内含 40+ std::string（约 1.2KB），按值放栈会挤占 8KB 任务栈；
+                // 与 detail_ui.cc 一致改为 static 复用同一块存储
+                static WeatherData wd;
+                wd = WeatherManager::getInstance().getLatestData();
                 if (wd.valid && self->weather_label_) {
                     std::string line = wd.city;
                     if (!wd.text.empty()) {

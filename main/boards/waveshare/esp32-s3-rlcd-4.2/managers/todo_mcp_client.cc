@@ -16,6 +16,7 @@
 #include <web_socket.h>
 
 #include "../config.h"
+#include "../ui_limits.h"   // P2 #26：与显示侧共享待办上限常量
 
 // 本地私有配置（含 token，已在 .gitignore 中排除），存在时覆盖 config.h 的默认值
 #if __has_include("todo_mcp_secret.h")
@@ -41,7 +42,7 @@ constexpr int kFirstDelayMs = 20000;    // 上电后先等网络
 constexpr int kConnectAttempts = 3;     // 建连失败重试次数
 constexpr int kConnectGapMs = 3000;
 constexpr int kMaxConsecFail = 2;       // 连续拉取失败多少次后重连
-constexpr int kMaxRows = 10;
+constexpr int kMaxRows = kTodoFetchMaxRows;  // P2 #26：抓取上限，见 ui_limits.h（显示侧仅渲染 kTodoDisplayMaxItems=6）
 
 // 0=周日 … 6=周六
 int DayOfWeek(int y, int m, int d) {

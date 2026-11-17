@@ -38,6 +38,15 @@ esp_err_t PowerManager::Init() {
     ret = Apply();
     if (ret != ESP_OK) {
         enabled_ = false;
+        // P2 #27：Apply 失败不能泄漏已创建的两把 PM 锁
+        if (no_light_sleep_lock_ != nullptr) {
+            esp_pm_lock_delete(no_light_sleep_lock_);
+            no_light_sleep_lock_ = nullptr;
+        }
+        if (apb_lock_ != nullptr) {
+            esp_pm_lock_delete(apb_lock_);
+            apb_lock_ = nullptr;
+        }
         return ret;
     }
     return ESP_OK;

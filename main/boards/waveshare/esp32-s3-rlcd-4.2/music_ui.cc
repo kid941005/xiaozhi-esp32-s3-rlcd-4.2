@@ -24,6 +24,7 @@
 
 #include "custom_lcd_display.h"
 #include "ui_cat_face.h"
+#include "ui_widgets.h"
 #include <esp_log.h>
 
 // 字体：只用小智自带完整字库 + 天气站字体（仅用于非中文场景如时间数字）
@@ -87,30 +88,9 @@ void CustomLcdDisplay::SetupMusicUI() {
     lv_obj_align(music_time_label_, LV_ALIGN_TOP_MID, 0, 6);
     lv_label_set_text(music_time_label_, "00:00");
 
-    // 右上角状态栏胶囊
-    lv_obj_t *status_bar = lv_obj_create(page);
-    lv_obj_set_size(status_bar, 115, 28);
-    lv_obj_set_style_bg_opa(status_bar, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(status_bar, lv_color_white(), 0);
-    lv_obj_set_style_border_width(status_bar, 0, 0);
-    lv_obj_set_style_radius(status_bar, 14, 0);
-    lv_obj_align(status_bar, LV_ALIGN_TOP_RIGHT, -8, 4);
-    lv_obj_set_style_pad_left(status_bar, 8, 0);
-    lv_obj_set_style_pad_right(status_bar, 8, 0);
-    lv_obj_set_style_pad_column(status_bar, 5, 0);
-    lv_obj_set_style_pad_row(status_bar, 0, 0);
-    lv_obj_remove_flag(status_bar, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_flex_flow(status_bar, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(status_bar, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-
-    music_wifi_icon_img_ = lv_image_create(status_bar);
-    lv_image_set_src(music_wifi_icon_img_, &ui_img_wifi_off);
-    music_battery_icon_img_ = lv_image_create(status_bar);
-    lv_image_set_src(music_battery_icon_img_, &ui_img_battery_full);
-    music_battery_pct_label_ = lv_label_create(status_bar);
-    lv_obj_set_style_text_font(music_battery_pct_label_, font_num, 0);
-    lv_obj_set_style_text_color(music_battery_pct_label_, lv_color_black(), 0);
-    lv_label_set_text(music_battery_pct_label_, "---%");
+    // 右上角状态栏胶囊（与天气页共用 BuildStatusCapsule）
+    BuildStatusCapsule(page, 115, 28, -8, 4, font_num,
+                       &music_wifi_icon_img_, &music_battery_icon_img_, &music_battery_pct_label_);
 
     // ============================================================
     // 第 2 层：主内容区 —— 左侧唱片 + 右侧歌曲信息（左右排布）
@@ -223,11 +203,11 @@ void CustomLcdDisplay::SetupMusicUI() {
     lv_label_set_text(music_title_label_, "未播放");
     lv_obj_align(music_title_label_, LV_ALIGN_TOP_LEFT, 0, 4);
 
-    // 歌手（小字，透明度低一些，形成层级）
+    // 歌手（小字形成层级）：1-bit 屏无法表现半透明（LV_OPA_60 会被阈值吃掉），
+    // 改用字号区分——歌手 14px < 歌名 16px，并保持完全不透明。
     music_artist_label_ = lv_label_create(info_card);
     lv_obj_set_style_text_font(music_artist_label_, font_sm, 0);
     lv_obj_set_style_text_color(music_artist_label_, lv_color_black(), 0);
-    lv_obj_set_style_text_opa(music_artist_label_, LV_OPA_60, 0);
     lv_obj_set_style_text_align(music_artist_label_, LV_TEXT_ALIGN_LEFT, 0);
     lv_obj_set_width(music_artist_label_, info_w - 24);
     lv_label_set_long_mode(music_artist_label_, LV_LABEL_LONG_SCROLL_CIRCULAR);
@@ -318,7 +298,8 @@ void CustomLcdDisplay::SetupMusicUI() {
     music_progress_label_ = lv_label_create(page);
     lv_obj_set_style_text_font(music_progress_label_, font_sm, 0);
     lv_obj_set_style_text_color(music_progress_label_, lv_color_white(), 0);
-    lv_obj_set_style_text_opa(music_progress_label_, LV_OPA_70, 0);
+    // 1-bit 屏无法表现半透明（LV_OPA_70 会被阈值吃掉），改为完全不透明。
+    lv_obj_set_style_text_opa(music_progress_label_, LV_OPA_COVER, 0);
     lv_label_set_text(music_progress_label_, "00:00 / 00:00");
     lv_obj_set_pos(music_progress_label_, PAD + bar_w + 8, bar_y + 2);
 
@@ -330,63 +311,28 @@ void CustomLcdDisplay::SetupMusicUI() {
     const int ai_h = 72;              // 比之前的 32px 加大，给 emoji 留空间
     const int ai_w = SCR_W - PAD * 2;
     const int ai_y = SCR_H - ai_h - 6;
-    const int emotion_w = 56;         // 左侧表情区域宽度
 
-    lv_obj_t *ai_card = lv_obj_create(page);
-    lv_obj_set_size(ai_card, ai_w, ai_h);
-    lv_obj_set_pos(ai_card, PAD, ai_y);
-    lv_obj_set_style_bg_color(ai_card, lv_color_white(), 0);
-    lv_obj_set_style_bg_opa(ai_card, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(ai_card, 2, 0);
-    lv_obj_set_style_border_color(ai_card, lv_color_black(), 0);
-    lv_obj_set_style_radius(ai_card, 16, 0);
-    lv_obj_set_style_pad_all(ai_card, 0, 0);
-    lv_obj_remove_flag(ai_card, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_clip_corner(ai_card, true, 0);
-
-    // 左侧：emoji 图片（上方，48x48）
-    music_emotion_img_ = lv_image_create(ai_card);
-    lv_obj_set_size(music_emotion_img_, 40, 40);
-    lv_image_set_inner_align(music_emotion_img_, LV_IMAGE_ALIGN_CENTER);
-    lv_obj_align(music_emotion_img_, LV_ALIGN_LEFT_MID, 10, -10);
-    lv_obj_add_flag(music_emotion_img_, LV_OBJ_FLAG_HIDDEN);  // 初始隐藏，等 SetEmotion 设置
-
-    // 内置猫脸线稿：资源包不带 emoji 素材时兜底（与天气页 AI 卡一致）
-    music_ai_face_ = CreateCatFace(ai_card, 40);
-    lv_obj_align(music_ai_face_, LV_ALIGN_LEFT_MID, 10, -10);
-
-    // 左侧：情绪文字标签（下方）
-    music_emotion_label_ = lv_label_create(ai_card);
-    lv_obj_set_style_text_font(music_emotion_label_, font_cn, 0);
-    lv_obj_set_style_text_color(music_emotion_label_, lv_color_black(), 0);
-    lv_obj_set_style_text_align(music_emotion_label_, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_width(music_emotion_label_, emotion_w);
-    lv_label_set_long_mode(music_emotion_label_, LV_LABEL_LONG_WRAP);
-    lv_label_set_text(music_emotion_label_, "待命");
-    lv_obj_align(music_emotion_label_, LV_ALIGN_LEFT_MID, 4, 20);
-
-    // 竖分隔线
-    lv_obj_t *divider = lv_obj_create(ai_card);
-    lv_obj_set_size(divider, 2, ai_h - 20);
-    lv_obj_set_style_bg_color(divider, lv_color_black(), 0);
-    lv_obj_set_style_bg_opa(divider, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(divider, 0, 0);
-    lv_obj_set_style_radius(divider, 1, 0);
-    lv_obj_align(divider, LV_ALIGN_LEFT_MID, emotion_w + 10, 0);
-    lv_obj_remove_flag(divider, LV_OBJ_FLAG_SCROLLABLE);
-
-    // 右侧：AI 对话文字
-    const int text_x = emotion_w + 18;
-    const int text_w = ai_w - text_x - 12;
-    music_chat_status_label_ = lv_label_create(ai_card);
-    lv_obj_set_style_text_font(music_chat_status_label_, font_cn, 0);
-    lv_obj_set_style_text_color(music_chat_status_label_, lv_color_black(), 0);
-    lv_obj_set_style_text_align(music_chat_status_label_, LV_TEXT_ALIGN_LEFT, 0);
-    lv_obj_set_width(music_chat_status_label_, text_w);
-    lv_obj_set_style_text_line_space(music_chat_status_label_, 3, 0);
-    lv_label_set_long_mode(music_chat_status_label_, LV_LABEL_LONG_WRAP);
-    lv_label_set_text(music_chat_status_label_, "AI 待命");
-    lv_obj_align(music_chat_status_label_, LV_ALIGN_LEFT_MID, text_x, 0);
+    // 与天气页共用 BuildAiCard()，仅把两页不同的尺寸/字体/偏移显式参数化。
+    AiCardConfig ai_cfg = {};
+    ai_cfg.x = PAD;
+    ai_cfg.y = ai_y;
+    ai_cfg.w = ai_w;
+    ai_cfg.h = ai_h;
+    ai_cfg.radius = 16;
+    ai_cfg.inner_frame = false;            // 音乐页无内层边框
+    ai_cfg.emotion_w = 56;
+    ai_cfg.emo_img_dx = 10;
+    ai_cfg.emo_img_dy = -10;
+    ai_cfg.emo_img_size = 40;
+    ai_cfg.emo_lbl_dy = 20;
+    ai_cfg.emo_font = font_cn;
+    ai_cfg.chat_font = font_cn;
+    ai_cfg.divider_off = 10;
+    ai_cfg.divider_h_margin = 20;
+    ai_cfg.text_x_off = 18;
+    ai_cfg.text_right_margin = 12;
+    BuildAiCard(page, ai_cfg, &music_emotion_img_, &music_ai_face_,
+                &music_emotion_label_, &music_chat_status_label_);
 
     // 音乐页同样在无 emoji 素材时显示内置猫脸（此处已持锁，用不取锁的内部方法）
     ApplyDefaultEmotion();

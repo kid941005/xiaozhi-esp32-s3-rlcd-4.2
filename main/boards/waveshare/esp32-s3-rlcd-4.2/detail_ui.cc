@@ -79,12 +79,37 @@ void CustomLcdDisplay::SetupWeatherDetailUI() {
     // ===== 六个信息格：体感 / 湿度 / 风 / 能见度 / 气压 / 今日温差 =====
     const int cell_w = (W - kPad * 2 - kGap * 2) / 3;
     const int cell_h = 40;
+
+    // ===== 竖向弹性布局 =====
+    // 各区块高度固定，把屏高多出的部分平均分配到区块间距：
+    //   400x300 时 extra=0，各块位置与旧版完全一致；
+    //   竖屏 300x400 时把多出的高度均摊，消除「预报」与「日出」之间约 108px 的空隙。
+    const int cells_y = 34;                     // 六个信息格起始 y（标题行下方）
+    const int cells_h = cell_h * 2 + 4;         // 两行 + 行间距
+    const int aqi_h = 30;
+    const int fc_h = 64;
+    const int sun_h = 24;
+    const int warn_h = 32;
+    const int bottom_margin = 12;
+    const int base_gap[4] = {4, 4, 8, 4};       // cells→AQI / AQI→预报 / 预报→日出 / 日出→预警
+    const int gap_sum = base_gap[0] + base_gap[1] + base_gap[2] + base_gap[3];
+    int extra = H - (cells_y + cells_h + aqi_h + fc_h + sun_h + warn_h + gap_sum + bottom_margin);
+    if (extra < 0) extra = 0;
+    int gap[4];
+    for (int i = 0; i < 4; i++) {
+        gap[i] = base_gap[i] + extra / 4 + (i < extra % 4 ? 1 : 0);
+    }
+    const int aqi_y = cells_y + cells_h + gap[0];
+    const int fc_y = aqi_y + aqi_h + gap[1];
+    const int sun_y = fc_y + fc_h + gap[2];
+    const int warn_y = sun_y + sun_h + gap[3];
+
     static const char* kCellTitles[6] = {"体感", "湿度", "风", "能见度", "气压", "今日"};
     for (int i = 0; i < 6; i++) {
         const int col = i % 3;
         const int row = i / 3;
         const int x = kPad + col * (cell_w + kGap);
-        const int y = 34 + row * (cell_h + 4);
+        const int y = cells_y + row * (cell_h + 4);
         lv_obj_t* card = CreateDetailCard(detail_page_, x, y, cell_w, cell_h);
 
         lv_obj_t* name = lv_label_create(card);
@@ -101,7 +126,7 @@ void CustomLcdDisplay::SetupWeatherDetailUI() {
     }
 
     // ===== AQI 条 =====
-    lv_obj_t* aqi_card = CreateDetailCard(detail_page_, kPad, 122, W - kPad * 2, 30);
+    lv_obj_t* aqi_card = CreateDetailCard(detail_page_, kPad, aqi_y, W - kPad * 2, aqi_h);
     d_aqi_label_ = lv_label_create(aqi_card);
     lv_obj_set_style_text_font(d_aqi_label_, &font_puhui_16_4, 0);
     lv_obj_set_style_text_color(d_aqi_label_, lv_color_black(), 0);
@@ -111,7 +136,7 @@ void CustomLcdDisplay::SetupWeatherDetailUI() {
     // ===== 三日预报：今天 / 明天 / 后天 =====
     const int fc_w = (W - kPad * 2 - kGap * 2) / 3;
     for (int i = 0; i < 3; i++) {
-        lv_obj_t* card = CreateDetailCard(detail_page_, kPad + i * (fc_w + kGap), 156, fc_w, 64);
+        lv_obj_t* card = CreateDetailCard(detail_page_, kPad + i * (fc_w + kGap), fc_y, fc_w, fc_h);
         d_forecast_label_[i] = lv_label_create(card);
         lv_obj_set_style_text_font(d_forecast_label_[i], &font_puhui_16_4, 0);
         lv_obj_set_style_text_color(d_forecast_label_[i], lv_color_black(), 0);
@@ -124,7 +149,7 @@ void CustomLcdDisplay::SetupWeatherDetailUI() {
     }
 
     // ===== 日出日落（贴近底部，随屏高浮动）=====
-    lv_obj_t* sun_card = CreateDetailCard(detail_page_, kPad, H - 72, W - kPad * 2, 24);
+    lv_obj_t* sun_card = CreateDetailCard(detail_page_, kPad, sun_y, W - kPad * 2, sun_h);
     d_sun_label_ = lv_label_create(sun_card);
     lv_obj_set_style_text_font(d_sun_label_, &font_puhui_16_4, 0);
     lv_obj_set_style_text_color(d_sun_label_, lv_color_black(), 0);
@@ -132,14 +157,14 @@ void CustomLcdDisplay::SetupWeatherDetailUI() {
     lv_label_set_text(d_sun_label_, "日出 --:--   日落 --:--");
 
     // ===== 预警条（无预警显示占位文案，保持布局稳定）=====
-    lv_obj_t* warn_card = CreateDetailCard(detail_page_, kPad, H - 44, W - kPad * 2, 32);
+    lv_obj_t* warn_card = CreateDetailCard(detail_page_, kPad, warn_y, W - kPad * 2, warn_h);
     d_warn_label_ = lv_label_create(warn_card);
     lv_obj_set_style_text_font(d_warn_label_, &font_puhui_16_4, 0);
     lv_obj_set_style_text_color(d_warn_label_, lv_color_black(), 0);
     lv_obj_center(d_warn_label_);
     lv_label_set_text(d_warn_label_, "暂无气象预警");
 
-    ESP_LOGI(TAG, "天气详情页创建完成（%dx%d，列宽 %d，预警条 y=%d）", W, H, cell_w, H - 44);
+    ESP_LOGI(TAG, "天气详情页创建完成（%dx%d，列宽 %d，预警条 y=%d）", W, H, cell_w, warn_y);
 }
 
 void CustomLcdDisplay::RefreshWeatherDetail() {
@@ -154,7 +179,7 @@ void CustomLcdDisplay::RefreshWeatherDetail() {
     // 数据变更检测（用 char 缓冲拼指纹，避免大量 std::string 临时对象撑爆栈）
     static char stamp[512];
     static char last_stamp[512] = {0};
-    snprintf(stamp, sizeof(stamp),
+    const int stamp_n = snprintf(stamp, sizeof(stamp),
              "%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s",
              nz(wd.city, ""), nz(wd.temp, ""), nz(wd.text, ""), nz(wd.update_time, ""),
              nz(wd.feels_like, ""), nz(wd.humidity, ""), nz(wd.wind_dir, ""),
@@ -168,10 +193,21 @@ void CustomLcdDisplay::RefreshWeatherDetail() {
              wd.daily_count > 1 ? nz(wd.daily[1].temp_min, "") : "",
              wd.daily_count > 1 ? nz(wd.daily[1].temp_max, "") : "",
              wd.daily_count > 2 ? nz(wd.daily[2].text_day, "") : "");
-    if (strcmp(stamp, last_stamp) == 0) {
+    // 变更检测：stamp 被截断时，两组不同数据可能共享同一被截断前缀而被 strcmp 漏判。
+    // 因此一旦 snprintf 达到缓冲上限（无法可靠比较），直接置脏强制刷新，并清空基线。
+    bool stamp_dirty;
+    if (stamp_n < 0 || stamp_n >= (int)sizeof(stamp)) {
+        stamp_dirty = true;
+        last_stamp[0] = '\0';
+    } else {
+        stamp_dirty = (strcmp(stamp, last_stamp) != 0);
+        if (stamp_dirty) {
+            memcpy(last_stamp, stamp, (size_t)stamp_n + 1);
+        }
+    }
+    if (!stamp_dirty) {
         return;
     }
-    memcpy(last_stamp, stamp, sizeof(last_stamp));
 
     static char buf[128];
 

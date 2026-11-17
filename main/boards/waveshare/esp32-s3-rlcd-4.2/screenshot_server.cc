@@ -18,6 +18,7 @@
 #include <esp_log.h>
 
 #include "custom_lcd_display.h"
+#include <settings.h>   // P2 #14：从 NVS 读取可选鉴权 token
 
 static const char *TAG = "Screenshot";
 
@@ -27,7 +28,68 @@ static uint8_t *s_bmp = nullptr;
 static size_t s_bmp_cap = 0;
 static const int kShotPort = 8080;
 
+// ---- P2 #14：可选访问鉴权 ----
+// 默认不配置 token → 保持原有调试行为（本地截图脚本无需改动）；
+// 配置 token（NVS 键 screenshot/token，或编译期 -DSCREENSHOT_TOKEN="..."）后，
+// 所有端点要求 URL 带 ?token=xxx 才放行。
+static std::string s_token;
+
+static void LoadScreenshotToken() {
+    s_token.clear();
+    // 1) NVS 优先（设备上可写，无需重编译）
+    Settings settings("screenshot", false);
+    std::string t = settings.GetString("token", "");
+    if (!t.empty()) {
+        s_token = t;
+        return;
+    }
+    // 2) 编译期 token
+#ifdef SCREENSHOT_TOKEN
+    if (strlen(SCREENSHOT_TOKEN) > 0) {
+        s_token = SCREENSHOT_TOKEN;
+    }
+#endif
+}
+
+static bool TokenEquals(const std::string &expected, const char *got) {
+    if (got == nullptr) {
+        return false;
+    }
+    const size_t n = strlen(got);
+    if (expected.size() != n) {
+        return false;
+    }
+    unsigned char diff = 0;
+    for (size_t i = 0; i < n; i++) {
+        diff |= (unsigned char)(expected[i] ^ got[i]);
+    }
+    return diff == 0;
+}
+
+// 返回 true 表示放行；false 时已发送 401
+static bool CheckAuth(httpd_req_t *req) {
+    if (s_token.empty()) {
+        return true;   // 未配置 token → 调试开放（原有行为）
+    }
+    char query[256] = {0};
+    char value[128] = {0};
+    bool ok = false;
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK &&
+        httpd_query_key_value(query, "token", value, sizeof(value)) == ESP_OK) {
+        ok = TokenEquals(s_token, value);
+    }
+    if (!ok) {
+        httpd_resp_set_status(req, "401 Unauthorized");
+        httpd_resp_set_type(req, "text/plain; charset=utf-8");
+        httpd_resp_send(req, "unauthorized: ?token= required\n", HTTPD_RESP_USE_STRLEN);
+    }
+    return ok;
+}
+
 static esp_err_t ShotBmpHandler(httpd_req_t *req) {
+    if (!CheckAuth(req)) {
+        return ESP_OK;
+    }
     if (s_display == nullptr || s_bmp == nullptr) {
         return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "not ready");
     }
@@ -45,6 +107,9 @@ static esp_err_t ShotBmpHandler(httpd_req_t *req) {
 
 // 调试端点：把关键控件状态以文本返回，排查「控件不显示」这类问题
 static esp_err_t DbgHandler(httpd_req_t *req) {
+    if (!CheckAuth(req)) {
+        return ESP_OK;
+    }
     if (s_display == nullptr) {
         return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "not ready");
     }
@@ -59,6 +124,9 @@ static esp_err_t DbgHandler(httpd_req_t *req) {
 
 // 在线切换 1-bit 抖动模式：/dither?mode=0|1|2（不带参数只报告当前值），便于 A/B 对比观感
 static esp_err_t DitherHandler(httpd_req_t *req) {
+    if (!CheckAuth(req)) {
+        return ESP_OK;
+    }
     if (s_display == nullptr) {
         return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "not ready");
     }
@@ -93,6 +161,9 @@ static esp_err_t DitherHandler(httpd_req_t *req) {
 
 // 在线切页：/page?p=weather|detail|music|toggle（不带参数只报告当前页），便于远程看另一页的画面
 static esp_err_t PageHandler(httpd_req_t *req) {
+    if (!CheckAuth(req)) {
+        return ESP_OK;
+    }
     if (s_display == nullptr) {
         return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "not ready");
     }
@@ -159,6 +230,8 @@ bool ScreenshotServerStart(CustomLcdDisplay *display) {
     if (display == nullptr) {
         return false;
     }
+    LoadScreenshotToken();
+    ESP_LOGI(TAG, "截图服务鉴权: %s", s_token.empty() ? "关闭(调试开放)" : "已启用(?token=)");
     RlcdDriver *drv = display->rlcd();
     const int w = (drv != nullptr) ? drv->width() : 400;
     const int h = (drv != nullptr) ? drv->height() : 300;

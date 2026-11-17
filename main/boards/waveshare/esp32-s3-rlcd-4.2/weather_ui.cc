@@ -24,6 +24,7 @@
 #include "custom_lcd_display.h"
 #include "material_symbols.h"
 #include "ui_cat_face.h"
+#include "ui_widgets.h"
 #include <esp_log.h>
 
 // 天气站专用字体（从 MyWeatherStation 移植，字符集有限但够天气站用）
@@ -193,31 +194,9 @@ void CustomLcdDisplay::SetupWeatherUI() {
     const lv_font_t *font_icon   = &font_material_symbols_16_4;
 
     // ===== 状态栏（右上角白底胶囊：WiFi + 电池 + 电量）=====
-    lv_obj_t *status_bar = lv_obj_create(screen);
-    lv_obj_set_size(status_bar, 110, 24);
-    lv_obj_set_style_bg_opa(status_bar, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(status_bar, lv_color_white(), 0);
-    lv_obj_set_style_border_width(status_bar, 0, 0);
-    lv_obj_set_style_radius(status_bar, 14, 0);
-    lv_obj_align(status_bar, LV_ALIGN_TOP_RIGHT, -10, 9);
-    lv_obj_set_style_pad_all(status_bar, 0, 0);
-    lv_obj_set_style_pad_left(status_bar, 8, 0);
-    lv_obj_set_style_pad_right(status_bar, 8, 0);
-    lv_obj_remove_flag(status_bar, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_flex_flow(status_bar, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(status_bar, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_column(status_bar, 5, 0);
-
-    wifi_icon_img_ = lv_image_create(status_bar);
-    lv_image_set_src(wifi_icon_img_, &ui_img_wifi_off);
-
-    battery_icon_img_ = lv_image_create(status_bar);
-    lv_image_set_src(battery_icon_img_, &ui_img_battery_full);
-
-    battery_pct_label_ = lv_label_create(status_bar);
-    lv_obj_set_style_text_font(battery_pct_label_, font_small, 0);
-    lv_obj_set_style_text_color(battery_pct_label_, lv_color_black(), 0);
-    lv_label_set_text(battery_pct_label_, "---%");
+    // 与音乐页共用 BuildStatusCapsule()，仅尺寸/对齐/字体不同。
+    BuildStatusCapsule(screen, 110, 24, -10, 9, font_small,
+                       &wifi_icon_img_, &battery_icon_img_, &battery_pct_label_);
 
     // ===== 左上角「环境 温度 湿度」（白字，直接在黑底上）=====
     // 注意：必须用 font_puhui_16_4（7415 常用汉字），alibaba_puhui_16 字符集缺「环境」二字
@@ -432,75 +411,29 @@ void CustomLcdDisplay::SetupWeatherUI() {
     lv_obj_set_flex_align(memo_rows_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 
     // ===== AI 对话卡片（左下）=====
-    // 布局：[左侧表情区 64px | 分隔线 | 右侧对话文字区]
-    const int emotion_w = 56;                                // 左侧表情区宽度（约占卡片 1/3）
+    // 布局：[左侧表情区 56px | 分隔线 | 右侧对话文字区]
+    // 与音乐页共用 BuildAiCard()，仅把两页不同的尺寸/字体/偏移显式参数化。
     const bool compact_ai = (ai_h < 90);
-    const int emo_img_size = compact_ai ? 30 : 48;
-    const int emo_img_dy   = compact_ai ? -8 : -14;
-    const int emo_lbl_dy   = compact_ai ? 14 : 28;
-    const lv_font_t *emo_lbl_font = compact_ai ? font_tiny : font_static;
-
-    chat_card_ = lv_obj_create(screen);
-    lv_obj_set_pos(chat_card_, ai_x, ai_y);
-    lv_obj_set_size(chat_card_, ai_w, ai_h);
-    lv_obj_set_style_border_width(chat_card_, 2, 0);
-    lv_obj_set_style_border_color(chat_card_, lv_color_black(), 0);
-    lv_obj_set_style_radius(chat_card_, 15, 0);
-    lv_obj_set_style_bg_color(chat_card_, lv_color_white(), 0);
-    lv_obj_set_style_pad_all(chat_card_, 0, 0);
-    lv_obj_remove_flag(chat_card_, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_clip_corner(chat_card_, true, 0);
-
-    lv_obj_t *chat_inner = lv_obj_create(chat_card_);
-    lv_obj_set_size(chat_inner, ai_w - 12, ai_h - 12);
-    lv_obj_center(chat_inner);
-    lv_obj_set_style_bg_opa(chat_inner, 0, 0);
-    lv_obj_set_style_border_width(chat_inner, 2, 0);
-    lv_obj_set_style_border_color(chat_inner, lv_color_black(), 0);
-    lv_obj_set_style_radius(chat_inner, 10, 0);
-    lv_obj_set_style_pad_all(chat_inner, 0, 0);
-    lv_obj_remove_flag(chat_inner, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_clip_corner(chat_inner, true, 0);
-
-    emotion_img_ = lv_image_create(chat_inner);
-    lv_obj_set_size(emotion_img_, emo_img_size, emo_img_size);
-    lv_image_set_inner_align(emotion_img_, LV_IMAGE_ALIGN_CENTER);
-    lv_obj_align(emotion_img_, LV_ALIGN_LEFT_MID, 12, emo_img_dy);
-    lv_obj_add_flag(emotion_img_, LV_OBJ_FLAG_HIDDEN);
-
-    // 内置猫脸线稿：资源包不带 emoji 素材时用它兜底（RLCD 只有黑白两色，线稿正合适）
-    ai_face_ = CreateCatFace(chat_inner, emo_img_size);
-    lv_obj_align(ai_face_, LV_ALIGN_LEFT_MID, 12, emo_img_dy);
-
-    emotion_label_ = lv_label_create(chat_inner);
-    lv_obj_set_style_text_font(emotion_label_, emo_lbl_font, 0);
-    lv_obj_set_style_text_color(emotion_label_, lv_color_black(), 0);
-    lv_obj_set_style_text_align(emotion_label_, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_width(emotion_label_, emotion_w);
-    lv_label_set_long_mode(emotion_label_, LV_LABEL_LONG_WRAP);
-    lv_obj_align(emotion_label_, LV_ALIGN_LEFT_MID, 4, emo_lbl_dy);
-    lv_label_set_text(emotion_label_, "待命");
-
-    lv_obj_t *divider = lv_obj_create(chat_inner);
-    lv_obj_set_size(divider, 2, ai_h - 28);
-    lv_obj_set_style_bg_color(divider, lv_color_black(), 0);
-    lv_obj_set_style_bg_opa(divider, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(divider, 0, 0);
-    lv_obj_set_style_radius(divider, 1, 0);
-    lv_obj_align(divider, LV_ALIGN_LEFT_MID, emotion_w + 14, 0);
-    lv_obj_remove_flag(divider, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_remove_flag(divider, LV_OBJ_FLAG_CLICKABLE);
-
-    int text_area_w = ai_w - emotion_w - 14 - 2 - 20;
-    chat_status_label_ = lv_label_create(chat_inner);
-    lv_obj_set_style_text_font(chat_status_label_, font_ai, 0);
-    lv_obj_set_style_text_color(chat_status_label_, lv_color_black(), 0);
-    lv_obj_set_style_text_align(chat_status_label_, LV_TEXT_ALIGN_LEFT, 0);
-    lv_obj_set_width(chat_status_label_, text_area_w);
-    lv_obj_set_style_text_line_space(chat_status_label_, 3, 0);
-    lv_label_set_long_mode(chat_status_label_, LV_LABEL_LONG_WRAP);
-    lv_obj_align(chat_status_label_, LV_ALIGN_LEFT_MID, emotion_w + 20, 0);
-    lv_label_set_text(chat_status_label_, "AI 待命");
+    AiCardConfig ai_cfg = {};
+    ai_cfg.x = ai_x;
+    ai_cfg.y = ai_y;
+    ai_cfg.w = ai_w;
+    ai_cfg.h = ai_h;
+    ai_cfg.radius = 15;
+    ai_cfg.inner_frame = true;              // 天气页保留内层边框（双边框观感）
+    ai_cfg.emotion_w = 56;
+    ai_cfg.emo_img_dx = 12;
+    ai_cfg.emo_img_dy = compact_ai ? -8 : -14;
+    ai_cfg.emo_img_size = compact_ai ? 30 : 48;
+    ai_cfg.emo_lbl_dy = compact_ai ? 14 : 28;
+    ai_cfg.emo_font = compact_ai ? font_tiny : font_static;
+    ai_cfg.chat_font = font_ai;
+    ai_cfg.divider_off = 14;
+    ai_cfg.divider_h_margin = 28;
+    ai_cfg.text_x_off = 20;
+    ai_cfg.text_right_margin = 16;
+    chat_card_ = BuildAiCard(screen, ai_cfg, &emotion_img_, &ai_face_, &emotion_label_,
+                             &chat_status_label_);
 
     // 给基类创建隐藏的占位控件（防止基类方法空指针崩溃）
     container_ = lv_obj_create(screen);

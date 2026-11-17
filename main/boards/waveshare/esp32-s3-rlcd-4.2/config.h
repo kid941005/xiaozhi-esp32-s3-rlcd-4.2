@@ -2,6 +2,11 @@
 #define _BOARD_CONFIG_H_
 
 #include <driver/gpio.h>
+// 自包含所需类型/常量头（P2 #22），避免依赖包含顺序（不改变任何数值）
+#include <driver/i2c_types.h>    // I2C_NUM_0
+#include <driver/spi_common.h>   // SPI3_HOST
+#include <es8311_codec.h>        // ES8311_CODEC_DEFAULT_ADDR
+#include <es7210_adc.h>          // ES7210_CODEC_DEFAULT_ADDR
 
 #define ESP32_I2C_HOST      I2C_NUM_0
 #define ESP32_LCD_HOST      SPI3_HOST

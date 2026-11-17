@@ -2,6 +2,7 @@
 #define __RLCD_DRIVER_H__
 
 #include <cstdint>
+#include <cstddef>
 #include <driver/gpio.h>
 #include <driver/spi_common.h>
 #include <esp_lcd_panel_io.h>
@@ -34,8 +35,9 @@ public:
                spi_host_device_t spi_host = SPI3_HOST);
     ~RlcdDriver();
 
-    // 屏幕初始化（发送初始化命令序列）
-    void RLCD_Init();
+    // 屏幕初始化（发送初始化命令序列）。返回 false 表示显存/LUT 未就绪
+    // （PSRAM 分配失败），此时所有绘制调用会安全降级，不再 assert/panic。
+    bool RLCD_Init();
     // 清屏（填充指定颜色）
     void RLCD_ColorClear(uint8_t color);
     // 设置单个像素；返回该像素对应的显存字节是否真的发生了变化
@@ -57,8 +59,23 @@ public:
     uint32_t transfer_count() const { return transfer_count_; }
     int display_len() const { return DisplayLen; }
 
-    // 读取显存中的像素（true = 白，false = 黑），用于把当前画面导出成图片
+    // 把整块 1-bit 显存快照拷贝到 dst（截图用：调用方持显示锁时做一次 memcpy，
+    // 避免逐像素持锁遍历）。cap 需 >= display_len()，成功返回 true。
+    bool CopyDisplayBuffer(uint8_t *dst, size_t cap) const;
+    // 从外部显存快照读取像素（true = 白）；越界/未就绪返回 false。
+    bool GetPixelFrom(const uint8_t *buffer, size_t len, uint16_t x, uint16_t y) const;
+    // 显存/LUT 是否分配成功（失败时驱动安全降级）
+    bool ready() const { return init_ok_; }
+
+    // 读取显存中的像素（true = 白，false = 黑），用于把当前画面导出成图片。
+    // 入口做 x/y 边界检查：越界或显存未就绪时返回 false（避免越界读 LUT/显存）。
     bool RLCD_GetPixel(uint16_t x, uint16_t y) const {
+        if (DispBuffer == nullptr || PixelIndexLUT == nullptr || PixelBitLUT == nullptr) {
+            return false;
+        }
+        if (x >= (uint16_t)width_ || y >= (uint16_t)height_) {
+            return false;
+        }
         return (DispBuffer[PixelIndexLUT[x][y]] & PixelBitLUT[x][y]) != 0;
     }
 
@@ -81,6 +98,8 @@ private:
     // 1-bit 显示缓冲区
     uint8_t *DispBuffer = nullptr;
     int DisplayLen = 0;
+    // 显存/LUT 是否分配成功；false 时所有绘制调用安全降级（不 panic）
+    bool init_ok_ = false;
 
     // 传输统计
     uint64_t transferred_bytes_ = 0;

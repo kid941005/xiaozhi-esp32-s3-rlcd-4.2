@@ -92,6 +92,120 @@ private:
         return (hh >= 0 && hh <= 23 && mm >= 0 && mm <= 59);
     }
 
+    // ===== 备忘录 NVS 读写辅助（P2 #11）=====
+    // 读 NVS "memo"/"items" 并解析为 cJSON 数组；非数组或解析失败返回 nullptr。
+    // 调用方负责 cJSON_Delete。
+    cJSON* LoadMemoArray() {
+        std::string json_str;
+        {
+            Settings settings("memo", false);
+            json_str = settings.GetString("items", "[]");
+        }
+        cJSON *arr = cJSON_Parse(json_str.c_str());
+        if (arr && !cJSON_IsArray(arr)) {
+            cJSON_Delete(arr);
+            arr = nullptr;
+        }
+        return arr;
+    }
+
+    // 将 cJSON 数组写回 NVS "memo"/"items"；arr 为空时不写入。
+    void SaveMemoArray(cJSON* arr) {
+        if (!arr) return;
+        char *new_json = cJSON_PrintUnformatted(arr);
+        if (!new_json) return;
+        {
+            Settings settings("memo", true);
+            settings.SetString("items", new_json);
+        }
+        cJSON_free(new_json);
+    }
+
+    // 采集并格式化系统信息（P2 #5）：ShowSystemInfo 与 self.system.info 共用。
+    // natural_language=true 返回适合 AI 朗读的自然语言；false 返回屏幕显示的多行块。
+    std::string BuildSystemInfoString(bool natural_language) {
+        size_t free_heap = esp_get_free_heap_size();
+        size_t total_heap = heap_caps_get_total_size(MALLOC_CAP_8BIT);
+        size_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+        size_t total_psram = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
+
+        rtc_cpu_freq_config_t cpu_freq_conf;
+        rtc_clk_cpu_freq_get_config(&cpu_freq_conf);
+        uint32_t cpu_freq_mhz = cpu_freq_conf.freq_mhz;
+
+        BatteryStatus bat = GetBatteryStatus();
+        char battery_detail[128];
+        if (bat.has_capacity) {
+            if (natural_language) {
+                snprintf(battery_detail, sizeof(battery_detail),
+                         "电池电量%d%%，电压%.2fV，当前%s，估算剩余%dmAh、可续航约%d小时%d分钟",
+                         bat.percent, bat.voltage_mv / 1000.0f,
+                         (!bat.known ? "状态待判定" : (bat.charging ? (bat.full ? "已充满" : "正在充电") : "使用电池供电")),
+                         bat.remaining_mah, bat.runtime_min / 60, bat.runtime_min % 60);
+            } else {
+                snprintf(battery_detail, sizeof(battery_detail), "%d%% %s %.2fV 剩余%dmAh 约%dh%02dmin",
+                         bat.percent, (!bat.known ? "状态待判定" : (bat.charging ? (bat.full ? "已充满" : "充电中") : "放电中")),
+                         bat.voltage_mv / 1000.0f, bat.remaining_mah,
+                         bat.runtime_min / 60, bat.runtime_min % 60);
+            }
+        } else {
+            if (natural_language) {
+                snprintf(battery_detail, sizeof(battery_detail), "电池电量%d%%，电压%.2fV，当前%s",
+                         bat.percent, bat.voltage_mv / 1000.0f,
+                         (!bat.known ? "状态待判定" : (bat.charging ? (bat.full ? "已充满" : "正在充电") : "使用电池供电")));
+            } else {
+                snprintf(battery_detail, sizeof(battery_detail), "%d%% %s %.2fV",
+                         bat.percent, (!bat.known ? "状态待判定" : (bat.charging ? (bat.full ? "已充满" : "充电中") : "放电中")),
+                         bat.voltage_mv / 1000.0f);
+            }
+        }
+
+        auto& app = Application::GetInstance();
+        const char* wifi_status = "未连接";
+        if (app.GetDeviceState() != kDeviceStateStarting &&
+            app.GetDeviceState() != kDeviceStateWifiConfiguring) {
+            wifi_status = "已连接";
+        }
+
+        uint64_t uptime_sec = esp_timer_get_time() / 1000000;
+        uint32_t uptime_hours = uptime_sec / 3600;
+        uint32_t uptime_mins = (uptime_sec % 3600) / 60;
+
+        int heap_percent = (int)(((total_heap - free_heap) * 100.0f) / total_heap);
+        int psram_percent = total_psram > 0 ?
+                            (int)(((total_psram - free_psram) * 100.0f) / total_psram) : 0;
+
+        char info[512];
+        if (natural_language) {
+            snprintf(info, sizeof(info),
+                     "系统运行正常。CPU频率%luMHz，已运行%lu小时%lu分钟。"
+                     "内存方面，SRAM使用了%dKB，占总量%dKB的%d%%；"
+                     "PSRAM使用了%dMB，占总量%dMB的%d%%。"
+                     "%s。WiFi%s。",
+                     cpu_freq_mhz, uptime_hours, uptime_mins,
+                     (total_heap - free_heap) / 1024, total_heap / 1024, heap_percent,
+                     (total_psram - free_psram) / 1024 / 1024, total_psram / 1024 / 1024, psram_percent,
+                     battery_detail, wifi_status);
+        } else {
+            snprintf(info, sizeof(info),
+                     "=== 系统信息 ===\n"
+                     "CPU: %luMHz\n"
+                     "运行: %luh%lumin\n"
+                     "SRAM: \n %dKB/%dKB (%d%%)\n"
+                     "PSRAM: \n %dMB/%dMB (%d%%)\n"
+                     "电池: %s\n"
+                     "WiFi: %s\n"
+                     "==============\n"
+                     "\n",
+                     cpu_freq_mhz,
+                     uptime_hours, uptime_mins,
+                     (total_heap - free_heap) / 1024, total_heap / 1024, heap_percent,
+                     (total_psram - free_psram) / 1024 / 1024, total_psram / 1024 / 1024, psram_percent,
+                     battery_detail, wifi_status);
+        }
+        return std::string(info);
+    }
+
     void InitializeI2c() {
         // I2C 总线初始化
         // 这条 I2C 总线被多个设备共享：
@@ -153,68 +267,8 @@ private:
 
     // USER 按钮功能实现
     void ShowSystemInfo() {
-        // 显示详细系统信息到 AI 对话区（启用多行滚动）
-        char info[512];
-        
-        // 内存信息
-        size_t free_heap = esp_get_free_heap_size();
-        size_t total_heap = heap_caps_get_total_size(MALLOC_CAP_8BIT);
-        size_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-        size_t total_psram = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
-        
-        // CPU 信息
-        rtc_cpu_freq_config_t cpu_freq_conf;
-        rtc_clk_cpu_freq_get_config(&cpu_freq_conf);
-        uint32_t cpu_freq_mhz = cpu_freq_conf.freq_mhz;
-        
-        // 电池信息（百分比 / 电压 / 充电状态 / 剩余电量与可续航）
-        BatteryStatus bat = GetBatteryStatus();
-        char battery_detail[128];
-        if (bat.has_capacity) {
-            snprintf(battery_detail, sizeof(battery_detail), "%d%% %s %.2fV 剩余%dmAh 约%dh%02dmin",
-                     bat.percent, (!bat.known ? "状态待判定" : (bat.charging ? (bat.full ? "已充满" : "充电中") : "放电中")),
-                     bat.voltage_mv / 1000.0f, bat.remaining_mah,
-                     bat.runtime_min / 60, bat.runtime_min % 60);
-        } else {
-            snprintf(battery_detail, sizeof(battery_detail), "%d%% %s %.2fV",
-                     bat.percent, (!bat.known ? "状态待判定" : (bat.charging ? (bat.full ? "已充满" : "充电中") : "放电中")),
-                     bat.voltage_mv / 1000.0f);
-        }
-        
-        // WiFi 信息
-        auto& app = Application::GetInstance();
-        const char* wifi_status = "未连接";
-        if (app.GetDeviceState() != kDeviceStateStarting && 
-            app.GetDeviceState() != kDeviceStateWifiConfiguring) {
-            wifi_status = "已连接";
-        }
-        
-        // 运行时间
-        uint64_t uptime_sec = esp_timer_get_time() / 1000000;
-        uint32_t uptime_hours = uptime_sec / 3600;
-        uint32_t uptime_mins = (uptime_sec % 3600) / 60;
-        
-        // 计算百分比
-        int heap_percent = (int)(((total_heap - free_heap) * 100.0f) / total_heap);
-        int psram_percent = total_psram > 0 ? 
-                           (int)(((total_psram - free_psram) * 100.0f) / total_psram) : 0;
-        
-        // 详细格式（单份内容，用于鱼咬尾拼接）
-        snprintf(info, sizeof(info), 
-                 "=== 系统信息 ===\n"
-                 "CPU: %luMHz\n"
-                 "运行: %luh%lumin\n"
-                 "SRAM: \n %dKB/%dKB (%d%%)\n"
-                 "PSRAM: \n %dMB/%dMB (%d%%)\n"
-                 "电池: %s\n"
-                 "WiFi: %s\n"
-                 "==============\n"
-                 "\n",  // 分隔符
-                 cpu_freq_mhz,
-                 uptime_hours, uptime_mins,
-                 (total_heap - free_heap) / 1024, total_heap / 1024, heap_percent,
-                 (total_psram - free_psram) / 1024 / 1024, total_psram / 1024 / 1024, psram_percent,
-                 battery_detail, wifi_status);
+        // 使用统一构建函数（P2 #5）
+        std::string info = BuildSystemInfoString(false);
         
         if (display_) {
             lv_obj_t* chat_label = display_->GetChatStatusLabel();
@@ -268,8 +322,7 @@ private:
             }
         }
         
-        ESP_LOGI(TAG, "系统信息: CPU=%luMHz, 运行=%luh%lumin, SRAM=%d%%, PSRAM=%d%%, 电量=%d%%", 
-                 cpu_freq_mhz, uptime_hours, uptime_mins, heap_percent, psram_percent, bat.percent);
+        ESP_LOGI(TAG, "系统信息已显示");
     }
 
     void RefreshAllData() {
@@ -289,69 +342,23 @@ private:
         ESP_LOGI(TAG, "数据刷新完成");
     }
 
-    void InitializeTools() {
+    void RegisterSystemTools() {
         auto& mcp_server = McpServer::GetInstance();
-        
         // ===== 系统信息工具 =====
         mcp_server.AddTool("self.system.info",
             "Get device system information (CPU, memory, battery, WiFi status).\n"
             "Use when user asks: '系统信息', 'CPU频率', '内存使用情况', '电量多少', 'system status', 'how much RAM'",
             PropertyList(),
             [this](const PropertyList&) -> ReturnValue {
-                // 收集系统信息
-                size_t free_heap = esp_get_free_heap_size();
-                size_t total_heap = heap_caps_get_total_size(MALLOC_CAP_8BIT);
-                size_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-                size_t total_psram = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
-                
-                rtc_cpu_freq_config_t cpu_freq_conf;
-                rtc_clk_cpu_freq_get_config(&cpu_freq_conf);
-                uint32_t cpu_freq_mhz = cpu_freq_conf.freq_mhz;
-                
-                BatteryStatus bat = GetBatteryStatus();
-                char battery_detail[128];
-                if (bat.has_capacity) {
-                    snprintf(battery_detail, sizeof(battery_detail), "电池电量%d%%，电压%.2fV，当前%s，估算剩余%dmAh、可续航约%d小时%d分钟",
-                             bat.percent, bat.voltage_mv / 1000.0f,
-                             (!bat.known ? "状态待判定" : (bat.charging ? (bat.full ? "已充满" : "正在充电") : "使用电池供电")),
-                             bat.remaining_mah, bat.runtime_min / 60, bat.runtime_min % 60);
-                } else {
-                    snprintf(battery_detail, sizeof(battery_detail), "电池电量%d%%，电压%.2fV，当前%s",
-                             bat.percent, bat.voltage_mv / 1000.0f,
-                             (!bat.known ? "状态待判定" : (bat.charging ? (bat.full ? "已充满" : "正在充电") : "使用电池供电")));
-                }
-                
-                auto& app = Application::GetInstance();
-                const char* wifi_status = "未连接";
-                if (app.GetDeviceState() != kDeviceStateStarting && 
-                    app.GetDeviceState() != kDeviceStateWifiConfiguring) {
-                    wifi_status = "已连接";
-                }
-                
-                uint64_t uptime_sec = esp_timer_get_time() / 1000000;
-                uint32_t uptime_hours = uptime_sec / 3600;
-                uint32_t uptime_mins = (uptime_sec % 3600) / 60;
-                
-                int heap_percent = (int)(((total_heap - free_heap) * 100.0f) / total_heap);
-                int psram_percent = total_psram > 0 ? 
-                                   (int)(((total_psram - free_psram) * 100.0f) / total_psram) : 0;
-                
-                // 格式化为自然语言（AI 容易读出来）
-                char info[512];
-                snprintf(info, sizeof(info),
-                         "系统运行正常。CPU频率%luMHz，已运行%lu小时%lu分钟。"
-                         "内存方面，SRAM使用了%dKB，占总量%dKB的%d%%；"
-                         "PSRAM使用了%dMB，占总量%dMB的%d%%。"
-                         "%s。WiFi%s。",
-                         cpu_freq_mhz, uptime_hours, uptime_mins,
-                         (total_heap - free_heap) / 1024, total_heap / 1024, heap_percent,
-                         (total_psram - free_psram) / 1024 / 1024, total_psram / 1024 / 1024, psram_percent,
-                         battery_detail, wifi_status);
-                
                 ESP_LOGI(TAG, "AI查询系统信息");
-                return std::string(info);
+                // 系统信息统一由 BuildSystemInfoString 构建（P2 #5）
+                return BuildSystemInfoString(true);
             });
 
+    }
+
+    void RegisterWeatherTools() {
+        auto& mcp_server = McpServer::GetInstance();
         // ===== 天气写入工具（由 AI 侧 MCP 查询后回写到设备）=====
         mcp_server.AddTool("self.weather.update",
             "Write weather data to the device screen cache.\n"
@@ -382,6 +389,54 @@ private:
                 return std::string("天气已更新：") + city + " " + text + " " + temp + "°C";
             });
         
+        // ===== 天气城市设置（语音可调用，覆盖 IP 定位，持久化到 NVS）=====
+        mcp_server.AddTool(
+            "self.weather.set_city",
+            "Set the city used for weather queries (overrides IP-based location, persisted in NVS).\n"
+            "Use when user says: 天气城市改成南京, set weather city.\n"
+            "Args:\n"
+            "  `city`: city name, e.g. 南京\n"
+            "  `province`: optional province/municipality to disambiguate duplicate city names (e.g. 江苏 for 常州), can be empty",
+            PropertyList({
+                Property("city", kPropertyTypeString, std::string("")),
+                Property("province", kPropertyTypeString, std::string(""))
+            }),
+            [this](const PropertyList& properties) -> ReturnValue {
+                auto city = properties["city"].value<std::string>();
+                auto province = properties["province"].value<std::string>();
+                if (city.empty()) {
+                    return std::string("请提供城市名，例如：南京");
+                }
+                WeatherManager::getInstance().SetCity(city, province);
+                return std::string("天气城市已设置为 ") + city +
+                       (province.empty() ? std::string("") : ("（" + province + "）")) +
+                       "，稍后自动刷新";
+            }
+        );
+
+        // ===== 天气城市查询（诊断：当前城市 / 来源 / LocationID）=====
+        mcp_server.AddTool(
+            "self.weather.get_city",
+            "Report the city currently used for weather and where it came from.\n"
+            "Use when user asks: 天气城市是哪里, which city is the weather for",
+            PropertyList(),
+            [this](const PropertyList&) -> ReturnValue {
+                auto& wm = WeatherManager::getInstance();
+                WeatherData data = wm.getLatestData();
+                char buf[256];
+                snprintf(buf, sizeof(buf),
+                         "天气城市：%s（来源：%s，LocationID：%s），最新显示：%s %s %s°C",
+                         wm.city().c_str(), wm.citySource().c_str(),
+                         wm.locationId().empty() ? "(未解析)" : wm.locationId().c_str(),
+                         data.city.c_str(), data.text.c_str(), data.temp.c_str());
+                return std::string(buf);
+            }
+        );
+
+    }
+
+    void RegisterDisplayTools() {
+        auto& mcp_server = McpServer::GetInstance();
         // ===== 配网工具 =====
         mcp_server.AddTool("self.disp.network", "重新配网", PropertyList(),
         [this](const PropertyList&) -> ReturnValue {
@@ -433,50 +488,10 @@ private:
             }
         );
 
-        // ===== 天气城市设置（语音可调用，覆盖 IP 定位，持久化到 NVS）=====
-        mcp_server.AddTool(
-            "self.weather.set_city",
-            "Set the city used for weather queries (overrides IP-based location, persisted in NVS).\n"
-            "Use when user says: 天气城市改成南京, set weather city.\n"
-            "Args:\n"
-            "  `city`: city name, e.g. 南京\n"
-            "  `province`: optional province/municipality to disambiguate duplicate city names (e.g. 江苏 for 常州), can be empty",
-            PropertyList({
-                Property("city", kPropertyTypeString, std::string("")),
-                Property("province", kPropertyTypeString, std::string(""))
-            }),
-            [this](const PropertyList& properties) -> ReturnValue {
-                auto city = properties["city"].value<std::string>();
-                auto province = properties["province"].value<std::string>();
-                if (city.empty()) {
-                    return std::string("请提供城市名，例如：南京");
-                }
-                WeatherManager::getInstance().SetCity(city, province);
-                return std::string("天气城市已设置为 ") + city +
-                       (province.empty() ? std::string("") : ("（" + province + "）")) +
-                       "，稍后自动刷新";
-            }
-        );
+    }
 
-        // ===== 天气城市查询（诊断：当前城市 / 来源 / LocationID）=====
-        mcp_server.AddTool(
-            "self.weather.get_city",
-            "Report the city currently used for weather and where it came from.\n"
-            "Use when user asks: 天气城市是哪里, which city is the weather for",
-            PropertyList(),
-            [this](const PropertyList&) -> ReturnValue {
-                auto& wm = WeatherManager::getInstance();
-                WeatherData data = wm.getLatestData();
-                char buf[256];
-                snprintf(buf, sizeof(buf),
-                         "天气城市：%s（来源：%s，LocationID：%s），最新显示：%s %s %s°C",
-                         wm.city().c_str(), wm.citySource().c_str(),
-                         wm.locationId().empty() ? "(未解析)" : wm.locationId().c_str(),
-                         data.city.c_str(), data.text.c_str(), data.temp.c_str());
-                return std::string(buf);
-            }
-        );
-
+    void RegisterMemoTools() {
+        auto& mcp_server = McpServer::GetInstance();
         // ===== 备忘录工具（多条列表模式）=====
         // NVS key "items" 存储 JSON 数组: [{"t":"15:00","c":"开会"}, ...]
 
@@ -503,13 +518,7 @@ private:
                 }
 
                 // 读取现有列表
-                std::string json_str;
-                {
-                    Settings settings("memo", false);
-                    json_str = settings.GetString("items", "[]");
-                }
-
-                cJSON *arr = cJSON_Parse(json_str.c_str());
+                cJSON *arr = LoadMemoArray();
                 if (!arr) arr = cJSON_CreateArray();
 
                 // 限制最多 10 条
@@ -525,13 +534,8 @@ private:
                 cJSON_AddItemToArray(arr, item);
 
                 // 写回 NVS
-                char *new_json = cJSON_PrintUnformatted(arr);
-                {
-                    Settings settings("memo", true);
-                    settings.SetString("items", new_json);
-                }
                 int count = cJSON_GetArraySize(arr);
-                cJSON_free(new_json);
+                SaveMemoArray(arr);
                 cJSON_Delete(arr);
 
                 // 刷新屏幕
@@ -546,11 +550,8 @@ private:
             "List all memos / reminders / todos on the device.\n"
             "Use when user asks: '我有什么待办', '看看备忘', 'what do I need to do'",
             PropertyList(),
-            [](const PropertyList&) -> ReturnValue {
-                Settings settings("memo", false);
-                std::string json_str = settings.GetString("items", "[]");
-
-                cJSON *arr = cJSON_Parse(json_str.c_str());
+            [this](const PropertyList&) -> ReturnValue {
+                cJSON *arr = LoadMemoArray();
                 if (!arr || cJSON_GetArraySize(arr) == 0) {
                     if (arr) cJSON_Delete(arr);
                     return std::string("当前没有备忘");
@@ -563,12 +564,12 @@ private:
                     cJSON *t = cJSON_GetObjectItem(item, "t");
                     cJSON *c = cJSON_GetObjectItem(item, "c");
                     result += std::to_string(i + 1) + ". ";
-                    if (t && strlen(t->valuestring) > 0) {
+                    if (t && cJSON_IsString(t) && strlen(t->valuestring) > 0) {
                         result += "[";
                         result += t->valuestring;
                         result += "] ";
                     }
-                    if (c) result += c->valuestring;
+                    if (c && cJSON_IsString(c)) result += c->valuestring;
                     result += "\n";
                 }
                 cJSON_Delete(arr);
@@ -587,13 +588,7 @@ private:
             [this](const PropertyList& properties) -> ReturnValue {
                 int idx = properties["index"].value<int>();
 
-                std::string json_str;
-                {
-                    Settings settings("memo", false);
-                    json_str = settings.GetString("items", "[]");
-                }
-
-                cJSON *arr = cJSON_Parse(json_str.c_str());
+                cJSON *arr = LoadMemoArray();
                 if (!arr) return std::string("备忘列表为空");
 
                 int count = cJSON_GetArraySize(arr);
@@ -610,12 +605,7 @@ private:
                 cJSON_DeleteItemFromArray(arr, idx - 1);
 
                 // 写回 NVS
-                char *new_json = cJSON_PrintUnformatted(arr);
-                {
-                    Settings settings("memo", true);
-                    settings.SetString("items", new_json);
-                }
-                cJSON_free(new_json);
+                SaveMemoArray(arr);
                 cJSON_Delete(arr);
 
                 // 刷新屏幕
@@ -639,12 +629,17 @@ private:
                 return std::string("所有备忘已清除");
             });
 
+    }
+
+    void RegisterTodoTools() {
+        auto& mcp_server = McpServer::GetInstance();
         // 待办同步：AI 侧先用自己的待办工具（如 list_todos）取到当日待办，再整批推给设备
         // 设备本身不是 MCP 客户端（无 ws 能力），因此由 AI 主动下发
         mcp_server.AddTool("self.todo.sync",
             "Replace the todo list shown on the device screen with today's todos.\n"
             "Call this AFTER fetching the user's todos from your own todo service (e.g. list_todos).\n"
-            "Each array element is one display row, already formatted, e.g. '10.06(二) 09:00 抢火车票'.\n"
+            "Each array element is one todo row's content text; the device renders todos in a two-line\n"
+            "time/content (t/c) layout, with the time line left empty for entries passed here.\n"
             "Args:\n"
             "  items: JSON array of strings. Pass [] to clear. Max 10 rows, keep each row short.",
             PropertyList({
@@ -675,12 +670,7 @@ private:
                 }
                 cJSON_Delete(src);
 
-                char *new_json = cJSON_PrintUnformatted(arr);
-                {
-                    Settings settings("memo", true);
-                    settings.SetString("items", new_json);
-                }
-                cJSON_free(new_json);
+                SaveMemoArray(arr);
                 cJSON_Delete(arr);
 
                 if (display_) display_->RefreshMemoDisplay();
@@ -709,6 +699,15 @@ private:
                 ESP_LOGI(TAG, "待办 MCP 地址已更新: %s", url.c_str());
                 return std::string("待办 MCP 地址已保存，稍后自动拉取");
             });
+    }
+
+    // P2 #6：按域拆分的工具注册入口；InitializeTools 仅负责依次调用。
+    void InitializeTools() {
+        RegisterSystemTools();
+        RegisterWeatherTools();
+        RegisterDisplayTools();
+        RegisterMemoTools();
+        RegisterTodoTools();
     }
 
     void InitializeLcdDisplay() {
@@ -760,6 +759,9 @@ private:
         return 0;
     }
 
+    // --- 电池读取封装边界（P2 #7）---
+    // BatterygetVoltage 只做 ADC 采样（调用方须持 battery_mutex_）；
+    // GetBatteryStatus() 是唯一对外线程安全快照入口，状态机/历史队列封装在其内部。
     // 电池电压（mV）：过采样 + 去极值平均，再按分压比还原到电池端
     uint16_t BatterygetVoltage(void) {
         static bool initialized = false;

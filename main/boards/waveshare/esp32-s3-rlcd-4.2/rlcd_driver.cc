@@ -53,19 +53,32 @@ RlcdDriver::RlcdDriver(spi_display_config_t spiconfig, int width, int height,
     // 分配 1-bit 显示缓冲区
     DisplayLen = transfer >> 3;
     DispBuffer = (uint8_t *)heap_caps_malloc(DisplayLen, MALLOC_CAP_SPIRAM);
-    assert(DispBuffer);
 
     // 分配像素映射 LUT（加速 RGB565 → 1-bit 转换）
     PixelIndexLUT = (uint16_t (*)[RLCD_LUT_STRIDE])heap_caps_malloc((size_t)width_ * RLCD_LUT_STRIDE * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
     PixelBitLUT   = (uint8_t (*)[RLCD_LUT_STRIDE])heap_caps_malloc((size_t)width_ * RLCD_LUT_STRIDE * sizeof(uint8_t), MALLOC_CAP_SPIRAM);
-    assert(PixelIndexLUT);
-    assert(PixelBitLUT);
+
+    // PSRAM 不足时不能 assert/panic：记录失败并让上层降级（RLCD_Init 返回 false）
+    if (DispBuffer == nullptr || PixelIndexLUT == nullptr || PixelBitLUT == nullptr) {
+        ESP_LOGE(TAG, "显存/LUT 分配失败 (disp=%u idx=%u bit=%u bytes)，显示功能降级",
+                 (unsigned)DisplayLen,
+                 (unsigned)((size_t)width_ * RLCD_LUT_STRIDE * sizeof(uint16_t)),
+                 (unsigned)((size_t)width_ * RLCD_LUT_STRIDE * sizeof(uint8_t)));
+        if (DispBuffer) { heap_caps_free(DispBuffer); DispBuffer = nullptr; }
+        if (PixelIndexLUT) { heap_caps_free(PixelIndexLUT); PixelIndexLUT = nullptr; }
+        if (PixelBitLUT) { heap_caps_free(PixelBitLUT); PixelBitLUT = nullptr; }
+        DisplayLen = 0;
+        init_ok_ = false;
+        return;
+    }
+
     if (width_ > height_) {
         InitLandscapeLUT();
     } else {
         InitPortraitLUT();
     }
 
+    init_ok_ = true;
     ESP_LOGI(TAG, "RLCD 硬件驱动初始化完成 (%dx%d)", width_, height_);
 }
 
@@ -140,10 +153,17 @@ void RlcdDriver::RLCD_Reset() {
 // ===== 屏幕操作 =====
 
 void RlcdDriver::RLCD_ColorClear(uint8_t color) {
-    memset(DispBuffer, color, DisplayLen);
+    if (DispBuffer == nullptr || DisplayLen <= 0) {
+        return;
+    }
+    memset(DispBuffer, color, (size_t)DisplayLen);
 }
 
-void RlcdDriver::RLCD_Init() {
+bool RlcdDriver::RLCD_Init() {
+    if (!init_ok_ || DispBuffer == nullptr) {
+        ESP_LOGE(TAG, "RLCD_Init 跳过：显存/LUT 未就绪（显示降级）");
+        return false;
+    }
     RLCD_Reset();
 
     RLCD_SendCommand(0xD6); RLCD_SendData(0x17); RLCD_SendData(0x02);
@@ -177,9 +197,17 @@ void RlcdDriver::RLCD_Init() {
     RLCD_SendCommand(0x29);
     RLCD_ColorClear(ColorWhite);
     RLCD_Display();   // 上电先推一次全白，清掉面板残留内容
+    return true;
 }
 
 bool RlcdDriver::RLCD_SetPixel(uint16_t x, uint16_t y, uint8_t color) {
+    // 入口边界检查：越界或显存未就绪时直接返回 false，避免越界写 LUT/显存
+    if (DispBuffer == nullptr || PixelIndexLUT == nullptr || PixelBitLUT == nullptr) {
+        return false;
+    }
+    if (x >= (uint16_t)width_ || y >= (uint16_t)height_) {
+        return false;
+    }
     uint32_t idx = PixelIndexLUT[x][y];
     uint8_t  mask = PixelBitLUT[x][y];
     uint8_t *p = &DispBuffer[idx];
@@ -192,6 +220,9 @@ bool RlcdDriver::RLCD_SetPixel(uint16_t x, uint16_t y, uint8_t color) {
 }
 
 void RlcdDriver::RLCD_Display() {
+    if (DispBuffer == nullptr || DisplayLen <= 0) {
+        return;
+    }
     RLCD_SendCommand(0x2A);
     RLCD_SendData(0x12);
     RLCD_SendData(0x2A);
@@ -207,6 +238,9 @@ void RlcdDriver::RLCD_Display() {
 // 局部刷新：面板显存按「x 像素对」成块（每对 width/2 列对应 height/4 个 4 行块），
 // 所以 0x2B 用来选 x 对窗口，数据是从该对起始的连续 len 字节。
 void RlcdDriver::RLCD_DisplayXRange(uint16_t x1, uint16_t x2) {
+    if (DispBuffer == nullptr || DisplayLen <= 0) {
+        return;
+    }
     // 竖屏 LUT 是行优先（byte_y * W4 + byte_x），窗口语义未在实机验证 → 退化为整帧
     if (!(width_ > height_)) {
         RLCD_Display();
@@ -241,6 +275,32 @@ void RlcdDriver::RLCD_DisplayXRange(uint16_t x1, uint16_t x2) {
     RLCD_Sendbuffera(DispBuffer + offset, (int)len);
     transferred_bytes_ += (uint64_t)len;
     transfer_count_++;
+}
+
+bool RlcdDriver::CopyDisplayBuffer(uint8_t *dst, size_t cap) const {
+    if (dst == nullptr || DispBuffer == nullptr || DisplayLen <= 0) {
+        return false;
+    }
+    const size_t n = (size_t)DisplayLen;
+    if (cap < n) {
+        return false;
+    }
+    memcpy(dst, DispBuffer, n);
+    return true;
+}
+
+bool RlcdDriver::GetPixelFrom(const uint8_t *buffer, size_t len, uint16_t x, uint16_t y) const {
+    if (buffer == nullptr || PixelIndexLUT == nullptr || PixelBitLUT == nullptr) {
+        return false;
+    }
+    if (x >= (uint16_t)width_ || y >= (uint16_t)height_) {
+        return false;
+    }
+    const uint32_t idx = PixelIndexLUT[x][y];
+    if ((size_t)idx >= len) {
+        return false;
+    }
+    return (buffer[idx] & PixelBitLUT[x][y]) != 0;
 }
 
 void RlcdDriver::SetContrast(uint8_t level) {

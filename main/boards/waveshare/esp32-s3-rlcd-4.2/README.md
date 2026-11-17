@@ -377,10 +377,24 @@ NVS weather/city（手动配置 self.weather.set_city）> 上次 IP 定位缓存
 - `GET /shot.bmp` → 400×300 单色 BMP（15662 字节，62 B 文件头 + 52 B/行 × 300）。
 - `GET /dbg` → 纯文本，输出 `chat_status_label_` 文本/隐藏/位置/尺寸、父容器尺寸、`emotion_label_` 文本、`emotion_img_` 状态、主题 emoji 集合数量，用于排查「控件不显示」。
 - `GET /page?p=weather|detail|music|toggle` → 远程切页（不带参数只返回当前页），不按实体键也能截到另一页。
+- **可选鉴权（P2 #14）**：NVS `screenshot/token` 或编译期环境变量 `SCREENSHOT_TOKEN` 非空时，所有请求需带 `?token=...` 或 `X-Auth-Token` 头；留空默认放行，保持本地 `shot_fetch.py` 免配置。
 - `GET /dither?mode=0..4&thr=16..240` → 在线调 1-bit 二值化参数，见下一节。
 - 主机侧脚本 `shot_fetch.py`：`python shot_fetch.py <设备IP> [out.png]`，取 BMP 后用 PIL 转 PNG（放大 2 倍便于查看）。
-- 实现：`screenshot_server.{h,cc}` 起 `esp_http_server`（`lru_purge_enable=true`、栈 8192，BMP 缓冲放 PSRAM）；像素读取用 `RlcdDriver::RLCD_GetPixel(x, y)` 直接查显存 LUT，1 = 白、0 = 黑，因此截图就是面板真实画面。
+- 实现：`screenshot_server.{h,cc}` 起 `esp_http_server`（`lru_purge_enable=true`、栈 8192，BMP 缓冲放 PSRAM）。为避免持显示锁遍历 LVGL 期间阻塞渲染，`CaptureScreenBmp()` 先在锁内用 `RlcdDriver::CopyDisplayBuffer()` 把 15000 B 显存快照到堆，解锁后再逐像素展开 BMP（`GetPixelFrom`）；1 = 白、0 = 黑，因此截图就是面板真实画面。
 - 注意：`main/CMakeLists.txt` 的 `PRIV_REQUIRES` 需要 `esp_http_server`；8080 与配网页 80 不冲突。
+
+## 稳定性与资源保护（P2 批次）
+
+- **显示驱动**：`RLCD_Init()` 返回 bool，显存分配失败不再 assert，初始化失败回滚并置 `init_ok_`；`GetPixel/SetPixel` 做边界检查，越界返回黑/忽略。
+- **截图**：上一节的 `CaptureScreenBmp()` 改为锁内 `CopyDisplayBuffer()` 快照、解锁后展开 BMP，避免持锁遍历阻塞渲染。
+- **NTP**：快速重试 5 次失败后转每 5 分钟慢速重试（`NTP_SLOW_RETRY_INTERVAL`），成功即重置；保留 24 小时重校准。
+- **天气**：每轮子请求前清空旧 AQI/预报/日出日落/预警，防止部分接口失败时残留上一轮数据；URL 用 `std::string` 动态拼接，避免定长缓冲截断。
+- **待办/备忘**：MCP 待办项带 `type:"todo"`，备忘闹钟循环跳过，不再误删或误报；待办按时间升序写入 NVS。
+- **UI 复用**：`ui_widgets.{h,cc}` 统一构建状态胶囊与 AI 卡，天气页/音乐页共用，减少重复样板。
+- **详情页**：四个区块按屏高弹性分配间距，300×400 竖屏不再出现大空隙。
+- **系统信息**：`BuildSystemInfoString(bool)` 统一屏幕显示与 MCP `self.system.info` 的文案。
+- **电源**：PM lock 初始化失败会删除已创建的锁，避免泄漏。
+- 结构性大重构（板类拆分、全局主题、上帝类、更新任务拆分）留待后续批次。
 
 ## 1-bit 二值化：阈值与抖动（抗锯齿效果调节）
 
@@ -401,7 +415,7 @@ RLCD 面板只有黑白两态，16bpp 画面必须在 flush 里量化成 1bit（
   node <lv_font_conv.js> --font <ttf> --size 16 --bpp 1 --format lvgl --no-compress --no-prefilter \
        --lv-font-name font_puhui_16_1 -r 0x20-0x7F -r 0xA0-0xFF --symbols <447字> -o font_puhui_16_1.c
   ```
-- 使用范围（内容固定的控件）：顶栏「环境 …°C …%」、时钟卡日期行、待办卡标题、待办空态「暂无待办」/「…还有N条」、电量低提示、AI 卡情绪标签。
+- 使用范围（内容固定的控件）：顶栏「环境 …°C …%」、时钟卡日期行、待办卡标题、待办空态「暂无待办」、电量低提示、AI 卡情绪标签。
 - **动态文本仍用 `font_puhui_16_4`**（城市/天气、AI 状态文案、待办条目）：内容不可预知，用 447 字点阵会缺字。
 - 缺字风险：**新增静态中文文案必须把新字补进字符集重新生成**，否则该字显示空白（字库里没有 fallback）。
 - flash 代价：字库 obj 39,960 B，`xiaozhi.bin` 由 0x461d40 增至 0x468d40（仍余 11%）。

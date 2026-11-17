@@ -396,14 +396,12 @@ std::string WeatherManager::ResolveLocationId() {
     }
     auto lookup = [&](const std::string& location_param, const std::string& adm_param) -> bool {
         std::string body;
-        char url[512];
-        if (adm_param.empty()) {
-            snprintf(url, sizeof(url), "https://%s/geo/v2/city/lookup?location=%s&lang=zh&key=%s",
-                     api_host_.c_str(), location_param.c_str(), api_key_.c_str());
-        } else {
-            snprintf(url, sizeof(url), "https://%s/geo/v2/city/lookup?location=%s&adm=%s&lang=zh&key=%s",
-                     api_host_.c_str(), location_param.c_str(), adm_param.c_str(), api_key_.c_str());
+        // std::string 拼接避免固定缓冲截断（中文 percent-encode 后长度不可控）
+        std::string url = "https://" + api_host_ + "/geo/v2/city/lookup?location=" + location_param;
+        if (!adm_param.empty()) {
+            url += "&adm=" + adm_param;
         }
+        url += "&lang=zh&key=" + api_key_;
         if (!httpGetJson(url, body, 12000)) {
             return false;
         }
@@ -482,7 +480,7 @@ bool WeatherManager::updateQWeather() {
         return false;
     }
     std::string body;
-    char url[448];
+    std::string url;
     auto str_of = [](cJSON* obj, const char* k) -> std::string {
         cJSON* it = obj ? cJSON_GetObjectItem(obj, k) : nullptr;
         if (it == nullptr) {
@@ -500,8 +498,7 @@ bool WeatherManager::updateQWeather() {
     };
 
     // 1) 实时天气
-    snprintf(url, sizeof(url), "https://%s/v7/weather/now?location=%s&lang=zh&key=%s",
-             api_host_.c_str(), loc.c_str(), api_key_.c_str());
+    url = "https://" + api_host_ + "/v7/weather/now?location=" + loc + "&lang=zh&key=" + api_key_;
     if (!httpGetJson(url, body, 15000)) {
         return false;
     }
@@ -532,8 +529,11 @@ bool WeatherManager::updateQWeather() {
     cJSON_Delete(root);
 
     // 2) 空气质量
-    snprintf(url, sizeof(url), "https://%s/v7/air/now?location=%s&lang=zh&key=%s",
-             api_host_.c_str(), loc.c_str(), api_key_.c_str());
+    //    先清空旧值：本子请求失败时不保留上一轮 aqi，避免新旧混显
+    d.aqi.clear();
+    d.aqi_category.clear();
+    d.pm25.clear();
+    url = "https://" + api_host_ + "/v7/air/now?location=" + loc + "&lang=zh&key=" + api_key_;
     if (httpGetJson(url, body, 12000)) {
         cJSON* aroot = cJSON_Parse(body.c_str());
         if (aroot) {
@@ -554,8 +554,11 @@ bool WeatherManager::updateQWeather() {
     }
 
     // 3) 3 天预报（含日出日落 / 最高最低 / 风）
-    snprintf(url, sizeof(url), "https://%s/v7/weather/3d?location=%s&lang=zh&key=%s",
-             api_host_.c_str(), loc.c_str(), api_key_.c_str());
+    //    先重置预报计数与日出日落：本子请求失败时不保留上一轮数据
+    d.daily_count = 0;
+    d.sunrise.clear();
+    d.sunset.clear();
+    url = "https://" + api_host_ + "/v7/weather/3d?location=" + loc + "&lang=zh&key=" + api_key_;
     if (httpGetJson(url, body, 15000)) {
         cJSON* droot = cJSON_Parse(body.c_str());
         if (droot) {
@@ -592,8 +595,7 @@ bool WeatherManager::updateQWeather() {
 
     // 4) 预警（只取第一条：类型 + 颜色等级）
     d.warning.clear();
-    snprintf(url, sizeof(url), "https://%s/v7/warning/now?location=%s&lang=zh&key=%s",
-             api_host_.c_str(), loc.c_str(), api_key_.c_str());
+    url = "https://" + api_host_ + "/v7/warning/now?location=" + loc + "&lang=zh&key=" + api_key_;
     if (httpGetJson(url, body, 12000)) {
         cJSON* wroot = cJSON_Parse(body.c_str());
         if (wroot) {
@@ -683,8 +685,8 @@ static const char* wmo_code_to_zh(int code) {
 bool WeatherManager::updateItboy() {
     static WeatherData d;   // 放静态区：WeatherData 含 27 个 std::string，栈帧会超 1536 限制
     d = WeatherData();
-    char url[192];
-    snprintf(url, sizeof(url), "http://t.weather.itboy.net/api/weather/city/%s", WEATHER_CITY_CODE);
+    // std::string 拼接避免固定缓冲截断
+    std::string url = std::string("http://t.weather.itboy.net/api/weather/city/") + WEATHER_CITY_CODE;
 
     std::string body;
     if (!httpGetRaw(url, 8000, false, body)) {
@@ -792,11 +794,11 @@ bool WeatherManager::updateItboy() {
 bool WeatherManager::updateOpenMeteo() {
     static WeatherData d;   // 放静态区：WeatherData 含 27 个 std::string，栈帧会超 1536 限制
     d = WeatherData();
-    char url[320];
-    snprintf(url, sizeof(url),
-             "https://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f"
-             "&current=temperature_2m,weather_code&timezone=Asia%%2FShanghai",
-             (double)WEATHER_LAT, (double)WEATHER_LON);
+    // std::string 拼接避免固定缓冲截断；经纬度先格式化到小缓冲再拼
+    char coords[80];
+    snprintf(coords, sizeof(coords), "%.4f&longitude=%.4f", (double)WEATHER_LAT, (double)WEATHER_LON);
+    std::string url = std::string("https://api.open-meteo.com/v1/forecast?latitude=") + coords +
+                      "&current=temperature_2m,weather_code&timezone=Asia%2FShanghai";
 
     ESP_LOGI(TAG, "使用 Open-Meteo 获取天气 (%.4f, %.4f)", (double)WEATHER_LAT, (double)WEATHER_LON);
 
@@ -843,20 +845,4 @@ bool WeatherManager::updateOpenMeteo() {
         latest_data_ = d;
     }
     return true;
-}
-
-void WeatherManager::parseWeatherJson(const char* json_data) {
-    cJSON *root = cJSON_Parse(json_data);
-    if (!root) return;
-    cJSON *code = cJSON_GetObjectItem(root, "code");
-    if (code && strcmp(code->valuestring, "200") == 0) {
-        cJSON *now = cJSON_GetObjectItem(root, "now");
-        if (now) {
-            latest_data_.temp = cJSON_GetObjectItem(now, "temp")->valuestring;
-            latest_data_.text = cJSON_GetObjectItem(now, "text")->valuestring;
-            latest_data_.valid = true;
-            ESP_LOGI(TAG, "天气更新成功: %s°C, %s", latest_data_.temp.c_str(), latest_data_.text.c_str());
-        }
-    }
-    cJSON_Delete(root);
 }
