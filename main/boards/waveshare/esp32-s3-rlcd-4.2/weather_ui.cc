@@ -404,12 +404,12 @@ void CustomLcdDisplay::SetupWeatherUI() {
     // 待办列表容器：每行 = ★ + 文本（文本自动换行）
     memo_rows_w_ = todo_w - 24;
     memo_rows_ = lv_obj_create(todo_card);
-    lv_obj_set_pos(memo_rows_, 12, 46);
-    lv_obj_set_size(memo_rows_, memo_rows_w_, todo_h - 54);
+    lv_obj_set_pos(memo_rows_, 12, 44);
+    lv_obj_set_size(memo_rows_, memo_rows_w_, todo_h - 50);
     lv_obj_set_style_bg_opa(memo_rows_, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(memo_rows_, 0, 0);
     lv_obj_set_style_pad_all(memo_rows_, 0, 0);
-    lv_obj_set_style_pad_row(memo_rows_, 4, 0);
+    lv_obj_set_style_pad_row(memo_rows_, 3, 0);
     lv_obj_remove_flag(memo_rows_, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(memo_rows_, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(memo_rows_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);

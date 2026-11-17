@@ -86,11 +86,11 @@ idf.py build flash monitor
 └──────────────────────────────────────────────┘
 ~~~
 
-- 卡片尺寸：时钟卡 199×120 @(10,41)、待办卡 173×249 @(217,41)、AI 卡 199×100 @(10,179)；`pad=10`、`gap=8`。
+- 卡片尺寸：时钟卡 199×120 @(10,41)、待办卡 173×249 @(217,41)、AI 卡 199×111 @(10,179)；`pad=10`、`gap=8`。AI 卡高度取 `UI_SCR_H - ai_y - 10`，使其底边与待办卡底边同在 y=290。
 - 顶栏（黑底白字）：左侧 `sensor_label_` 显示「环境 温度 湿度」，右侧 `lunar_label_` 显示农历/节气/节日（14px），最右是 WiFi + 电池胶囊（110×24）。
 - 时钟卡内三行：日期行（`day_label_`，16px，居中）→ **翻页时钟**（4 张 39×50 黑底圆角卡片，每张一位数字，`alibaba_black_64` 白字，卡片中央叠 1px 白色中缝；两位之间是两个 5×5 黑色圆角冒号方块；数字由 `time_digit_label_[4]` 分别写入时十/时个/分十/分个）→ 天气行（`weather_label_`，16px，居中，「城市 天气 温度°C」）。外框 2px + 内框 2px 双层圆角描边。
-- 待办卡：标题「待办」+ 右上 ☑ ★ 两个 material symbols 图标 + 分隔线 + 列表容器 `memo_rows_`（`LV_FLEX_FLOW_COLUMN`）。每行是「★ + 文本」的横向 flex，文本 `LV_LABEL_LONG_WRAP` 自动换行，最多 6 条，超出显示「…还有N条」。
-- 待办数据来自 NVS `memo/items`（JSON 数组，字段 `t`=时间 `c`=内容），由 MCP 工具 `self.memo.add / list / done / clear` 增删，或由 `self.todo.sync` 整批覆盖；`RefreshMemoDisplayInternal()` 每次清空容器重建行。
+- 待办卡：标题「待办」+ 右上 ☑ ★ 两个 material symbols 图标 + 分隔线 + 列表容器 `memo_rows_`（`LV_FLEX_FLOW_COLUMN`，位置 `(12,44)`、尺寸 `memo_rows_w_ × (todo_h-50)`，`pad_row=3`）。**每项占两行**：第一行「★ + 时间」（时间用 16px 1bpp 字库，纯 ASCII；全天待办显示「全天」，无时间显示 `--:--`），第二行「事项」文本（`font_puhui_16_4`，`text_line_space=1`，占满整行宽自动换行，**`max_height=42` + `LV_LABEL_LONG_DOT` 最多两行、超出显示省略号**）。**项与项之间画一条虚线**（`lv_line` + `line_width=2` + `line_dash_width=5` / `line_dash_gap=4`，点数组存 `memo_dash_pts_[6][2]` 成员，因为 `lv_line` 不拷贝点数组；最后一项之后不画）。最多建 6 项，建完 `lv_obj_update_layout` 量出实际高度后裁剪，放不下的折成「…还有N条」（实测可用高度 199px，单行项 45px、两行项 66px，通常可放 3 项）。
+- 待办数据来自 NVS `memo/items`（JSON 数组，字段 `t`=时间行如 `13:00`／`全天`，`c`=事项内容），由 MCP 工具 `self.memo.add / list / done / clear` 增删，或由 `self.todo.sync` 整批覆盖；`RefreshMemoDisplayInternal()` 每次清空容器重建行。
 - AI 卡：左侧 56px 表情区（48px 表情图 + 情绪标签），竖线分隔（距左边 70px），右侧状态文字左对齐垂直居中；卡片高度 < 90px 时自动切紧凑模式（表情 30px、14px 字体）。
 - 字体：中文文案统一用 `font_puhui_16_4`（7415 常用汉字）和 `font_puhui_14_1`；图标用 `font_material_symbols_16_4`（`material_symbols.h` 的 `MATERIAL_SYMBOLS_STAR` / `MATERIAL_SYMBOLS_CHECK_CIRCLE`）；大字时间用 `alibaba_black_64`。**注意**：`alibaba_puhui_16` 字符集不含「环境」，顶栏必须用 `font_puhui_16_4`，否则整词不显示。
 - 竖屏 300×400 为整宽纵向堆叠：时钟卡 280×140 → 待办卡 280×138 → AI 卡 280×55。

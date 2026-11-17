@@ -93,8 +93,9 @@ private:
     lv_obj_t *ai_face_ = nullptr;           // 内置绘制的猫脸（资源包无 emoji 时兜底显示）
 
     // 待办卡片（右侧整高）
-    lv_obj_t *memo_rows_ = nullptr;           // 待办列表容器（每行 = ★ + 文本）
+    lv_obj_t *memo_rows_ = nullptr;           // 待办列表容器（每项 = ★+时间 一行 / 事项 一行）
     int memo_rows_w_ = 160;                   // 待办行可用宽度（布局时确定）
+    lv_point_precise_t memo_dash_pts_[6][2] = {};  // 项间虚线端点（lv_line 不拷贝点数组，必须常驻）
     lv_obj_t *music_title_label_ = nullptr;   // 音乐页面：歌名
     lv_obj_t *music_artist_label_ = nullptr;  // 音乐页面：歌手
     lv_obj_t *music_lyric_prev_label_ = nullptr;  // 音乐页面：上一句歌词（淡色）

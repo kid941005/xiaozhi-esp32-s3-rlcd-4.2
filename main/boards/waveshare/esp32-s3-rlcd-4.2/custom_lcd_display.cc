@@ -372,52 +372,127 @@ void CustomLcdDisplay::RefreshMemoDisplayInternal() {
     }
 
     const int row_w = memo_rows_w_;
+    const int kMaxItems = 6;
 
-    for (int i = 0; i < count && i < 6; i++) {
+    lv_obj_t *boxes[kMaxItems] = {nullptr};
+    lv_obj_t *dashes[kMaxItems] = {nullptr};
+    int built = 0;
+
+    for (int i = 0; i < count && i < kMaxItems; i++) {
         cJSON *item = cJSON_GetArrayItem(arr, i);
         cJSON *t = cJSON_GetObjectItem(item, "t");
         cJSON *c = cJSON_GetObjectItem(item, "c");
 
-        lv_obj_t *row = lv_obj_create(memo_rows_);
-        lv_obj_set_width(row, row_w);
-        lv_obj_set_height(row, LV_SIZE_CONTENT);
-        lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_border_width(row, 0, 0);
-        lv_obj_set_style_pad_all(row, 0, 0);
-        lv_obj_set_style_pad_column(row, 4, 0);
-        lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-        lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+        const char *time_str =
+            (t != nullptr && cJSON_IsString(t) && t->valuestring != nullptr) ? t->valuestring : "";
+        const char *body_str =
+            (c != nullptr && cJSON_IsString(c) && c->valuestring != nullptr) ? c->valuestring : "";
 
-        lv_obj_t *icon = lv_label_create(row);
+        // 项容器：竖排两行（第一行 ★+时间，第二行 事项），末尾附一条虚线
+        lv_obj_t *box = lv_obj_create(memo_rows_);
+        lv_obj_set_width(box, row_w);
+        lv_obj_set_height(box, LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_opa(box, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(box, 0, 0);
+        lv_obj_set_style_pad_all(box, 0, 0);
+        lv_obj_set_style_pad_row(box, 2, 0);
+        lv_obj_remove_flag(box, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(box, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+
+        // 第一行：★ + 时间
+        lv_obj_t *head = lv_obj_create(box);
+        lv_obj_set_width(head, row_w);
+        lv_obj_set_height(head, LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_opa(head, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(head, 0, 0);
+        lv_obj_set_style_pad_all(head, 0, 0);
+        lv_obj_set_style_pad_column(head, 4, 0);
+        lv_obj_remove_flag(head, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_flex_flow(head, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(head, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+        lv_obj_t *icon = lv_label_create(head);
         lv_obj_set_style_text_font(icon, &font_material_symbols_16_4, 0);
         lv_obj_set_style_text_color(icon, lv_color_black(), 0);
         lv_label_set_text(icon, MATERIAL_SYMBOLS_STAR);
 
-        lv_obj_t *text = lv_label_create(row);
+        bool ascii_time = true;
+        for (const char *p = time_str; *p != 0; ++p) {
+            if (static_cast<unsigned char>(*p) >= 0x80) { ascii_time = false; break; }
+        }
+        lv_obj_t *time_lbl = lv_label_create(head);
+        lv_obj_set_style_text_font(time_lbl, ascii_time ? &font_puhui_16_1 : &font_puhui_16_4, 0);
+        lv_obj_set_style_text_color(time_lbl, lv_color_black(), 0);
+        lv_label_set_text(time_lbl, (time_str[0] != 0) ? time_str : "--:--");
+
+        // 第二行：事项文本（占满整行宽，自动换行）
+        lv_obj_t *text = lv_label_create(box);
         lv_obj_set_style_text_font(text, &font_puhui_16_4, 0);
         lv_obj_set_style_text_color(text, lv_color_black(), 0);
-        lv_obj_set_style_text_line_space(text, 2, 0);
-        lv_obj_set_width(text, row_w - 20);
-        lv_label_set_long_mode(text, LV_LABEL_LONG_WRAP);
+        lv_obj_set_style_text_line_space(text, 1, 0);
+        lv_obj_set_width(text, row_w);
+        lv_obj_set_style_max_height(text, 42, 0);   // 最多两行，超出用省略号
+        lv_label_set_long_mode(text, LV_LABEL_LONG_DOT);
+        lv_label_set_text(text, (body_str[0] != 0) ? body_str : "备忘提醒");
 
-        std::string line;
-        if (t && cJSON_IsString(t) && strlen(t->valuestring) > 0) {
-            line = t->valuestring;
-            line += " ";
+        boxes[built] = box;
+
+        // 项与项之间的虚线（最后一项之后不加）
+        if (i + 1 < count && i + 1 < kMaxItems) {
+            lv_obj_t *ln = lv_line_create(box);
+            memo_dash_pts_[built][0].x = 0;
+            memo_dash_pts_[built][0].y = 0;
+            memo_dash_pts_[built][1].x = row_w - 1;
+            memo_dash_pts_[built][1].y = 0;
+            lv_line_set_points(ln, memo_dash_pts_[built], 2);
+            lv_obj_set_size(ln, row_w, 3);
+            lv_obj_set_style_line_width(ln, 2, 0);
+            lv_obj_set_style_line_color(ln, lv_color_black(), 0);
+            lv_obj_set_style_line_rounded(ln, false, 0);
+            lv_obj_set_style_line_dash_width(ln, 5, 0);
+            lv_obj_set_style_line_dash_gap(ln, 4, 0);
+            dashes[built] = ln;
         }
-        if (c && cJSON_IsString(c)) {
-            line += c->valuestring;
-        }
-        if (line.empty()) line = "备忘提醒";
-        lv_label_set_text(text, line.c_str());
+        built++;
     }
 
-    if (count > 6) {
+    // 按容器实际高度裁剪：放不下的项丢掉，改成「…还有N条」
+    lv_obj_update_layout(memo_rows_);
+    const int avail_h = lv_obj_get_height(memo_rows_);
+    int used_h = 0;
+    int keep = 0;
+    for (int i = 0; i < built; i++) {
+        const int h = lv_obj_get_height(boxes[i]);
+        if (used_h + h > avail_h) break;
+        used_h += h + 4;   // 4 = memo_rows_ 的 pad_row
+        keep++;
+    }
+    for (int i = keep; i < built; i++) {
+        lv_obj_delete(boxes[i]);
+        boxes[i] = nullptr;
+        dashes[i] = nullptr;
+    }
+    // 裁剪后最后一项不该再带虚线
+    if (keep > 0 && keep < built && dashes[keep - 1] != nullptr) {
+        lv_obj_delete(dashes[keep - 1]);
+        dashes[keep - 1] = nullptr;
+    }
+
+    {
+        char dbg[160];
+        int n = std::snprintf(dbg, sizeof(dbg), "待办布局: 可用 %d, built %d, keep %d, 高", avail_h, built, keep);
+        for (int i = 0; i < keep && n > 0 && n < (int)sizeof(dbg); i++) {
+            n += std::snprintf(dbg + n, sizeof(dbg) - n, " %d", (int)lv_obj_get_height(boxes[i]));
+        }
+        ESP_LOGI(TAG, "%s", dbg);
+    }
+
+    if (keep < count) {
         lv_obj_t *more = lv_label_create(memo_rows_);
         lv_obj_set_style_text_font(more, &font_puhui_16_1, 0);
         lv_obj_set_style_text_color(more, lv_color_black(), 0);
-        lv_label_set_text_fmt(more, "…还有%d条", count - 6);
+        lv_label_set_text_fmt(more, "…还有%d条", count - keep);
     }
 
     cJSON_Delete(arr);

@@ -65,21 +65,15 @@ bool IsToday(const char* due_text) {
     return y == (tm_now.tm_year + 1900) && mo == (tm_now.tm_mon + 1) && d == tm_now.tm_mday;
 }
 
-// 行文本 = 「时间 + 标题」，不再带日期/星期标注（如 11.17(二)）
-std::string FormatRow(const char* title, const char* due_text, bool all_day) {
-    std::string out;
-    if (!all_day && due_text != nullptr && std::strlen(due_text) >= 16) {
-        int hh = 0, mm = 0;
-        if (std::sscanf(due_text + 11, "%d:%d", &hh, &mm) == 2) {
-            char buf[16];
-            std::snprintf(buf, sizeof(buf), "%02d:%02d ", hh, mm);
-            out = buf;
-        }
-    }
-    if (title != nullptr) {
-        out += title;
-    }
-    return out;
+// 时间行 = 「HH:MM」；全天待办给「全天」，无时间给空串（UI 显示占位）
+std::string FormatTime(const char* due_text, bool all_day) {
+    if (all_day) return std::string("全天");
+    if (due_text == nullptr || std::strlen(due_text) < 16) return std::string();
+    int hh = 0, mm = 0;
+    if (std::sscanf(due_text + 11, "%d:%d", &hh, &mm) != 2) return std::string();
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "%02d:%02d", hh, mm);
+    return std::string(buf);
 }
 
 const char* kInitRequest =
@@ -324,12 +318,12 @@ bool TodoMcpClient::ApplyPayload(const std::string& payload) {
                     if (!IsToday(due_text)) {
                         continue;   // 非今天的待办不上屏
                     }
-                    std::string row = FormatRow(title->valuestring, due_text, cJSON_IsTrue(all_day));
-                    ESP_LOGI(TAG, "待办行: %s", row.c_str());
+                    std::string tstr = FormatTime(due_text, cJSON_IsTrue(all_day));
+                    ESP_LOGI(TAG, "待办行: %s %s", tstr.c_str(), title->valuestring);
 
                     cJSON* item = cJSON_CreateObject();
-                    cJSON_AddStringToObject(item, "t", "");
-                    cJSON_AddStringToObject(item, "c", row.c_str());
+                    cJSON_AddStringToObject(item, "t", tstr.c_str());
+                    cJSON_AddStringToObject(item, "c", title->valuestring);
                     cJSON_AddItemToArray(arr, item);
                     count++;
                 }
