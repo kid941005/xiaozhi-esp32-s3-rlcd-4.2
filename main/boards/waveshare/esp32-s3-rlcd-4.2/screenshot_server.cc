@@ -91,7 +91,7 @@ static esp_err_t DitherHandler(httpd_req_t *req) {
     return httpd_resp_send(req, out, n);
 }
 
-// 在线切页：/page?p=weather|music|toggle（不带参数只报告当前页），便于远程看另一页的画面
+// 在线切页：/page?p=weather|detail|music|toggle（不带参数只报告当前页），便于远程看另一页的画面
 static esp_err_t PageHandler(httpd_req_t *req) {
     if (s_display == nullptr) {
         return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "not ready");
@@ -104,6 +104,8 @@ static esp_err_t PageHandler(httpd_req_t *req) {
             s_display->SwitchToMusicPage();
         } else if (strcmp(value, "weather") == 0) {
             s_display->SwitchToWeatherPage();
+        } else if (strcmp(value, "detail") == 0) {
+            s_display->SwitchToWeatherDetailPage();
         } else if (strcmp(value, "toggle") == 0) {
             if (s_display->IsMusicMode()) {
                 s_display->SwitchToWeatherPage();
@@ -112,7 +114,9 @@ static esp_err_t PageHandler(httpd_req_t *req) {
             }
         }
     }
-    const char *page = s_display->IsMusicMode() ? "music" : "weather";
+    const char *page = s_display->IsMusicMode()    ? "music"
+                       : s_display->IsDetailMode() ? "detail"
+                                                   : "weather";
     char out[64];
     int n = snprintf(out, sizeof(out), "page=%s\n", page);
     httpd_resp_set_type(req, "text/plain; charset=utf-8");

@@ -221,6 +221,7 @@ void WeatherManager::loadConfigFromNvs() {
     }
     if (!city.empty()) {
         city_ = city;
+        manual_city_ = true;   // NVS 里手动指定了城市，跳过 IP 定位
     }
     std::string loc_id = settings.GetString("loc_id");
     std::string loc_name = settings.GetString("loc_name");
@@ -233,18 +234,90 @@ void WeatherManager::loadConfigFromNvs() {
              loc_id_.empty() ? "(待查询)" : loc_id_.c_str());
 }
 
-// 和风 LocationID：NVS 缓存 > geo 城市查询 > config.h 城市代码兜底
+// IP 定位：ip-api.com 免费接口（HTTP，45 次/分钟），返回出口 IP 所在城市与经纬度
+bool WeatherManager::LocateByIp() {
+    if (manual_city_) {
+        ESP_LOGI(TAG, "城市为手动配置(%s)，跳过 IP 定位", city_.c_str());
+        return true;
+    }
+    std::string body;
+    if (!httpGetJson(WEATHER_IP_GEO_URL, body, 8000)) {
+        ESP_LOGW(TAG, "IP 定位请求失败，沿用城市 %s", city_.c_str());
+        return false;
+    }
+    cJSON* root = cJSON_Parse(body.c_str());
+    if (root == nullptr) {
+        ESP_LOGW(TAG, "IP 定位响应解析失败，沿用城市 %s", city_.c_str());
+        return false;
+    }
+    bool ok = false;
+    cJSON* status = cJSON_GetObjectItem(root, "status");
+    if (status && cJSON_IsString(status) && strcmp(status->valuestring, "success") == 0) {
+        cJSON* city = cJSON_GetObjectItem(root, "city");
+        cJSON* region = cJSON_GetObjectItem(root, "regionName");
+        cJSON* lat = cJSON_GetObjectItem(root, "lat");
+        cJSON* lon = cJSON_GetObjectItem(root, "lon");
+        if (lat && cJSON_IsNumber(lat) && lon && cJSON_IsNumber(lon)) {
+            ip_lat_ = static_cast<float>(lat->valuedouble);
+            ip_lon_ = static_cast<float>(lon->valuedouble);
+            has_ip_coord_ = true;
+        }
+        if (city && cJSON_IsString(city) && city->valuestring[0] != 0) {
+            city_ = city->valuestring;
+        }
+        // 城市变了，之前缓存的 LocationID 必须作废
+        loc_id_.clear();
+        loc_name_.clear();
+        Settings wr("weather", true);
+        wr.SetString("ip_city", city_);
+        char coord[40];
+        snprintf(coord, sizeof(coord), "%.4f,%.4f", (double)ip_lon_, (double)ip_lat_);
+        wr.SetString("ip_coord", coord);
+        ESP_LOGI(TAG, "IP 定位成功: %s %s (%.4f, %.4f)",
+                 (region && cJSON_IsString(region)) ? region->valuestring : "",
+                 city_.c_str(), (double)ip_lat_, (double)ip_lon_);
+        ok = true;
+    } else {
+        ESP_LOGW(TAG, "IP 定位失败(status=%s)，沿用城市 %s",
+                 (status && cJSON_IsString(status)) ? status->valuestring : "?", city_.c_str());
+    }
+    cJSON_Delete(root);
+    return ok;
+}
+
+// 手动指定城市：清掉 LocationID 缓存，下次 update() 按新城市重新解析
+void WeatherManager::SetCity(const std::string& city) {
+    if (city.empty()) {
+        return;
+    }
+    city_ = city;
+    loc_id_.clear();
+    loc_name_.clear();
+    has_ip_coord_ = false;
+    manual_city_ = true;
+    Settings wr("weather", true);
+    wr.SetString("city", city_);
+    wr.SetString("loc_id", "");
+    wr.SetString("loc_name", "");
+    ESP_LOGI(TAG, "天气城市已手动设置为 %s", city_.c_str());
+}
+
+// 和风 LocationID：NVS 缓存 > geo 城市名查询 > geo 经纬度反查 > 城市代码兜底
 std::string WeatherManager::ResolveLocationId() {
     if (!loc_id_.empty()) {
         return loc_id_;
     }
-    std::string body;
-    char url[384];
-    snprintf(url, sizeof(url), "https://%s/geo/v2/city/lookup?location=%s&lang=zh&number=1&key=%s",
-             api_host_.c_str(), url_encode(city_).c_str(), api_key_.c_str());
-    if (httpGetJson(url, body, 12000)) {
+    auto lookup = [&](const std::string& location_param) -> bool {
+        std::string body;
+        char url[448];
+        snprintf(url, sizeof(url), "https://%s/geo/v2/city/lookup?location=%s&lang=zh&key=%s",
+                 api_host_.c_str(), location_param.c_str(), api_key_.c_str());
+        if (!httpGetJson(url, body, 12000)) {
+            return false;
+        }
+        bool ok = false;
         cJSON* root = cJSON_Parse(body.c_str());
-        if (root) {
+        if (root != nullptr) {
             cJSON* code = cJSON_GetObjectItem(root, "code");
             cJSON* locs = cJSON_GetObjectItem(root, "location");
             if (code && cJSON_IsString(code) && strcmp(code->valuestring, "200") == 0 &&
@@ -260,18 +333,29 @@ std::string WeatherManager::ResolveLocationId() {
                     Settings wr("weather", true);
                     wr.SetString("loc_id", loc_id_);
                     wr.SetString("loc_name", loc_name_);
-                    ESP_LOGI(TAG, "和风 geo 定位成功: %s (%s)",
-                             loc_name_.c_str(), loc_id_.c_str());
+                    ESP_LOGI(TAG, "和风 geo 定位成功: %s (%s)", loc_name_.c_str(), loc_id_.c_str());
+                    ok = true;
                 }
             }
             cJSON_Delete(root);
         }
+        return ok;
+    };
+
+    // 1) 城市名（IP 定位得到的城市名，或手动配置的城市名）
+    if (!city_.empty() && lookup(url_encode(city_))) {
+        return loc_id_;
     }
-    if (loc_id_.empty()) {
-        // 中国天气网城市代码与和风 LocationID 同源，可直接兜底
-        loc_id_ = WEATHER_CITY_CODE;
-        ESP_LOGW(TAG, "geo 定位失败，直接用城市代码 %s", loc_id_.c_str());
+    // 2) 经纬度反查（城市名查不到时兜底，可能返回区县级名称）
+    if (has_ip_coord_) {
+        char coord[40];
+        snprintf(coord, sizeof(coord), "%.4f,%.4f", (double)ip_lon_, (double)ip_lat_);
+        if (lookup(coord)) {
+            return loc_id_;
+        }
     }
+    loc_id_ = WEATHER_CITY_CODE;
+    ESP_LOGW(TAG, "geo 定位失败，直接用城市代码 %s", loc_id_.c_str());
     return loc_id_;
 }
 
@@ -388,7 +472,16 @@ bool WeatherManager::updateQWeather() {
             cJSON* arr = cJSON_GetObjectItem(wroot, "warning");
             if (arr && cJSON_GetArraySize(arr) > 0) {
                 cJSON* w0 = cJSON_GetArrayItem(arr, 0);
-                latest_data_.warning = str_of(w0, "typeName") + str_of(w0, "severityColor");
+                // 和风返回英文颜色名（Blue/Yellow/Orange/Red/White/Black），转成中文等级
+                const std::string color = str_of(w0, "severityColor");
+                const char* color_zh = "";
+                if (color == "White")       color_zh = "白色";
+                else if (color == "Blue")   color_zh = "蓝色";
+                else if (color == "Yellow") color_zh = "黄色";
+                else if (color == "Orange") color_zh = "橙色";
+                else if (color == "Red")    color_zh = "红色";
+                else if (color == "Black")  color_zh = "黑色";
+                latest_data_.warning = str_of(w0, "typeName") + color_zh;
             }
             cJSON_Delete(wroot);
         }
@@ -413,6 +506,11 @@ bool WeatherManager::update() {
     }
     // 1) 优先和风天气（维度最全：实时 / 空气质量 / 3 天预报 / 预警）
     if (hasQWeather()) {
+        // 每次开机只做一次 IP 定位，决定这次用哪个城市查天气
+        if (!ip_located_) {
+            ip_located_ = true;
+            LocateByIp();
+        }
         if (updateQWeather()) {
             return true;
         }

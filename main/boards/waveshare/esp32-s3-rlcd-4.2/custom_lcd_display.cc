@@ -323,6 +323,7 @@ CustomLcdDisplay::CustomLcdDisplay(esp_lcd_panel_io_handle_t panel_io,
     ESP_LOGI(TAG, "创建天气页 + 音乐页 UI");
     SetupWeatherUI();
     SetupMusicUI();
+    SetupWeatherDetailUI();
     // 告诉显示框架：当前自定义 UI 已经初始化完成
     // 否则基类的 SetStatus/ShowNotification 会一直误判为“UI 未准备好”
     setup_ui_called_ = true;
@@ -623,6 +624,7 @@ void CustomLcdDisplay::ApplyDisplayMode() {
     // 先隐藏所有页面
     if (weather_page_) lv_obj_add_flag(weather_page_, LV_OBJ_FLAG_HIDDEN);
     if (music_page_) lv_obj_add_flag(music_page_, LV_OBJ_FLAG_HIDDEN);
+    if (detail_page_) lv_obj_add_flag(detail_page_, LV_OBJ_FLAG_HIDDEN);
 
     // 显示当前页面
     switch (display_mode_) {
@@ -632,18 +634,25 @@ void CustomLcdDisplay::ApplyDisplayMode() {
         case MODE_MUSIC:
             if (music_page_) lv_obj_remove_flag(music_page_, LV_OBJ_FLAG_HIDDEN);
             break;
+        case MODE_DETAIL:
+            if (detail_page_) lv_obj_remove_flag(detail_page_, LV_OBJ_FLAG_HIDDEN);
+            RefreshWeatherDetail();   // 切进来立刻填一次数据，不等下一个刷新周期
+            break;
     }
 }
 
 void CustomLcdDisplay::CycleDisplayMode() {
     DisplayLockGuard lock(this);
-    // 两页循环：天气 → 音乐 → 天气
+    // 三页循环：天气 → 天气详情 → 音乐 → 天气
     switch (display_mode_) {
-        case MODE_WEATHER: display_mode_ = MODE_MUSIC; break;
+        case MODE_WEATHER: display_mode_ = MODE_DETAIL; break;
+        case MODE_DETAIL:  display_mode_ = MODE_MUSIC; break;
         case MODE_MUSIC:   display_mode_ = MODE_WEATHER; break;
     }
     ApplyDisplayMode();
-    const char* name = (display_mode_ == MODE_MUSIC) ? "音乐页" : "天气页";
+    const char* name = (display_mode_ == MODE_MUSIC)   ? "音乐页"
+                       : (display_mode_ == MODE_DETAIL) ? "天气详情页"
+                                                        : "天气页";
     ESP_LOGI(TAG, "页面切换: %s", name);
 }
 
@@ -738,6 +747,15 @@ void CustomLcdDisplay::SwitchToWeatherPage() {
         display_mode_ = MODE_WEATHER;
         ApplyDisplayMode();
         ESP_LOGI(TAG, "自动切换到天气页");
+    }
+}
+
+void CustomLcdDisplay::SwitchToWeatherDetailPage() {
+    DisplayLockGuard lock(this);
+    if (display_mode_ != MODE_DETAIL) {
+        display_mode_ = MODE_DETAIL;
+        ApplyDisplayMode();
+        ESP_LOGI(TAG, "切换到天气详情页");
     }
 }
 

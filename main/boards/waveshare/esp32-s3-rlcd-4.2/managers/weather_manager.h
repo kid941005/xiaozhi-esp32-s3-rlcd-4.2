@@ -66,8 +66,11 @@ public:
     // 供运行时（不重新编译）修改天气源配置
     void loadConfigFromNvs();
 
-    // 当前查询城市（NVS > config.h WEATHER_CITY）
+    // 当前查询城市（IP 定位 > NVS 手动配置 > config.h WEATHER_CITY）
     const std::string& city() const { return city_; }
+
+    // 手动指定城市（MCP self.weather.set_city 用）：清定位缓存并跳过后续 IP 定位
+    void SetCity(const std::string& city);
 
     // 通过外部工具（如 MCP）直接写入天气数据
     // 适用于不走板载 HTTP 天气接口，而由 AI 侧先查好天气再下发到设备
@@ -87,6 +90,13 @@ private:
     std::string loc_id_;    // 和风天气 LocationID（geo 查询结果，缓存在 NVS）
     std::string loc_name_;  // 和风返回的城市名（用于显示）
 
+    // IP 定位状态（ip-api.com）
+    bool manual_city_ = false;   // 城市被手动指定，跳过 IP 定位
+    bool ip_located_ = false;    // 本次开机是否已尝试过 IP 定位
+    bool has_ip_coord_ = false;  // 是否拿到经纬度（城市名查询失败时兜底）
+    float ip_lat_ = 0.0f;
+    float ip_lon_ = 0.0f;
+
     static esp_err_t http_event_handler(esp_http_client_event_t *evt);
     void parseWeatherJson(const char* json_data);
 
@@ -96,6 +106,9 @@ private:
     // 和风天气：解析 LocationID（优先用 NVS 缓存，其次 geo 查询，最后用城市代码兜底）
     std::string ResolveLocationId();
     bool updateQWeather();
+
+    // IP 定位：拿到实际所在城市 + 经纬度（手动配置城市时直接跳过）
+    bool LocateByIp();
 
     // 无和风 Key 时的免密钥天气源：主用中国天气网(数据接口)，备用 Open-Meteo
     bool updateItboy();

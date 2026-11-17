@@ -363,10 +363,10 @@ private:
         // ===== 屏幕切换工具（语音可调用）=====
         mcp_server.AddTool(
             "self.disp.switch",
-            "Switch display page between weather and music.\n"
-            "Use when user says: '切到音乐页', '打开天气页', '切换屏幕', 'switch screen'.\n"
+            "Switch display page among weather, weather detail and music.\n"
+            "Use when user says: '切到音乐页', '打开天气页', '看天气详情', '切换屏幕', 'switch screen'.\n"
             "Args:\n"
-            "  `mode`: 'toggle' | 'music' | 'weather' (default: 'toggle')",
+            "  `mode`: 'toggle' | 'weather' | 'detail' | 'music' (default: 'toggle')",
             PropertyList({
                 Property("mode", kPropertyTypeString, std::string("toggle"))
             }),
@@ -392,12 +392,35 @@ private:
                     display_->SwitchToMusicPage();
                 } else if (mode == "weather") {
                     display_->SwitchToWeatherPage();
+                } else if (mode == "detail") {
+                    display_->SwitchToWeatherDetailPage();
                 } else {
-                    return std::string("参数 mode 无效，请使用 toggle/music/weather");
+                    return std::string("参数 mode 无效，请使用 toggle/weather/detail/music");
                 }
 
                 if (display_->IsMusicMode()) return std::string("已切换到音乐页");
+                if (display_->IsDetailMode()) return std::string("已切换到天气详情页");
                 return std::string("已切换到天气页");
+            }
+        );
+
+        // ===== 天气城市设置（语音可调用，覆盖 IP 定位）=====
+        mcp_server.AddTool(
+            "self.weather.set_city",
+            "Set the city used for weather queries (overrides IP-based location).\n"
+            "Use when user says: '天气城市改成南京', 'set weather city'.\n"
+            "Args:\n"
+            "  `city`: city name, e.g. '南京'",
+            PropertyList({
+                Property("city", kPropertyTypeString, std::string(""))
+            }),
+            [this](const PropertyList& properties) -> ReturnValue {
+                auto city = properties["city"].value<std::string>();
+                if (city.empty()) {
+                    return std::string("请提供城市名，例如：南京");
+                }
+                WeatherManager::getInstance().SetCity(city);
+                return std::string("天气城市已设置为 ") + city + "，稍后自动刷新";
             }
         );
 

@@ -42,6 +42,7 @@ private:
     enum DisplayMode {
         MODE_WEATHER = 0,
         MODE_MUSIC = 1,
+        MODE_DETAIL = 2,   // 天气详情页（完整天气维度）
     };
     DisplayMode display_mode_ = MODE_WEATHER;
 
@@ -108,6 +109,16 @@ private:
     lv_obj_t *music_emotion_img_ = nullptr;   // 音乐页面：小智表情图片（和天气页 emotion_img_ 对应）
     lv_obj_t *music_ai_face_ = nullptr;       // 音乐页面：内置猫脸（无 emoji 素材时兜底）
 
+    // ===== 天气详情页（detail_ui.cc）=====
+    lv_obj_t *detail_page_ = nullptr;
+    lv_obj_t *d_city_label_ = nullptr;        // 标题行右侧：城市名
+    lv_obj_t *d_update_label_ = nullptr;      // 标题行最右：更新时间
+    lv_obj_t *d_cell_value_label_[6] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+    lv_obj_t *d_aqi_label_ = nullptr;         // AQI 条
+    lv_obj_t *d_forecast_label_[3] = {nullptr, nullptr, nullptr};  // 今天/明天/后天
+    lv_obj_t *d_sun_label_ = nullptr;         // 日出日落
+    lv_obj_t *d_warn_label_ = nullptr;        // 预警（无预警显示占位文案）
+
     // 图片图标（不能用基类的 label，因为我们用 lv_image 而不是 Font Awesome 文字）
     lv_obj_t *wifi_icon_img_ = nullptr;
     lv_obj_t *battery_icon_img_ = nullptr;
@@ -141,6 +152,7 @@ private:
     // UI 创建（实现在 weather_ui.cc / music_ui.cc）
     void SetupWeatherUI();
     void SetupMusicUI();
+    void SetupWeatherDetailUI();
     void ApplyDisplayMode();
     
     // 备忘录
@@ -207,6 +219,10 @@ public:
     // 调试用：返回关键控件状态文本（供 HTTP /dbg 端点排查显示问题）
     std::string GetUiDebugInfo();
     bool IsMusicMode() const { return display_mode_ == MODE_MUSIC; }
+    bool IsDetailMode() const { return display_mode_ == MODE_DETAIL; }
+    void SwitchToWeatherDetailPage();
+    // 刷新天气详情页（调用方需已持有 DisplayLockGuard；内部有数据变更检测）
+    void RefreshWeatherDetail();
 };
 
 #endif

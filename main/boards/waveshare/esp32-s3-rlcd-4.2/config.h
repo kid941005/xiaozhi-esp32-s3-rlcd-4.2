@@ -36,7 +36,10 @@
 #define WEATHER_LAT   30.6598f    // 纬度（默认成都）
 #define WEATHER_LON   104.0633f   // 经度
 #define WEATHER_CITY  "成都"       // 查询/显示的城市名（和风 geo 定位也用它）
-#define WEATHER_CITY_CODE "101270101"  // 中国天气网城市代码（成都），免密钥天气源使用
+#define WEATHER_CITY_CODE "101270101"
+
+// IP 定位（ip-api.com 免费接口，HTTP，45 次/分钟）：开机定位一次，得到实际所在城市与经纬度
+#define WEATHER_IP_GEO_URL "http://ip-api.com/json/?lang=zh-CN&fields=status,country,regionName,city,lat,lon"  // 中国天气网城市代码（成都），免密钥天气源使用
 
 // 待办 MCP 接入点（websocket JSON-RPC）。留空表示不启用，可在运行时通过
 // MCP 工具 self.todo.set_url 配置（持久化在 NVS namespace "todo", key "mcp_url"）。

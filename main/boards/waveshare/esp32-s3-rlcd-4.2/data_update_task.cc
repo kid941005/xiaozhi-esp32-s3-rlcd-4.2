@@ -345,49 +345,28 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                     }
                 }
 
-                // 3. 天气更新：时钟卡第三行轮播多组信息
-                //    顺序：预警 > 实时天气 > AQI > 风力 > 日出日落 > 明日预报，每 4 秒切一页
+                // 3. 天气行：时钟卡下方只显示「地址 + 当前天气」，其余维度见天气详情页
                 WeatherData wd = WeatherManager::getInstance().getLatestData();
                 if (wd.valid && self->weather_label_) {
-                    // static：DataUpdateTask 栈只有 4 KB，6 个 std::string 放栈上会撑爆 frame 限制
-                    static std::string pages[6];
-                    int page_count = 0;
-                    if (!wd.warning.empty()) {
-                        pages[page_count++] = "预警 " + wd.warning;
+                    std::string line = wd.city;
+                    if (!wd.text.empty()) {
+                        line += " " + wd.text;
                     }
                     if (!wd.temp.empty()) {
-                        pages[page_count++] = wd.city + " " + wd.text + " " + wd.temp + "°C";
+                        line += " " + wd.temp + "°C";
                     }
-                    if (!wd.aqi.empty()) {
-                        pages[page_count++] = "AQI " + wd.aqi + " " + wd.aqi_category;
+                    if (line.empty()) {
+                        line = "-- --°C";
                     }
-                    if (!wd.wind_dir.empty()) {
-                        pages[page_count++] = wd.wind_dir + " " + wd.wind_scale + "级";
+                    static std::string last_weather_line;
+                    if (last_weather_line != line) {
+                        lv_label_set_text(self->weather_label_, line.c_str());
+                        last_weather_line = line;
                     }
-                    if (!wd.sunrise.empty() && !wd.sunset.empty()) {
-                        pages[page_count++] = "日出" + wd.sunrise + " 日落" + wd.sunset;
-                    }
-                    if (wd.daily_count > 1 && !wd.daily[1].text_day.empty()) {
-                        const WeatherDaily& tm = wd.daily[1];
-                        pages[page_count++] = "明日 " + tm.text_day + " " + tm.temp_min + "~" + tm.temp_max + "°C";
-                    }
-                    if (page_count == 0) {
-                        pages[page_count++] = wd.city + " " + wd.text + " " + wd.temp + "°C";
-                    }
-                    static uint32_t last_page_switch_ms = 0;
-                    static int page_index = 0;
-                    static std::string last_weather_page;
-                    if (last_page_switch_ms == 0 || (now_ms - last_page_switch_ms) >= 4000) {
-                        last_page_switch_ms = now_ms;
-                        page_index = (page_index + 1) % page_count;
-                    }
-                    if (page_index >= page_count) {
-                        page_index = 0;
-                    }
-                    if (last_weather_page != pages[page_index]) {
-                        lv_label_set_text(self->weather_label_, pages[page_index].c_str());
-                        last_weather_page = pages[page_index];
-                    }
+                }
+                // 天气详情页正在显示时才刷新（内部有数据变更检测，不会频繁重绘）
+                if (self->IsDetailMode()) {
+                    self->RefreshWeatherDetail();
                 }
 
                 // 4. 电池状态更新（采样降频 + 变化更新）

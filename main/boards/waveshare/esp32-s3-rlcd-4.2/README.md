@@ -123,7 +123,20 @@ idf.py build flash monitor
 | `/v7/weather/3d?location=<LocationID>&lang=zh` | 未来 3 天（含日出日落，取第 1 天） | ~1.7 KB |
 | `/v7/warning/now?location=<LocationID>&lang=zh` | 灾害预警（`warning[0].typeName` + `severityColor`，无预警为空数组） | ~250 B |
 
-LocationID 由 `/geo/v2/city/lookup?location=<城市名>&key=…` 解析并缓存进 NVS（`weather/loc_id`、`weather/loc_name`），解析失败兜底 `WEATHER_CITY_CODE`。响应缓冲 8192 B + gzip 解压，足够。
+### 城市从哪来（IP 定位优先）
+
+首次更新时 `WeatherManager::LocateByIp()` 会 GET `WEATHER_IP_GEO_URL`（`http://ip-api.com/json/?lang=zh-CN&fields=status,country,regionName,city,lat,lon`，纯 HTTP、免密钥），拿到**出口 IP 所在城市**与经纬度。城市来源优先级：
+
+```
+IP 定位城市（ip-api）> NVS weather/city（手动配置）> config.h WEATHER_CITY
+```
+
+- 手动配置走 MCP 工具 `self.weather.set_city`（参数 `city`），会置 `manual_city_`，之后**跳过** IP 定位。
+- IP 定位拿到的经纬度作为 `geo/city/lookup` 的第二路参数兜底（城市名查不到时用 `lat,lon` 反查）。
+- IP 定位失败（无网络 / 接口不可用）自动退回 NVS 城市、再退回 `config.h` 的 `WEATHER_CITY`，**不阻塞**天气更新。
+- 日志：`IP 定位成功: 江苏 南京 (32.0607, 118.7630)` / `IP 定位失败`。
+
+LocationID 由 `/geo/v2/city/lookup?location=<城市名或 lat,lon>&key=…` 解析并缓存进 NVS（`weather/loc_id`、`weather/loc_name`），解析失败兜底 `WEATHER_CITY_CODE`。响应缓冲 8192 B + gzip 解压，足够。
 
 ### 免密钥兜底（和风不可用时）
 
@@ -138,19 +151,57 @@ LocationID 由 `/geo/v2/city/lookup?location=<城市名>&key=…` 解析并缓�
 
 ### 屏幕呈现
 
-时钟卡第三行是一条**轮播行**（宽度锁 `clock_w - 20` + `LV_LABEL_LONG_CLIP`，防止长文本溢出到待办卡），每 4 秒切一页，按数据可用性动态组页：
+时钟卡第三行只保留**一行**「地址 + 当前天气」：
 
 ```
-预警 <类型>  →  成都 雾 14°C  →  AQI 68 良  →  东北风 3级  →  日出06:29 日落17:00  →  明日 晴 10~17°C
+南京 雾 14°C
 ```
 
-`WeatherData` 结构体（`managers/weather_manager.h`）承载上述全部字段 + `WeatherDaily daily[3]`，UI 层只读 `getLatestData()`，换源不改 UI。
+（宽度锁 `clock_w - 20` + `LV_LABEL_LONG_CLIP` 防溢出；原来的预警/AQI/风力/日出日落/明日预报轮播已删除，这些维度全部搬到**天气详情页**，见下节。）
+
+`WeatherData` 结构体（`managers/weather_manager.h`）承载全部字段 + `WeatherDaily daily[3]`，UI 层只读 `getLatestData()`，换源不改 UI。
+
+## 天气详情页（完整维度）
+
+独立页面 `detail_page_`（`detail_ui.cc`），横竖屏共用同一套行列结构、列宽按屏宽算：
+
+```
+┌──────────────────────────────────────────────┐
+│ 天气 南京                          更新 10:04 │
+│ ┌──────┐ ┌──────┐ ┌──────┐                   │
+│ │体感  │ │湿度  │ │风    │   6 格：体感/湿度/风/  │
+│ │10°C  │ │73%   │ │东北风 4级│  能见度/气压/今日 │
+│ └──────┘ └──────┘ └──────┘                   │
+│ ┌──────┐ ┌──────┐ ┌──────┐                   │
+│ │能见度│ │气压  │ │今日  │                   │
+│ │9km   │ │1019hPa│ │9~16°C│                  │
+│ └──────┘ └──────┘ └──────┘                   │
+│ ┌──────────────────────────────────────────┐ │
+│ │ AQI 63  良   PM2.5 37                    │ │
+│ └──────────────────────────────────────────┘ │
+│ ┌────────┐ ┌────────┐ ┌────────┐             │
+│ │今天 阴 │ │明天多云│ │后天多云│  三日预报    │
+│ │9~16°C  │ │1~12°C  │ │1~11°C  │             │
+│ └────────┘ └────────┘ └────────┘             │
+│ ┌──────────────────────────────────────────┐ │
+│ │        日出 06:35   日落 17:04           │ │
+│ └──────────────────────────────────────────┘ │
+│ ┌──────────────────────────────────────────┐ │
+│ │ 预警 寒潮蓝色   （无预警：暂无气象预警）    │ │
+│ └──────────────────────────────────────────┘ │
+└──────────────────────────────────────────────┘
+```
+
+- 几何：页边距 8、卡片间距 6，格宽 `(屏宽-16-12)/3`、格高 40，两行起点 y=34 / y=78；AQI 条 y=122 h=30；三日预报 y=156 h=64；日出日落 `y=屏高-72` h=24；预警 `y=屏高-44` h=32。
+- 进入方式：**实体按键循环** 天气 → 天气详情 → 音乐 → 天气（`CycleDisplayMode()`）；MCP 工具 `self.disp.switch` 参数 `mode=detail`；调试端点 `GET /page?p=detail`。
+- 刷新：`RefreshWeatherDetail()` 由 `data_update_task` 在详情页激活时调用，内部用整串数据做变更检测，没变就不碰控件（1-bit 屏重绘很贵）。
+- 降级：任一字段缺失显示 `--`；三日预报不足 3 天时缺的格子显示 `今天/明天/后天 + --`；无预警显示「暂无气象预警」；预警颜色 `Blue/Yellow/Orange/Red/White/Black` 在 `weather_manager.cc` 里映射成 蓝色/黄色/橙色/红色/白色/黑色。
 
 ## 待办（MCP 接入点，设备自取）
 
 设备本身就是 MCP 客户端：板级任务 `todo_mcp`（栈 8192）用独立 websocket 连外部 MCP 接入点，
 按标准 JSON-RPC 握手后调用 `list_todos`（`view=today`, `limit=10`），把每条待办格式化成
-`11.16(日) 20:00 标题` 的一行，写入 NVS `memo/items` 并重绘右侧待办卡。
+`20:00 标题` 的一行（**只保留今天**：`IsToday()` 拿 `due_text` 的日期和本地 `localtime_r` 的年月日比较，没有日期的视为今天；全天待办只显示标题，不再带日期与星期），写入 NVS `memo/items` 并重绘右侧待办卡。
 
 - **长连接**：握手（initialize）只做一次，之后在**同一条 websocket 上**每分钟发一次 `tools/call`。
   早期版本是每次拉取都新建连接（每次都要重做 TLS 握手），实测跑满 5 分钟后第二次握手会被对端
@@ -291,7 +342,7 @@ LocationID 由 `/geo/v2/city/lookup?location=<城市名>&key=…` 解析并缓�
 - 串口在拿到 IP 后打印：`设备 IP: 192.168.137.104，截图地址: http://192.168.137.104:8080/shot.bmp`。
 - `GET /shot.bmp` → 400×300 单色 BMP（15662 字节，62 B 文件头 + 52 B/行 × 300）。
 - `GET /dbg` → 纯文本，输出 `chat_status_label_` 文本/隐藏/位置/尺寸、父容器尺寸、`emotion_label_` 文本、`emotion_img_` 状态、主题 emoji 集合数量，用于排查「控件不显示」。
-- `GET /page?p=weather|music|toggle` → 远程切页（不带参数只返回当前页），不按实体键也能截到另一页。
+- `GET /page?p=weather|detail|music|toggle` → 远程切页（不带参数只返回当前页），不按实体键也能截到另一页。
 - `GET /dither?mode=0..4&thr=16..240` → 在线调 1-bit 二值化参数，见下一节。
 - 主机侧脚本 `shot_fetch.py`：`python shot_fetch.py <设备IP> [out.png]`，取 BMP 后用 PIL 转 PNG（放大 2 倍便于查看）。
 - 实现：`screenshot_server.{h,cc}` 起 `esp_http_server`（`lru_purge_enable=true`、栈 8192，BMP 缓冲放 PSRAM）；像素读取用 `RlcdDriver::RLCD_GetPixel(x, y)` 直接查显存 LUT，1 = 白、0 = 黑，因此截图就是面板真实画面。

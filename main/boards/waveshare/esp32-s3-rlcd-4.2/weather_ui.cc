@@ -250,7 +250,8 @@ void CustomLcdDisplay::SetupWeatherUI() {
     const int ai_x    = pad;
     const int ai_y    = clock_y + clock_h + 18;              // 179
     const int ai_w    = col_w;
-    const int ai_h    = 100;
+    // AI 卡下边框必须与右栏待办卡下边框同高：两者底边都落在 UI_SCR_H - 10
+    const int ai_h    = UI_SCR_H - ai_y - 10;                // 111
 #endif
 
     // ===== 时钟卡片：日期 / 大字时间 / 农历 / 天气 =====

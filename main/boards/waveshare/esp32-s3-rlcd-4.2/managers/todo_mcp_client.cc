@@ -7,6 +7,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 
 #include <board.h>
 #include <network_interface.h>
@@ -49,25 +50,35 @@ int DayOfWeek(int y, int m, int d) {
     return (w + 7) % 7;
 }
 
-// "2026-11-16 20:00" -> "11.16(一) 20:00 "
+// 只保留今天的待办：服务端已用 view=today 过滤，这里按本地日期再兜一次底
+bool IsToday(const char* due_text) {
+    if (due_text == nullptr || std::strlen(due_text) < 10) {
+        return true;   // 没有日期字段时视为今天
+    }
+    int y = 0, mo = 0, d = 0;
+    if (std::sscanf(due_text, "%d-%d-%d", &y, &mo, &d) != 3) {
+        return true;
+    }
+    time_t now = time(nullptr);
+    struct tm tm_now = {};
+    localtime_r(&now, &tm_now);
+    return y == (tm_now.tm_year + 1900) && mo == (tm_now.tm_mon + 1) && d == tm_now.tm_mday;
+}
+
+// 行文本 = 「时间 + 标题」，不再带日期/星期标注（如 11.17(二)）
 std::string FormatRow(const char* title, const char* due_text, bool all_day) {
     std::string out;
-    int y = 0, mo = 0, d = 0;
-    if (due_text != nullptr && std::strlen(due_text) >= 10 &&
-        std::sscanf(due_text, "%d-%d-%d", &y, &mo, &d) == 3 && mo >= 1 && mo <= 12) {
-        static const char* kWeek[] = {"日", "一", "二", "三", "四", "五", "六"};
-        const int w = DayOfWeek(y, mo, d);
-        char buf[40];
+    if (!all_day && due_text != nullptr && std::strlen(due_text) >= 16) {
         int hh = 0, mm = 0;
-        if (!all_day && std::strlen(due_text) >= 16 &&
-            std::sscanf(due_text + 11, "%d:%d", &hh, &mm) == 2) {
-            std::snprintf(buf, sizeof(buf), "%02d.%02d(%s) %02d:%02d ", mo, d, kWeek[w], hh, mm);
-        } else {
-            std::snprintf(buf, sizeof(buf), "%02d.%02d(%s) ", mo, d, kWeek[w]);
+        if (std::sscanf(due_text + 11, "%d:%d", &hh, &mm) == 2) {
+            char buf[16];
+            std::snprintf(buf, sizeof(buf), "%02d:%02d ", hh, mm);
+            out = buf;
         }
-        out = buf;
     }
-    if (title != nullptr) out += title;
+    if (title != nullptr) {
+        out += title;
+    }
     return out;
 }
 
@@ -310,6 +321,9 @@ bool TodoMcpClient::ApplyPayload(const std::string& payload) {
                         (due != nullptr && cJSON_IsString(due) && due->valuestring != nullptr)
                             ? due->valuestring
                             : "";
+                    if (!IsToday(due_text)) {
+                        continue;   // 非今天的待办不上屏
+                    }
                     std::string row = FormatRow(title->valuestring, due_text, cJSON_IsTrue(all_day));
                     ESP_LOGI(TAG, "待办行: %s", row.c_str());
 
