@@ -29,6 +29,11 @@
 #define TAG "Application"
 
 namespace {
+// 设备端本地 VAD 打断：人声需持续一段时间才确认，避免环境噪声误触发；
+// TTS 起播后的一段热身期内不响应，避免功放起播杂音/残余回声造成自打断。
+constexpr int64_t kLocalVadBargeInHoldUs = 300 * 1000;
+constexpr int64_t kLocalVadBargeInWarmupUs = 800 * 1000;
+
 struct MusicPlaybackTaskArgs {
     Application* app = nullptr;
     std::string url;
@@ -86,6 +91,14 @@ Application::Application() : notify_player_(audio_service_) {
                                                 .name = "clock_timer",
                                                 .skip_unhandled_events = true};
     esp_timer_create(&clock_timer_args, &clock_timer_handle_);
+
+    esp_timer_create_args_t vad_barge_in_timer_args = {
+        .callback = [](void* arg) { static_cast<Application*>(arg)->TryLocalVadBargeIn(); },
+        .arg = this,
+        .dispatch_method = ESP_TIMER_TASK,
+        .name = "vad_barge_in",
+        .skip_unhandled_events = true};
+    esp_timer_create(&vad_barge_in_timer_args, &vad_barge_in_timer_);
 }
 
 Application::~Application() {
@@ -97,6 +110,10 @@ Application::~Application() {
     if (startup_wake_word_hint_timer_ != nullptr) {
         esp_timer_stop(startup_wake_word_hint_timer_);
         esp_timer_delete(startup_wake_word_hint_timer_);
+    }
+    if (vad_barge_in_timer_ != nullptr) {
+        esp_timer_stop(vad_barge_in_timer_);
+        esp_timer_delete(vad_barge_in_timer_);
     }
     vEventGroupDelete(event_group_);
 }
@@ -132,6 +149,7 @@ void Application::Initialize() {
         xEventGroupSetBits(event_group_, MAIN_EVENT_WAKE_WORD_DETECTED);
     };
     callbacks.on_vad_change = [this](bool speaking) {
+        vad_voice_detected_.store(speaking);
         xEventGroupSetBits(event_group_, MAIN_EVENT_VAD_CHANGE);
     };
     callbacks.on_playback_drained = [this]() {
@@ -327,6 +345,18 @@ void Application::Run() {
             if (GetDeviceState() == kDeviceStateListening) {
                 auto led = Board::GetInstance().GetLed();
                 led->OnStateChanged();
+            } else if (GetDeviceState() == kDeviceStateSpeaking &&
+                       listening_mode_ == kListeningModeRealtime) {
+                // 全双工模式（设备端 AEC）下，TTS 播放期间持续监听人声。
+                // 只有人声保持超过 hold 时间才真正打断，短暂噪声会被静音回调取消。
+                if (vad_voice_detected_.load()) {
+                    if (vad_barge_in_timer_ != nullptr &&
+                        !esp_timer_is_active(vad_barge_in_timer_)) {
+                        esp_timer_start_once(vad_barge_in_timer_, kLocalVadBargeInHoldUs);
+                    }
+                } else if (vad_barge_in_timer_ != nullptr) {
+                    esp_timer_stop(vad_barge_in_timer_);
+                }
             }
         }
 
@@ -1101,6 +1131,11 @@ void Application::HandleStateChangedEvent() {
     // the Listening case below re-arms it when needed.
     pending_listening_start_ = false;
 
+    // 离开 Speaking 后不再需要本地 VAD 打断计时
+    if (new_state != kDeviceStateSpeaking && vad_barge_in_timer_ != nullptr) {
+        esp_timer_stop(vad_barge_in_timer_);
+    }
+
     auto& board = Board::GetInstance();
     auto display = board.GetDisplay();
     auto led = board.GetLed();
@@ -1150,6 +1185,11 @@ void Application::HandleStateChangedEvent() {
             break;
         case kDeviceStateSpeaking:
             display->SetStatus(Lang::Strings::SPEAKING);
+            // 记录起播时刻并重置本地 VAD 打断计时
+            speaking_started_us_ = esp_timer_get_time();
+            if (vad_barge_in_timer_ != nullptr) {
+                esp_timer_stop(vad_barge_in_timer_);
+            }
 
             if (listening_mode_ != kListeningModeRealtime) {
                 audio_service_.EnableVoiceProcessing(false);
@@ -1348,9 +1388,38 @@ void Application::Schedule(std::function<void()>&& callback) {
 void Application::AbortSpeaking(AbortReason reason) {
     ESP_LOGI(TAG, "Abort speaking");
     aborted_ = true;
+    if (vad_barge_in_timer_ != nullptr) {
+        esp_timer_stop(vad_barge_in_timer_);
+    }
     if (protocol_) {
         protocol_->SendAbortSpeaking(reason);
     }
+}
+
+void Application::TryLocalVadBargeIn() {
+    // esp_timer 回调运行在定时器任务，切回主任务再访问状态机/协议/UI。
+    Schedule([this]() {
+        if (GetDeviceState() != kDeviceStateSpeaking ||
+            listening_mode_ != kListeningModeRealtime || aborted_ ||
+            !vad_voice_detected_.load()) {
+            return;
+        }
+        const int64_t elapsed_us = esp_timer_get_time() - speaking_started_us_;
+        if (elapsed_us < kLocalVadBargeInWarmupUs) {
+            // 还在起播热身期：等热身结束后再判定，保持人声持续期间的重试。
+            if (vad_barge_in_timer_ != nullptr) {
+                esp_timer_start_once(vad_barge_in_timer_,
+                                     kLocalVadBargeInWarmupUs - elapsed_us);
+            }
+            return;
+        }
+        ESP_LOGI(TAG, "本地 VAD 打断：检测到用户持续说话");
+        AbortSpeaking(kAbortReasonNone);
+        // 清空待发送队列，避免把被打断的残留音频发给服务端
+        while (audio_service_.PopPacketFromSendQueue()) {
+        }
+        SetListeningMode(GetDefaultListeningMode());
+    });
 }
 
 void Application::SetListeningMode(ListeningMode mode) {

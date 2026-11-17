@@ -136,6 +136,13 @@ idf.py build flash monitor
 - 解除静音：语音调大音量或 `self.audio_speaker.set_volume` 传 `volume>0` 时自动 `SetMute(false)` 并恢复原音量；传 0 则重新静音。
 - `AudioCodec::SetOutputVolume()` 统一走 `ApplyOutputVolume(muted_ ? 0 : output_volume_)`；`BoxAudioCodec::EnableOutput(true)` 重新打开输出时也走该函数，不会绕过静音。状态栏静音图标按 `codec->muted() || output_volume()==0` 判断。
 
+### 语音打断（设备端本地 VAD）
+
+- 设备端 AEC 开启（`CONFIG_USE_DEVICE_AEC=y`、`AUDIO_INPUT_REFERENCE=true`）时，TTS 播放期间音频处理链路仍保持全双工监听。
+- `Application` 监听 VAD 回调：仅在 `kDeviceStateSpeaking` + `kListeningModeRealtime` 下生效；人声需持续 300ms 才确认打断，TTS 起播后 800ms 为热身期，避免起播杂音或残余回声造成自打断。
+- 确认后执行 `AbortSpeaking(kAbortReasonNone)` → 清空发送队列 → `SetListeningMode(GetDefaultListeningMode())`；服务端收到 abort 立即回 `{"type":"tts","state":"stop"}`。
+- 常量在 `main/application.cc` 匿名命名空间：`kLocalVadBargeInHoldUs`、`kLocalVadBargeInWarmupUs`。非 AEC 模式仍走唤醒词/按键打断。
+
 ## 天气数据源（和风天气优先，免密钥兜底）
 
 `WeatherManager::update()` 是一条三级链路，任何一级成功就返回：

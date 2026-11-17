@@ -149,6 +149,9 @@ private:
     EventGroupHandle_t event_group_ = nullptr;
     esp_timer_handle_t clock_timer_handle_ = nullptr;
     esp_timer_handle_t startup_wake_word_hint_timer_ = nullptr;
+    esp_timer_handle_t vad_barge_in_timer_ = nullptr;  // 本地 VAD 打断确认计时器
+    std::atomic<bool> vad_voice_detected_{false};     // 人声检测状态（VAD 回调写入）
+    int64_t speaking_started_us_ = 0;                  // 进入 Speaking 的时刻，用于热身期保护
     DeviceStateMachine state_machine_;
     ListeningMode listening_mode_ = kListeningModeAutoStop;
     AecMode aec_mode_ = kAecOff;
@@ -192,6 +195,7 @@ private:
     void HandleNetworkDisconnectedEvent();
     void HandleActivationDoneEvent();
     void HandleWakeWordDetectedEvent();
+    void TryLocalVadBargeIn();
     void ContinueOpenAudioChannel(ListeningMode mode);
     void BeginWakeWordInvoke(const std::string& wake_word);
     void ContinueWakeWordInvoke(const std::string& wake_word);
