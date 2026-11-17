@@ -104,6 +104,9 @@ private:
     std::string city_source_ = "默认";   // 城市来源描述
     std::string ip_cache_city_;          // NVS 缓存的上次 IP 定位城市
     std::string ip_cache_region_;        // NVS 缓存的上次 IP 定位省份
+    std::string backend_cache_city_;     // NVS 缓存的后端地址城市
+    std::string backend_cache_adm_;      // NVS 缓存的后端地址省份
+    std::string backend_cache_loc_id_;   // NVS 缓存的后端 LocationID
 
     // IP 定位状态（ip-api.com）
     bool manual_city_ = false;   // 城市被手动指定，跳过 IP 定位
@@ -122,6 +125,9 @@ private:
     // 和风天气：解析 LocationID（优先用 NVS 缓存，其次 geo 查询，最后用城市代码兜底）
     std::string ResolveLocationId();
     bool updateQWeather();
+
+    // 后端地址：从 xiaozhi-server 的 /xiaozhi/weather 拿实际所在地 + LocationID
+    bool LocateFromBackend();
 
     // IP 定位：拿到实际所在城市 + 经纬度（手动配置城市时直接跳过）
     bool LocateByIp();

@@ -240,11 +240,24 @@ void WeatherManager::loadConfigFromNvs() {
         loc_id_ = loc_id;
         loc_name_ = loc_name;
     }
-    // 上次 IP 定位结果只作「开机先用」的缓存值，网络就绪后 LocateByIp() 会刷新，
-    // 避免开机头几十秒顶部先显示默认城市。手动配置城市时绝不用缓存覆盖。
+    // 后端地址缓存：后端是权威来源，开机先用上次结果，网络就绪后 LocateFromBackend() 刷新。
+    backend_cache_city_ = settings.GetString("backend_city");
+    backend_cache_adm_ = settings.GetString("backend_adm");
+    backend_cache_loc_id_ = settings.GetString("backend_loc_id");
+    if (!manual_city_ && !backend_cache_city_.empty()) {
+        city_ = backend_cache_city_;
+        adm_ = backend_cache_adm_;
+        loc_id_.clear();
+        loc_name_.clear();
+        if (!backend_cache_loc_id_.empty()) {
+            loc_id_ = backend_cache_loc_id_;
+            loc_name_ = backend_cache_city_;
+        }
+    }
+    // 上次 IP 定位结果只作「开机先用」的缓存值；有后端缓存时不再用 IP 缓存覆盖。
     ip_cache_city_ = settings.GetString("ip_city");
     ip_cache_region_ = settings.GetString("ip_region");
-    if (!manual_city_ && !ip_cache_city_.empty()) {
+    if (!manual_city_ && backend_cache_city_.empty() && !ip_cache_city_.empty()) {
         city_ = ip_cache_city_;
         std::string coord = settings.GetString("ip_coord");
         float la = 0.0f, lo = 0.0f;
@@ -254,7 +267,14 @@ void WeatherManager::loadConfigFromNvs() {
             has_ip_coord_ = true;
         }
     }
-    city_source_ = manual_city_ ? "手动配置" : (ip_cache_city_.empty() ? "默认" : "上次定位缓存");
+    city_source_ = manual_city_ ? "手动配置"
+                   : (!backend_cache_city_.empty() ? "后端缓存"
+                      : (ip_cache_city_.empty() ? "默认" : "上次定位缓存"));
+    // LocationID 必须与当前城市同源，否则会拿旧城市的 ID 查新城市（历史上南京/常州串过）。
+    if (!loc_id_.empty() && !loc_name_.empty() && loc_name_ != city_) {
+        loc_id_.clear();
+        loc_name_.clear();
+    }
     ESP_LOGI(TAG, "天气配置: 城市=%s(来源=%s, 上级=%s), 和风=%s, LocationID=%s",
              city_.c_str(), city_source_.c_str(), adm_.empty() ? "-" : adm_.c_str(),
              hasQWeather() ? "已配置" : "未配置",
@@ -312,6 +332,60 @@ static bool parse_ip_geo(const std::string& body, const char* source,
     }
     cJSON_Delete(root);
     return ok;
+}
+
+// 后端地址：GET /xiaozhi/weather，后端返回 {code:0,data:{city,adm,location_id}}。
+// 设备不再自己用出口 IP 判城市；后端位置由 config.yaml 的 device_location 配置。
+bool WeatherManager::LocateFromBackend() {
+    if (manual_city_) {
+        return true;
+    }
+    std::string body;
+    if (!httpGetJson(WEATHER_BACKEND_GEO_URL, body, 10000)) {
+        ESP_LOGW(TAG, "后端天气地址请求失败");
+        return false;
+    }
+    cJSON* root = cJSON_Parse(body.c_str());
+    if (root == nullptr) {
+        ESP_LOGW(TAG, "后端天气地址响应非 JSON");
+        return false;
+    }
+    cJSON* code = cJSON_GetObjectItem(root, "code");
+    cJSON* data = cJSON_GetObjectItem(root, "data");
+    bool code_ok = code && ((cJSON_IsNumber(code) && code->valueint == 0) ||
+                            (cJSON_IsString(code) && strcmp(code->valuestring, "0") == 0));
+    if (!code_ok || data == nullptr || !cJSON_IsObject(data)) {
+        cJSON* msg = cJSON_GetObjectItem(root, "msg");
+        ESP_LOGW(TAG, "后端天气地址返回失败: %s",
+                 (msg && cJSON_IsString(msg)) ? msg->valuestring : "unknown");
+        cJSON_Delete(root);
+        return false;
+    }
+    auto str_of = [&](const char* k) -> std::string {
+        cJSON* it = cJSON_GetObjectItem(data, k);
+        return (it && cJSON_IsString(it) && it->valuestring) ? std::string(it->valuestring) : std::string();
+    };
+    std::string city = str_of("city");
+    std::string adm = str_of("adm");
+    std::string id = str_of("location_id");
+    if (city.empty() || id.empty()) {
+        ESP_LOGW(TAG, "后端天气地址缺少城市或 LocationID");
+        cJSON_Delete(root);
+        return false;
+    }
+    city_ = city;
+    adm_ = adm;
+    loc_id_ = id;
+    loc_name_ = city;
+    has_ip_coord_ = false;   // 后端已给出 LocationID，禁止再用出口 IP 经纬度反查
+    city_source_ = "后端服务";
+    Settings wr("weather", true);
+    wr.SetString("backend_city", city_);
+    wr.SetString("backend_adm", adm_);
+    wr.SetString("backend_loc_id", loc_id_);
+    ESP_LOGI(TAG, "后端天气地址: %s %s (%s)", adm_.c_str(), city_.c_str(), loc_id_.c_str());
+    cJSON_Delete(root);
+    return true;
 }
 
 // IP 定位：依次尝试 ip-api → ipapi.co → ipinfo.io（都是免密钥公开接口）。
@@ -636,10 +710,34 @@ bool WeatherManager::updateQWeather() {
 bool WeatherManager::update() {
     // 1) 优先和风天气（维度最全：实时 / 空气质量 / 3 天预报 / 预警）
     if (hasQWeather()) {
-        // 每次开机只做一次 IP 定位，决定这次用哪个城市查天气
+        // 每次开机只解析一次地址：后端优先，失败回退后端缓存 / 配置默认城市 / IP 定位
         if (!ip_located_) {
             ip_located_ = true;
-            LocateByIp();
+            if (!manual_city_ && !LocateFromBackend()) {
+                if (!backend_cache_city_.empty()) {
+                    city_ = backend_cache_city_;
+                    adm_ = backend_cache_adm_;
+                    loc_id_.clear();
+                    loc_name_.clear();
+                    if (!backend_cache_loc_id_.empty()) {
+                        loc_id_ = backend_cache_loc_id_;
+                        loc_name_ = backend_cache_city_;
+                    }
+                    has_ip_coord_ = false;
+                    city_source_ = "后端缓存";
+                    ESP_LOGW(TAG, "后端地址不可用，沿用后端缓存城市 %s", city_.c_str());
+                } else if (WEATHER_CITY[0] != '\0') {
+                    // 后端不可用时用编译期配置的城市兜底，绝不回退到出口 IP（IP 常被判到邻市）
+                    city_ = WEATHER_CITY;
+                    loc_id_.clear();      // 必须清掉旧城市的 LocationID，否则仍按南京查天气
+                    loc_name_.clear();
+                    has_ip_coord_ = false;
+                    city_source_ = "配置默认";
+                    ESP_LOGW(TAG, "后端地址不可用，使用配置默认城市 %s", city_.c_str());
+                } else {
+                    LocateByIp();
+                }
+            }
         }
         if (updateQWeather()) {
             return true;

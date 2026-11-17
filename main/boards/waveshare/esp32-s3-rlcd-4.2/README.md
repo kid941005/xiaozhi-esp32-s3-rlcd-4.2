@@ -59,7 +59,7 @@ idf.py build flash monitor
 
 - **翻页时钟**：4 张 39×50 黑卡 + 1px 白中缝 + 两个 5×5 黑冒号，每分钟按 `tm_hour/10`、`%10`、`tm_min/10`、`%10` 逐位翻牌；日期行「11月17日 星期二」。
 - **农历 / 节气 / 节日**：顶栏显示农历（如「十月初九」），含节气与节日。
-- **天气（双源 + 免密钥兜底）**：IP 定位城市；和风 QWeather 主源取实时/体感/湿度/风向风级/能见度/气压/AQI/PM2.5/三日预报/日出日落/灾害预警；失败自动回退中国天气网、Open-Meteo。时钟卡第三行只显示「地址 天气 温度」。
+- **天气（双源 + 免密钥兜底）**：地址由后端 `/xiaozhi/weather` 下发（手动配置优先，IP 定位仅兜底）；和风 QWeather 主源取实时/体感/湿度/风向风级/能见度/气压/AQI/PM2.5/三日预报/日出日落/灾害预警；失败自动回退中国天气网、Open-Meteo。时钟卡第三行只显示「地址 天气 温度」。
 - **天气详情页**：独立整页展示全部天气维度，实体键循环 / 语音 `self.disp.switch mode=detail` / HTTP `/page?p=detail` 三种进入方式。
 - **待办（MCP 自取）**：设备作为 MCP 客户端与外部接入点保持长连接，每分钟调 `list_todos`；只显示**今天**的待办，行格式「20:00 标题」；也可用 `self.todo.sync` 手动下发。
 - **音乐页**：唱片 + 歌名/歌手/三行歌词 + 进度条；顶栏左环境温湿度、中时钟、右 WiFi/电池胶囊。
@@ -146,22 +146,26 @@ idf.py build flash monitor
 | `/v7/weather/3d?location=<LocationID>&lang=zh` | 未来 3 天（含日出日落，取第 1 天） | ~1.7 KB |
 | `/v7/warning/now?location=<LocationID>&lang=zh` | 灾害预警（`warning[0].typeName` + `severityColor`，无预警为空数组） | ~250 B |
 
-### 城市从哪来（手动配置优先，多源 IP 定位兜底）
+### 城市从哪来（后端下发优先，手动配置最高，IP 定位兜底）
 
 城市来源优先级（高 → 低）：
 
 ```
-NVS weather/city（手动配置 self.weather.set_city）> 上次 IP 定位缓存（NVS weather/ip_city）
-  > IP 定位（ip-api → ipapi.co → ipinfo.io）> config.h WEATHER_CITY
+NVS weather/city（手动配置 self.weather.set_city）
+  > 后端 GET /xiaozhi/weather（config.yaml 的 device_location）
+  > 上次后端地址缓存（NVS weather/backend_city）
+  > config.h WEATHER_CITY（默认「常州」）
+  > IP 定位（ip-api → ipapi.co → ipinfo.io，仅 WEATHER_CITY 为空时）
 ```
 
-**为什么之前不准**：IP 定位只能定位到**运营商出口 IP** 所在城市（NAT/CGNAT 会把一片区域的用户汇聚到同一出口，常见偏差到省会或邻近地市，城市级精度经验值约 55–80%）；而早期固件把默认城市写死为「成都/苏州」，与实际所在地无关。所以改成**手动配置优先**：用户明确指定过城市就以手动值为准，永不被 IP 定位覆盖；没手动配置时才走 IP 定位。
+**为什么之前不准**：IP 定位只能定位到**运营商出口 IP** 所在城市（NAT/CGNAT 会把一片区域的用户汇聚到同一出口，常见偏差到省会或邻近地市，城市级精度经验值约 55–80%）。设备在常州、出口 IP 被判到南京就是这种情况。现在默认**由后端告诉设备实际所在地**：后端 `GET /xiaozhi/weather` 用和风 `geo/v2/city/lookup` 归一化城市，返回 `city` / `adm` / `location_id`；设备拿到 LocationID 后直接查天气，不再自己猜。
 
-- 手动配置：MCP 工具 `self.weather.set_city`（`city` 必填、`province` 可选，用于重名城市消歧），置 `manual_city_ = true` 并持久化 NVS `weather/city`、`weather/adm`，同时清空缓存的 LocationID；`self.weather.get_city` 可查当前城市 / 来源 / LocationID 做诊断。
-- IP 定位：`LocateByIp()` 依次试 `WEATHER_IP_GEO_URL`（`http://ip-api.com/json/?lang=zh-CN&fields=status,country,regionName,city,lat,lon`，纯 HTTP 免密钥）→ `WEATHER_IP_GEO_URL_ALT1`（`https://ipapi.co/json/`）→ `WEATHER_IP_GEO_URL_ALT2`（`https://ipinfo.io/json`），各 8 s 超时，全失败退回 NVS 缓存城市；成功写回 NVS `weather/ip_city` / `ip_region` / `ip_coord` 作为“上次定位缓存”。
+- 后端下发：`LocateFromBackend()` 请求 `WEATHER_BACKEND_GEO_URL`（默认 `https://xiaozhiweb.hqgg.top:59826/xiaozhi/weather`），解析 `data.city` / `data.adm` / `data.location_id`，写入 `loc_id_` 并缓存 NVS `weather/backend_city` / `backend_adm` / `backend_loc_id`；成功日志 `后端天气地址: 江苏省 常州 (101191101)`。后端位置在 `xiaozhi-server/config.yaml` 的 `plugins.get_weather.device_location` 配置（本仓库示例填「常州」），改完需重启后端。部署时 nginx 需加**精确匹配** `location = /xiaozhi/weather { proxy_pass http://127.0.0.1:8003/xiaozhi/weather; }`（精确匹配优先于 `/xiaozhi/` 前缀），否则 59826 上的 `/xiaozhi/` 会被 manager-api 的鉴权兜底拦成 `401 Unauthorized`；设备拿不到 `code:0` 时会回退 NVS 后端缓存或 `config.h` 城市，不阻塞天气。
+- 手动配置：MCP 工具 `self.weather.set_city`（`city` 必填、`province` 可选，用于重名城市消歧），置 `manual_city_ = true` 并持久化 NVS `weather/city`、`weather/adm`，同时清空缓存的 LocationID；`self.weather.get_city` 可查当前城市 / 来源 / LocationID 做诊断。手动配置优先级高于后端。
+- IP 定位（仅后端不可用、无后端缓存且 `WEATHER_CITY` 为空时）：`LocateByIp()` 依次试 `WEATHER_IP_GEO_URL`（`http://ip-api.com/json/?lang=zh-CN&fields=status,country,regionName,city,lat,lon`，纯 HTTP 免密钥）→ `WEATHER_IP_GEO_URL_ALT1`（`https://ipapi.co/json/`）→ `WEATHER_IP_GEO_URL_ALT2`（`https://ipinfo.io/json`），各 8 s 超时，全失败退回 NVS 缓存城市；成功写回 NVS `weather/ip_city` / `ip_region` / `ip_coord` 作为“上次定位缓存”。
 - LocationID 解析顺序：缓存 `weather/loc_id` → 有经纬度先按 `lon,lat` 反查（比城市名更准）→ 城市名（`province` 为中文时附 `&adm=` 消歧）→ 城市名单独 → 兜底 `WEATHER_CITY_CODE`；解析结果优先取 `adm2` 作显示名并去掉结尾「市」，`adm1` 记入上级，避免显示成区县名。
-- 全部失败时退回上次定位缓存 → `config.h` 的 `WEATHER_CITY`，**不阻塞**天气更新。
-- 日志：`天气配置: 城市=…(来源=手动配置/上次定位缓存/IP 定位/默认)` / `IP 定位成功: 江苏 南京 (32.0607, 118.7630)` / `和风 geo 定位成功: 南京 (101190101, 上级=江苏省)`。
+- 全部失败时退回后端缓存 → `config.h` 的 `WEATHER_CITY`（默认常州），**不阻塞**天气更新；只有 `WEATHER_CITY` 为空才退回上次 IP 定位缓存。
+- 日志：`天气配置: 城市=…(来源=手动配置/后端缓存/上次定位缓存/IP 定位/默认)` / `后端天气地址: 江苏省 常州 (101191101)` / `IP 定位成功: 江苏 南京 (32.0607, 118.7630)` / `和风 geo 定位成功: 南京 (101190101, 上级=江苏省)`。
 
 参考项目（GitHub 同类天气时钟的位置处理，均以手动/配置城市为主、IP 仅作首次默认，并取 city + region 双字段消歧）：
 - [xinnan-tech/xiaozhi-esp32-server](https://github.com/xinnan-tech/xiaozhi-esp32-server) — `plugins_func/functions/get_weather.py`：先 `geo/v2/city/lookup` 拿 LocationID，失败直接回「暂时查不到 X 的天气」（我们借此发现后端天气也受错误 host 影响）。
@@ -394,6 +398,7 @@ NVS weather/city（手动配置 self.weather.set_city）> 上次 IP 定位缓存
 - **详情页**：四个区块按屏高弹性分配间距，300×400 竖屏不再出现大空隙。
 - **系统信息**：`BuildSystemInfoString(bool)` 统一屏幕显示与 MCP `self.system.info` 的文案。
 - **电源**：PM lock 初始化失败会删除已创建的锁，避免泄漏。
+- **LVGL 任务栈**：`lvgl_port_cfg_t.task_stack` 从默认 7168 提到 10240；64px 时钟 + 详情页重绘叠加时曾触发 `A stack overflow in task taskLVGL`。
 - 结构性大重构（板类拆分、全局主题、上帝类、更新任务拆分）留待后续批次。
 
 ## 1-bit 二值化：阈值与抖动（抗锯齿效果调节）

@@ -38,10 +38,10 @@
 #define QWEATHER_KEY  ""   // 例：32 位十六进制 API KEY
 
 // 免密钥源参数（和风不可用时的兜底）
-#define WEATHER_LAT   30.6598f    // 纬度（默认成都）
-#define WEATHER_LON   104.0633f   // 经度
-#define WEATHER_CITY  "成都"       // 查询/显示的城市名（和风 geo 定位也用它）
-#define WEATHER_CITY_CODE "101270101"
+#define WEATHER_LAT   31.8107f    // 纬度（默认常州）
+#define WEATHER_LON   119.9740f   // 经度
+#define WEATHER_CITY  "常州"       // 查询/显示的城市名（和风 geo 定位也用它）
+#define WEATHER_CITY_CODE "101191101"
 
 // IP 定位（ip-api.com 免费接口，HTTP，45 次/分钟）：仅作最后兜底。
 // 注意：IP 定位得到的是「出口 IP」的注册地，设备在 Windows 热点/运营商 NAT 后面时常常与真实
@@ -53,6 +53,12 @@
 //   ipinfo.io: city / region / loc="lat,lon"
 #define WEATHER_IP_GEO_URL_ALT1 "https://ipapi.co/json/"
 #define WEATHER_IP_GEO_URL_ALT2 "https://ipinfo.io/json"
+
+// 后端天气地址接口（xiaozhi-server 的 GET /xiaozhi/weather）。
+// 设备优先从后端拿「实际所在地 + 和风 LocationID」，不再用出口 IP 判城市；
+// 后端不可用时回退下面的 WEATHER_CITY，IP 定位仅作最后兜底。后端位置由 config.yaml 的
+// plugins.get_weather.device_location 配置。
+#define WEATHER_BACKEND_GEO_URL "https://xiaozhiweb.hqgg.top:59826/xiaozhi/weather"
 
 // 待办 MCP 接入点（websocket JSON-RPC）。留空表示不启用，可在运行时通过
 // MCP 工具 self.todo.set_url 配置（持久化在 NVS namespace "todo", key "mcp_url"）。

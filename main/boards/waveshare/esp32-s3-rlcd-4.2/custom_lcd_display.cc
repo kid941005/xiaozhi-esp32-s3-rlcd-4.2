@@ -310,6 +310,7 @@ CustomLcdDisplay::CustomLcdDisplay(esp_lcd_panel_io_handle_t panel_io,
     lv_init();
     lvgl_port_cfg_t port_cfg = ESP_LVGL_PORT_INIT_CONFIG();
     port_cfg.task_priority = 2;
+    port_cfg.task_stack = 10240;   // 默认 7168 在 64px 时钟 + 详情页重绘时曾栈溢出
     port_cfg.timer_period_ms = 50;
     lvgl_port_init(&port_cfg);
     lvgl_port_lock(0);
