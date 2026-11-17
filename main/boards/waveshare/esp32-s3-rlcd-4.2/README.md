@@ -74,6 +74,31 @@ idf.py build flash monitor
 
 **微调位置**（都在 `weather_ui.cc` 的卡片几何块）：改 `clock_h` / `todo_h` / `ai_h` 可调整三张卡比例；`day_label_` / 翻页时钟 / `weather_label_` 的 `lv_obj_align` / `flip_y` 控制卡内三行位置；翻页卡片尺寸是 `flip_card_w`(39) / `flip_card_h`(50) / `flip_gap`(3) / `colon_w`(10)；`lunar_label_` 的 `-128` 是胶囊左侧的让位量；待办行间距是 `memo_rows_` 的 `lv_obj_set_style_pad_row`。
 
+## 音乐页布局（沉浸式播放器）
+
+~~~text
+┌──────────────────────────────────────────────┐
+│ 环境 26.4°C 36%     09:17  ╭─WiFi─▭─94%─╮   │
+│ ┌────────────┐ ┌──────────────────────┐      │
+│ │  ◉ 唱片     │ │ 未播放                │      │
+│ │ (150×150)  │ │ 未知歌手              │      │
+│ │            │ │ ──────────────────── │      │
+│ │            │ │ 等待播放...           │      │
+│ └────────────┘ └──────────────────────┘      │
+│ ▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬   00:00 / 00:00      │
+│ ┌──────────────────────────────────────┐     │
+│ │ [猫] 待命 │ 说「你好小智」就能唤醒我 │     │
+│ └──────────────────────────────────────┘     │
+└──────────────────────────────────────────────┘
+~~~
+
+- 顶栏一行三块（黑底白字）：左 `music_sensor_label_`「环境 温度 湿度」（16px 1bpp 点阵，`TOP_LEFT(10,9)`）、中 `music_time_label_` 时钟（`alibaba_puhui_24`，`TOP_MID(0,6)` **水平居中**）、右 WiFi+电池胶囊（115×28 @`TOP_RIGHT(-8,4)`）。三者宽度由 `SetupMusicUI` 末尾的 `ESP_LOGI` 打印（需先 `lv_obj_update_layout()` 否则读出来是 0）。
+- 内容区从 `content_y = 40` 开始：左唱片卡 150×150 @(12,40)（黑色圆盘 130、三层白色纹路 104/84/64、白心 40 + 黑色小孔 10），右侧信息卡 226×150（歌名 16px、歌手 14px、分隔线、三行歌词 prev/current/next）。
+- 进度条：白轨 + 黑指示器 + 2px 内 padding 形成白边，`bar_w = 400-24-120 = 256`，右侧 `music_progress_label_` 显示 `00:00 / 00:00`。
+- 底部 AI 卡 376×72 @(12,222)：40px 猫脸 + 「待命」+ 竖分隔线 + 状态文字，与天气页 AI 卡同一套（`CreateCatFace()` 定义在 `weather_ui.cc`、声明在 `ui_cat_face.h`，两页共用）。
+- **1-bit 坑**：`LV_OPA_20/40` 的低不透明度在 1-bit 屏上会被阈值直接吃掉（40% 白亮度 102 < 阈值 112 → 变黑），唱片纹路和分隔线必须用 `LV_OPA_COVER` 才看得见。
+- 字体：静态文案用 16px 1bpp 点阵（`font_puhui_16_1`），歌名/歌手/歌词/状态文字等动态中文用 `font_puhui_16_4`。
+
 ## 天气数据源（免密钥）
 
 固件没有和风天气 Key 时，`WeatherManager::update()` 自动走免密钥链路，**不依赖任何 API Key**：
@@ -230,6 +255,8 @@ idf.py build flash monitor
 - 串口在拿到 IP 后打印：`设备 IP: 192.168.137.104，截图地址: http://192.168.137.104:8080/shot.bmp`。
 - `GET /shot.bmp` → 400×300 单色 BMP（15662 字节，62 B 文件头 + 52 B/行 × 300）。
 - `GET /dbg` → 纯文本，输出 `chat_status_label_` 文本/隐藏/位置/尺寸、父容器尺寸、`emotion_label_` 文本、`emotion_img_` 状态、主题 emoji 集合数量，用于排查「控件不显示」。
+- `GET /page?p=weather|music|toggle` → 远程切页（不带参数只返回当前页），不按实体键也能截到另一页。
+- `GET /dither?mode=0..4&thr=16..240` → 在线调 1-bit 二值化参数，见下一节。
 - 主机侧脚本 `shot_fetch.py`：`python shot_fetch.py <设备IP> [out.png]`，取 BMP 后用 PIL 转 PNG（放大 2 倍便于查看）。
 - 实现：`screenshot_server.{h,cc}` 起 `esp_http_server`（`lru_purge_enable=true`、栈 8192，BMP 缓冲放 PSRAM）；像素读取用 `RlcdDriver::RLCD_GetPixel(x, y)` 直接查显存 LUT，1 = 白、0 = 黑，因此截图就是面板真实画面。
 - 注意：`main/CMakeLists.txt` 的 `PRIV_REQUIRES` 需要 `esp_http_server`；8080 与配网页 80 不冲突。

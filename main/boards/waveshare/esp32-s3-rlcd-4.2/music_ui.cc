@@ -5,7 +5,7 @@
 //
 // 布局：
 // ┌──────────────────────────────────────────┐
-// │ 14:30 24.5°C 68%      [WiFi][电池][85%] │  顶部信息层
+// │ 环境 24.6°C 40%   14:30   [WiFi][电池] │  顶部信息层
 // │                                          │
 // │  ┌──────────┐   晴天                     │
 // │  │          │   周杰伦                   │
@@ -23,6 +23,7 @@
 // └──────────────────────────────────────────┘
 
 #include "custom_lcd_display.h"
+#include "ui_cat_face.h"
 #include <esp_log.h>
 
 // 字体：只用小智自带完整字库 + 天气站字体（仅用于非中文场景如时间数字）
@@ -30,6 +31,7 @@ LV_FONT_DECLARE(alibaba_puhui_16);   // 16px（用于时间数字、电量等纯
 LV_FONT_DECLARE(alibaba_puhui_24);   // 24px（用于时钟数字）
 LV_FONT_DECLARE(font_puhui_16_4);    // 16px 小智完整字库（所有中文文字用这个）
 LV_FONT_DECLARE(font_puhui_14_1);    // 14px 小字体
+LV_FONT_DECLARE(font_puhui_16_1);    // 16px 1bpp 点阵（静态文案用，1-bit 屏上无毛边）
 
 // 状态栏图标
 LV_IMAGE_DECLARE(ui_img_wifi);
@@ -46,6 +48,7 @@ void CustomLcdDisplay::SetupMusicUI() {
     const lv_font_t *font_time   = &alibaba_puhui_24;   // 时钟数字
     const lv_font_t *font_cn     = &font_puhui_16_4;    // 所有中文文字统一用这个
     const lv_font_t *font_sm     = &font_puhui_14_1;    // 14px 小字
+    const lv_font_t *font_static = &font_puhui_16_1;    // 16px 1bpp 点阵（内容固定的文案）
 
     // 全局布局常量
     const int SCR_W = UI_SCR_W;
@@ -70,20 +73,19 @@ void CustomLcdDisplay::SetupMusicUI() {
     // 第 1 层：顶部信息（时钟 + 温湿度 + 状态栏胶囊）
     // ============================================================
 
-    // 左上角时钟
+    // 左侧：环境温湿度（与天气页顶栏同一文案格式；16px 1bpp 点阵字体，1-bit 屏上笔画更实）
+    music_sensor_label_ = lv_label_create(page);
+    lv_obj_set_style_text_font(music_sensor_label_, font_static, 0);
+    lv_obj_set_style_text_color(music_sensor_label_, lv_color_white(), 0);
+    lv_obj_align(music_sensor_label_, LV_ALIGN_TOP_LEFT, 10, 9);
+    lv_label_set_text(music_sensor_label_, "环境 --.-°C --%");
+
+    // 中间：时钟（水平居中）
     music_time_label_ = lv_label_create(page);
     lv_obj_set_style_text_font(music_time_label_, font_time, 0);
     lv_obj_set_style_text_color(music_time_label_, lv_color_white(), 0);
-    lv_obj_align(music_time_label_, LV_ALIGN_TOP_LEFT, 10, 5);
+    lv_obj_align(music_time_label_, LV_ALIGN_TOP_MID, 0, 6);
     lv_label_set_text(music_time_label_, "00:00");
-
-    // 温湿度（跟在时钟右边，小字 + 低透明度，区分主次）
-    music_sensor_label_ = lv_label_create(page);
-    lv_obj_set_style_text_font(music_sensor_label_, font_sm, 0);
-    lv_obj_set_style_text_color(music_sensor_label_, lv_color_white(), 0);
-    lv_obj_set_style_text_opa(music_sensor_label_, LV_OPA_60, 0);
-    lv_obj_align(music_sensor_label_, LV_ALIGN_TOP_LEFT, 80, 11);
-    lv_label_set_text(music_sensor_label_, "--.-°C --.-%");
 
     // 右上角状态栏胶囊
     lv_obj_t *status_bar = lv_obj_create(page);
@@ -114,7 +116,7 @@ void CustomLcdDisplay::SetupMusicUI() {
     // 第 2 层：主内容区 —— 左侧唱片 + 右侧歌曲信息（左右排布）
     // ============================================================
 
-    const int content_y = 36;         // 顶部信息下方
+    const int content_y = 40;         // 顶部信息下方（给居中时钟留出高度）
 #if UI_PORTRAIT
     const int vinyl_card_size = 110;  // 唱片方卡尺寸
     const int vinyl_size = 96;        // 唱片圆盘直径
@@ -166,7 +168,8 @@ void CustomLcdDisplay::SetupMusicUI() {
         lv_obj_set_style_bg_opa(ring, LV_OPA_TRANSP, 0);
         lv_obj_set_style_border_width(ring, 1, 0);
         lv_obj_set_style_border_color(ring, lv_color_white(), 0);
-        lv_obj_set_style_border_opa(ring, LV_OPA_40, 0);
+        // 1-bit 屏上 40% 白（亮度 102 < 阈值 112）会被量化成黑，纹路直接消失，必须给足不透明度
+        lv_obj_set_style_border_opa(ring, LV_OPA_COVER, 0);
         lv_obj_remove_flag(ring, LV_OBJ_FLAG_SCROLLABLE);
     }
 
@@ -235,7 +238,7 @@ void CustomLcdDisplay::SetupMusicUI() {
     lv_obj_t *info_sep = lv_obj_create(info_card);
     lv_obj_set_size(info_sep, info_w - 30, 1);
     lv_obj_set_style_bg_color(info_sep, lv_color_black(), 0);
-    lv_obj_set_style_bg_opa(info_sep, LV_OPA_20, 0);
+    lv_obj_set_style_bg_opa(info_sep, LV_OPA_COVER, 0);   // 同上：1-bit 下低不透明度等于不显示
     lv_obj_set_style_border_width(info_sep, 0, 0);
     lv_obj_set_style_radius(info_sep, 0, 0);
     lv_obj_align(info_sep, LV_ALIGN_TOP_LEFT, 0, 50);
@@ -348,6 +351,10 @@ void CustomLcdDisplay::SetupMusicUI() {
     lv_obj_align(music_emotion_img_, LV_ALIGN_LEFT_MID, 10, -10);
     lv_obj_add_flag(music_emotion_img_, LV_OBJ_FLAG_HIDDEN);  // 初始隐藏，等 SetEmotion 设置
 
+    // 内置猫脸线稿：资源包不带 emoji 素材时兜底（与天气页 AI 卡一致）
+    music_ai_face_ = CreateCatFace(ai_card, 40);
+    lv_obj_align(music_ai_face_, LV_ALIGN_LEFT_MID, 10, -10);
+
     // 左侧：情绪文字标签（下方）
     music_emotion_label_ = lv_label_create(ai_card);
     lv_obj_set_style_text_font(music_emotion_label_, font_cn, 0);
@@ -381,5 +388,12 @@ void CustomLcdDisplay::SetupMusicUI() {
     lv_label_set_text(music_chat_status_label_, "AI 待命");
     lv_obj_align(music_chat_status_label_, LV_ALIGN_LEFT_MID, text_x, 0);
 
+    // 音乐页同样在无 emoji 素材时显示内置猫脸（此处已持锁，用不取锁的内部方法）
+    ApplyDefaultEmotion();
+
+    // 顶栏三块（左温湿度 / 中时钟 / 右胶囊）是否互相压字，靠实测宽度确认
+    lv_obj_update_layout(page);   // 不先算布局，label 宽度读出来是 0
+    ESP_LOGI(TAG, "音乐页顶栏：环境 %d px @x10，时钟 %d px 居中，胶囊 115 px（屏宽 %d）",
+             lv_obj_get_width(music_sensor_label_), lv_obj_get_width(music_time_label_), SCR_W);
     ESP_LOGI(TAG, "音乐页面 UI 创建完成（左右排布 + AI 表情卡）");
 }

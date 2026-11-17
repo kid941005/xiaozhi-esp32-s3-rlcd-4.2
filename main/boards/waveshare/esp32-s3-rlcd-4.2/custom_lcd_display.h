@@ -106,6 +106,7 @@ private:
     lv_obj_t *music_chat_status_label_ = nullptr; // 音乐页面：小智状态文案
     lv_obj_t *music_emotion_label_ = nullptr; // 音乐页面：小智情绪标签
     lv_obj_t *music_emotion_img_ = nullptr;   // 音乐页面：小智表情图片（和天气页 emotion_img_ 对应）
+    lv_obj_t *music_ai_face_ = nullptr;       // 音乐页面：内置猫脸（无 emoji 素材时兜底）
 
     // 图片图标（不能用基类的 label，因为我们用 lv_image 而不是 Font Awesome 文字）
     lv_obj_t *wifi_icon_img_ = nullptr;

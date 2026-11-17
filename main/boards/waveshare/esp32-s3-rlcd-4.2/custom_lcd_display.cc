@@ -551,12 +551,14 @@ bool CustomLcdDisplay::SetEmotion(const char* emotion) {
             }
         }
     }
-    // 资源包未带 emoji 素材时，用内置猫脸线稿兜底常驻显示
-    if (ai_face_) {
+    // 资源包未带 emoji 素材时，用内置猫脸线稿兜底常驻显示（天气页 + 音乐页同步）
+    lv_obj_t *faces[2] = {ai_face_, music_ai_face_};
+    for (lv_obj_t *face : faces) {
+        if (!face) continue;
         if (has_image) {
-            lv_obj_add_flag(ai_face_, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(face, LV_OBJ_FLAG_HIDDEN);
         } else {
-            lv_obj_remove_flag(ai_face_, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_remove_flag(face, LV_OBJ_FLAG_HIDDEN);
         }
     }
 
@@ -576,12 +578,14 @@ void CustomLcdDisplay::ApplyDefaultEmotion() {
     } else if (emotion_img_) {
         lv_obj_add_flag(emotion_img_, LV_OBJ_FLAG_HIDDEN);
     }
-    // 无素材图片 → 显示内置猫脸
-    if (ai_face_) {
+    // 无素材图片 → 显示内置猫脸（天气页 + 音乐页）
+    lv_obj_t *faces[2] = {ai_face_, music_ai_face_};
+    for (lv_obj_t *face : faces) {
+        if (!face) continue;
         if (has_image) {
-            lv_obj_add_flag(ai_face_, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(face, LV_OBJ_FLAG_HIDDEN);
         } else {
-            lv_obj_remove_flag(ai_face_, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_remove_flag(face, LV_OBJ_FLAG_HIDDEN);
         }
     }
     if (emotion_label_) lv_label_set_text(emotion_label_, "待命");

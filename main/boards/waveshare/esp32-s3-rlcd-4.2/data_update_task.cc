@@ -337,8 +337,8 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                         char buf[48];
                         snprintf(buf, sizeof(buf), "环境 %.1f°C %.0f%%", sd.temperature, sd.humidity);
                         if (self->sensor_label_) lv_label_set_text(self->sensor_label_, buf);
-                        // 音乐页只显示数值，不带「环境」前缀
-                        snprintf(buf, sizeof(buf), "%.1f°C  %.0f%%", sd.temperature, sd.humidity);
+                        // 音乐页顶栏左侧也显示「环境」前缀（与天气页一致）
+                        snprintf(buf, sizeof(buf), "环境 %.1f°C %.0f%%", sd.temperature, sd.humidity);
                         if (self->music_sensor_label_) lv_label_set_text(self->music_sensor_label_, buf);
                         self->last_temp_ = sd.temperature;
                         self->last_humi_ = sd.humidity;

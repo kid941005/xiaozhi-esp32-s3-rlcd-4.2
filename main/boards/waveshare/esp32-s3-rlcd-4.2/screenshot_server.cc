@@ -91,6 +91,35 @@ static esp_err_t DitherHandler(httpd_req_t *req) {
     return httpd_resp_send(req, out, n);
 }
 
+// 在线切页：/page?p=weather|music|toggle（不带参数只报告当前页），便于远程看另一页的画面
+static esp_err_t PageHandler(httpd_req_t *req) {
+    if (s_display == nullptr) {
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "not ready");
+    }
+    char query[64] = {0};
+    char value[16] = {0};
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK &&
+        httpd_query_key_value(query, "p", value, sizeof(value)) == ESP_OK) {
+        if (strcmp(value, "music") == 0) {
+            s_display->SwitchToMusicPage();
+        } else if (strcmp(value, "weather") == 0) {
+            s_display->SwitchToWeatherPage();
+        } else if (strcmp(value, "toggle") == 0) {
+            if (s_display->IsMusicMode()) {
+                s_display->SwitchToWeatherPage();
+            } else {
+                s_display->SwitchToMusicPage();
+            }
+        }
+    }
+    const char *page = s_display->IsMusicMode() ? "music" : "weather";
+    char out[64];
+    int n = snprintf(out, sizeof(out), "page=%s\n", page);
+    httpd_resp_set_type(req, "text/plain; charset=utf-8");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, out, n);
+}
+
 static const httpd_uri_t kShotUri = {
     .uri = "/shot.bmp",
     .method = HTTP_GET,
@@ -102,6 +131,13 @@ static const httpd_uri_t kDbgUri = {
     .uri = "/dbg",
     .method = HTTP_GET,
     .handler = DbgHandler,
+    .user_ctx = nullptr,
+};
+
+static const httpd_uri_t kPageUri = {
+    .uri = "/page",
+    .method = HTTP_GET,
+    .handler = PageHandler,
     .user_ctx = nullptr,
 };
 
@@ -144,6 +180,7 @@ bool ScreenshotServerStart(CustomLcdDisplay *display) {
     httpd_register_uri_handler(s_server, &kShotUri);
     httpd_register_uri_handler(s_server, &kDbgUri);
     httpd_register_uri_handler(s_server, &kDitherUri);
+    httpd_register_uri_handler(s_server, &kPageUri);
     ESP_LOGI(TAG, "截图服务已启动: http://<设备IP>:%d/shot.bmp", kShotPort);
     return true;
 }

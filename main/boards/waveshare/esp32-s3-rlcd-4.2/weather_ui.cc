@@ -23,6 +23,7 @@
 
 #include "custom_lcd_display.h"
 #include "material_symbols.h"
+#include "ui_cat_face.h"
 #include <esp_log.h>
 
 // 天气站专用字体（从 MyWeatherStation 移植，字符集有限但够天气站用）
@@ -73,7 +74,7 @@ static lv_obj_t *CfDot(lv_obj_t *parent, int x, int y, int w, int h) {
     return o;
 }
 
-static lv_obj_t *CreateCatFace(lv_obj_t *parent, int size) {
+lv_obj_t *CreateCatFace(lv_obj_t *parent, int size) {
     const int s = size;
 #define CF(v) ((lv_coord_t)((v) * s / 48))
     lv_obj_t *box = lv_obj_create(parent);
