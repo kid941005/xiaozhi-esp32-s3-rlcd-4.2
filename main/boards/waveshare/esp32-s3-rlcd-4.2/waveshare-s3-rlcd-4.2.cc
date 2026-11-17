@@ -31,13 +31,22 @@ LV_FONT_DECLARE(font_puhui_16_4);
 
 #define TAG "waveshare_rlcd_4_2"
 
-// 天气拉取任务：Open-Meteo 免密钥数据源
-// 成功 30 分钟更新一次，失败 60 秒后重试（启动阶段 WiFi 未就绪也会自动重试）
+// 天气拉取任务：优先和风天气（实时/空气/预报/预警），失败回退免密钥源
+// 成功 15 分钟更新一次（和风实时数据 10 分钟一更新、空气质量 1 小时一更新）；
+// 失败按 60s -> 120s -> 240s -> 300s 退避重试，成功后退避清零。
 static void WeatherFetchTask(void* arg) {
     vTaskDelay(pdMS_TO_TICKS(15000));
+    uint32_t fail_backoff_ms = 60000;
     for (;;) {
         bool ok = WeatherManager::getInstance().update();
-        const uint32_t interval_ms = ok ? (30u * 60u * 1000u) : 60000u;
+        uint32_t interval_ms = 0;
+        if (ok) {
+            fail_backoff_ms = 60000;
+            interval_ms = 15u * 60u * 1000u;
+        } else {
+            interval_ms = fail_backoff_ms;
+            fail_backoff_ms = (fail_backoff_ms >= 300000u) ? 300000u : (fail_backoff_ms * 2u);
+        }
         vTaskDelay(pdMS_TO_TICKS(interval_ms));
     }
 }
@@ -639,6 +648,9 @@ private:
         
         // 启动天气站数据更新任务
         display_->StartDataUpdateTask();
+
+        // 读取 NVS 里可运行时修改的天气配置（api_host / api_key / city）
+        WeatherManager::getInstance().loadConfigFromNvs();
 
         // 启动天气网络拉取任务（独立任务，避免 HTTP 阻塞 LVGL 刷新）
         xTaskCreate(WeatherFetchTask, "weather_fetch", 8192, nullptr, 2, nullptr);

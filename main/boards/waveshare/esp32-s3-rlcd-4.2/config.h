@@ -23,10 +23,19 @@
 #define AUDIO_CODEC_ES8311_ADDR  ES8311_CODEC_DEFAULT_ADDR
 #define AUDIO_CODEC_ES7210_ADDR  ES7210_CODEC_DEFAULT_ADDR
 
-// ===== 天气（免密钥 Open-Meteo 源，未配置和风 Key 时使用）=====
+// ===== 天气 =====
+// 优先使用和风天气（QWeather）：可拿到实时（体感/风/湿度/能见度/气压）+ 空气质量 +
+// 3 天预报 + 日出日落 + 官方预警；凭证为空时自动回退免密钥源（中国天气网 → Open-Meteo）。
+//
+// 凭证填写优先级：NVS("weather"/"api_host","api_key") > managers/weather_qweather_secret.h > 这里
+// secret 头文件已 gitignore，严禁把真实密钥写在本文件里。
+#define QWEATHER_HOST ""   // 例："xxxxxx.re.qweatherapi.com"（控制台项目管理里的 API Host）
+#define QWEATHER_KEY  ""   // 例：32 位十六进制 API KEY
+
+// 免密钥源参数（和风不可用时的兜底）
 #define WEATHER_LAT   30.6598f    // 纬度（默认成都）
 #define WEATHER_LON   104.0633f   // 经度
-#define WEATHER_CITY  "成都"       // 界面显示的城市名
+#define WEATHER_CITY  "成都"       // 查询/显示的城市名（和风 geo 定位也用它）
 #define WEATHER_CITY_CODE "101270101"  // 中国天气网城市代码（成都），免密钥天气源使用
 
 // 待办 MCP 接入点（websocket JSON-RPC）。留空表示不启用，可在运行时通过

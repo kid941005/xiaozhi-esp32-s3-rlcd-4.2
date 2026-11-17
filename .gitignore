@@ -22,3 +22,4 @@ mmap_generate_*.h
 # 敏感配置文件（密钥等），只提交 .example 模板
 secret_config.h
 main/boards/waveshare/esp32-s3-rlcd-4.2/managers/todo_mcp_secret.h
+main/boards/waveshare/esp32-s3-rlcd-4.2/managers/weather_qweather_secret.h

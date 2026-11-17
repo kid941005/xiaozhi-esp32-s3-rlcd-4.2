@@ -340,6 +340,9 @@ void CustomLcdDisplay::SetupWeatherUI() {
     lv_obj_set_style_text_font(weather_label_, font_ai, 0);
     lv_obj_set_style_text_color(weather_label_, lv_color_black(), 0);
     lv_obj_set_style_text_align(weather_label_, LV_TEXT_ALIGN_CENTER, 0);
+    // 固定宽度 + 裁剪：这一行会轮播「实时/AQI/风力/日出日落/明日」，宽度必须锁在卡内
+    lv_obj_set_width(weather_label_, clock_w - 20);
+    lv_label_set_long_mode(weather_label_, LV_LABEL_LONG_CLIP);
     lv_obj_align(weather_label_, LV_ALIGN_BOTTOM_MID, 0, -8);
     lv_label_set_text(weather_label_, "-- --°C");
 

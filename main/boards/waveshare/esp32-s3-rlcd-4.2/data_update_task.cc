@@ -345,16 +345,48 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                     }
                 }
 
-                // 3. 天气更新（内容变化时才刷新，避免无效重绘）
+                // 3. 天气更新：时钟卡第三行轮播多组信息
+                //    顺序：预警 > 实时天气 > AQI > 风力 > 日出日落 > 明日预报，每 4 秒切一页
                 WeatherData wd = WeatherManager::getInstance().getLatestData();
                 if (wd.valid && self->weather_label_) {
-                    char weather_buf[48];
-                    snprintf(weather_buf, sizeof(weather_buf), "%s %s %s°C",
-                             wd.city.c_str(), wd.text.c_str(), wd.temp.c_str());
-                    static std::string last_weather_text;
-                    if (last_weather_text != weather_buf) {
-                        lv_label_set_text(self->weather_label_, weather_buf);
-                        last_weather_text = weather_buf;
+                    // static：DataUpdateTask 栈只有 4 KB，6 个 std::string 放栈上会撑爆 frame 限制
+                    static std::string pages[6];
+                    int page_count = 0;
+                    if (!wd.warning.empty()) {
+                        pages[page_count++] = "预警 " + wd.warning;
+                    }
+                    if (!wd.temp.empty()) {
+                        pages[page_count++] = wd.city + " " + wd.text + " " + wd.temp + "°C";
+                    }
+                    if (!wd.aqi.empty()) {
+                        pages[page_count++] = "AQI " + wd.aqi + " " + wd.aqi_category;
+                    }
+                    if (!wd.wind_dir.empty()) {
+                        pages[page_count++] = wd.wind_dir + " " + wd.wind_scale + "级";
+                    }
+                    if (!wd.sunrise.empty() && !wd.sunset.empty()) {
+                        pages[page_count++] = "日出" + wd.sunrise + " 日落" + wd.sunset;
+                    }
+                    if (wd.daily_count > 1 && !wd.daily[1].text_day.empty()) {
+                        const WeatherDaily& tm = wd.daily[1];
+                        pages[page_count++] = "明日 " + tm.text_day + " " + tm.temp_min + "~" + tm.temp_max + "°C";
+                    }
+                    if (page_count == 0) {
+                        pages[page_count++] = wd.city + " " + wd.text + " " + wd.temp + "°C";
+                    }
+                    static uint32_t last_page_switch_ms = 0;
+                    static int page_index = 0;
+                    static std::string last_weather_page;
+                    if (last_page_switch_ms == 0 || (now_ms - last_page_switch_ms) >= 4000) {
+                        last_page_switch_ms = now_ms;
+                        page_index = (page_index + 1) % page_count;
+                    }
+                    if (page_index >= page_count) {
+                        page_index = 0;
+                    }
+                    if (last_weather_page != pages[page_index]) {
+                        lv_label_set_text(self->weather_label_, pages[page_index].c_str());
+                        last_weather_page = pages[page_index];
                     }
                 }
 

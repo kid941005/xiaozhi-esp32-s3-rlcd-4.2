@@ -99,16 +99,52 @@ idf.py build flash monitor
 - **1-bit 坑**：`LV_OPA_20/40` 的低不透明度在 1-bit 屏上会被阈值直接吃掉（40% 白亮度 102 < 阈值 112 → 变黑），唱片纹路和分隔线必须用 `LV_OPA_COVER` 才看得见。
 - 字体：静态文案用 16px 1bpp 点阵（`font_puhui_16_1`），歌名/歌手/歌词/状态文字等动态中文用 `font_puhui_16_4`。
 
-## 天气数据源（免密钥）
+## 天气数据源（和风天气优先，免密钥兜底）
 
-固件没有和风天气 Key 时，`WeatherManager::update()` 自动走免密钥链路，**不依赖任何 API Key**：
+`WeatherManager::update()` 是一条三级链路，任何一级成功就返回：
 
-1. 主源：中国天气网数据接口 `http://t.weather.itboy.net/api/weather/city/<城市代码>`（纯 HTTP，国内直连快），取 `data.wendu` 温度与 `data.forecast[0].type` 天气现象，城市名取 `cityInfo.city` 并去掉结尾「市」。
-2. 备用源：Open-Meteo `https://api.open-meteo.com/v1/forecast?...&current=temperature_2m,weather_code`，WMO 天气代码转中文。
+```
+和风 QWeather（有 host+key 时）→ 中国天气网 itboy（免密钥）→ Open-Meteo（免密钥备用）
+```
 
-配置项在 `config.h`：`WEATHER_CITY_CODE`（中国天气网城市代码，默认成都 `101270101`）、`WEATHER_LAT` / `WEATHER_LON`（备用源坐标）、`WEATHER_CITY`（兜底显示名）。城市代码可在 weather.com.cn 城市页 URL 里查到（如 `101270101` = 成都）。
+### 和风天气（主源）
 
-拉取由板级独立任务 `weather_fetch`（栈 8192）负责：启动后延迟 15 s 首次拉取，成功每 30 分钟一次、失败 60 秒重试；HTTP 不占用 LVGL 锁，不会卡界面。日志关键字 `天气更新成功(中国天气网)` / `Open-Meteo`。
+凭证优先级（后者被前者覆盖）：`config.h` 的 `QWEATHER_HOST` / `QWEATHER_KEY`（默认空）→ 编译期 `managers/weather_qweather_secret.h`（**已 gitignore，不入库**）→ NVS `weather/api_host` + `weather/api_key`（运行时配置，host 与 key 都非空才生效）。
+
+> **必须用控制台「项目管理」里的 API Host 和 KEY**，不能用「天气插件密钥」——插件密钥直连所有接口都是 HTTP 403 空响应体。
+> **host 必须逐字符核对**：真实踩坑是 `pa3qqqhxe.re.qweatherapi.com` 少写了一个 `a`，表现为**所有接口 403 且响应体为空**（连不带 key 都 403）；正确 host 是 `pa3qqqahxe.re.qweatherapi.com`。
+
+一次更新依次请求 4 个接口（host 前缀 `https://<api_host>`，key 走 `?key=` 或 `X-QW-Api-Key` 头均可）：
+
+| 接口 | 用途 | 响应大小 |
+| --- | --- | --- |
+| `/v7/weather/now?location=<LocationID>&lang=zh` | 温度/天气现象/体感/湿度/风向风级/能见度/气压 | ~450 B |
+| `/v7/air/now?location=<LocationID>` | AQI / 类别（优/良/…）/ PM2.5 | ~1.7 KB |
+| `/v7/weather/3d?location=<LocationID>&lang=zh` | 未来 3 天（含日出日落，取第 1 天） | ~1.7 KB |
+| `/v7/warning/now?location=<LocationID>&lang=zh` | 灾害预警（`warning[0].typeName` + `severityColor`，无预警为空数组） | ~250 B |
+
+LocationID 由 `/geo/v2/city/lookup?location=<城市名>&key=…` 解析并缓存进 NVS（`weather/loc_id`、`weather/loc_name`），解析失败兜底 `WEATHER_CITY_CODE`。响应缓冲 8192 B + gzip 解压，足够。
+
+### 免密钥兜底（和风不可用时）
+
+1. 中国天气网 `http://t.weather.itboy.net/api/weather/city/<城市代码>`（纯 HTTP）：`data.wendu`、`data.forecast[0].type`、`cityInfo.city`（去结尾「市」），并补齐 `data.shidu` 湿度、`today.aqi` / `data.quality` / `data.pm25`、`today.fx` / `today.fl` 风力、`today.sunrise` / `today.sunset`、`forecast[0..2]` 三日预报。
+2. Open-Meteo `https://api.open-meteo.com/v1/forecast?...&current=temperature_2m,weather_code`，WMO 代码转中文。
+
+兜底用的 `WEATHER_CITY_CODE` / `WEATHER_LAT` / `WEATHER_LON` / `WEATHER_CITY` 都在 `config.h`。
+
+### 刷新策略
+
+板级独立任务 `weather_fetch`（栈 8192）负责，HTTP 全程不持 LVGL 锁：启动后延迟 15 s 首次拉取，**成功每 15 分钟**（和风实时 10 分钟一更新、空气 1 小时一更新），**失败按 60→120→240→300 s 退避**，成功后清零。日志关键字：`天气更新成功(和风)` / `和风天气更新失败，回退免密钥数据源` / `天气更新成功(中国天气网)` / `天气配置: 城市=… 和风=已配置`。
+
+### 屏幕呈现
+
+时钟卡第三行是一条**轮播行**（宽度锁 `clock_w - 20` + `LV_LABEL_LONG_CLIP`，防止长文本溢出到待办卡），每 4 秒切一页，按数据可用性动态组页：
+
+```
+预警 <类型>  →  成都 雾 14°C  →  AQI 68 良  →  东北风 3级  →  日出06:29 日落17:00  →  明日 晴 10~17°C
+```
+
+`WeatherData` 结构体（`managers/weather_manager.h`）承载上述全部字段 + `WeatherDaily daily[3]`，UI 层只读 `getLatestData()`，换源不改 UI。
 
 ## 待办（MCP 接入点，设备自取）
 

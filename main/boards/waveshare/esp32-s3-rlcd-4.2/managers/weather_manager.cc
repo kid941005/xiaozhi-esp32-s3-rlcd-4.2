@@ -5,6 +5,10 @@
 #include "cJSON.h"
 #include "zlib.h"
 #include "../config.h"   // WEATHER_LAT / WEATHER_LON / WEATHER_CITY
+#include <settings.h>
+#if __has_include("weather_qweather_secret.h")
+#include "weather_qweather_secret.h"
+#endif
 #include <string.h>
 #include <algorithm>
 #include <cctype>
@@ -37,6 +41,14 @@ esp_err_t WeatherManager::http_event_handler(esp_http_client_event_t *evt) {
 WeatherManager::WeatherManager() {
     response_buffer = (char*)heap_caps_malloc(RESPONSE_BUFFER_SIZE, MALLOC_CAP_SPIRAM);
     decompressed_buffer = (char*)heap_caps_malloc(DECOMPRESSED_BUFFER_SIZE, MALLOC_CAP_SPIRAM);
+    // 编译期默认值：config.h（空）或 gitignore 的 weather_qweather_secret.h
+    city_ = WEATHER_CITY;
+#ifdef QWEATHER_HOST
+    api_host_ = QWEATHER_HOST;
+#endif
+#ifdef QWEATHER_KEY
+    api_key_ = QWEATHER_KEY;
+#endif
 }
 
 WeatherManager& WeatherManager::getInstance() {
@@ -112,143 +124,305 @@ static std::string pick_city_name_for_display(cJSON* first_city, const std::stri
     return fallback_city;
 }
 
+// 通用 HTTPS GET：把响应体（自动处理 gzip）读进 out
+bool WeatherManager::httpGetJson(const std::string& url, std::string& out, int timeout_ms) {
+    if (!response_buffer) {
+        return false;
+    }
+    response_len = 0;
+    memset(response_buffer, 0, RESPONSE_BUFFER_SIZE);
+
+    esp_http_client_config_t config = {};
+    config.url = url.c_str();
+    config.event_handler = http_event_handler;
+    config.timeout_ms = timeout_ms;
+    config.crt_bundle_attach = esp_crt_bundle_attach;
+
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (client == nullptr) {
+        return false;
+    }
+    esp_http_client_set_header(client, "User-Agent", "ESP32-RLCD-Weather");
+    esp_http_client_set_header(client, "Accept-Encoding", "gzip");
+
+    esp_err_t err = esp_http_client_perform(client);
+    int status = esp_http_client_get_status_code(client);
+    esp_http_client_cleanup(client);
+
+    if (err != ESP_OK || status != 200 || response_len <= 0) {
+        ESP_LOGW(TAG, "HTTP 请求失败 (err=%d, status=%d, len=%d) url=%.110s",
+                 err, status, response_len, url.c_str());
+        return false;
+    }
+    int d_len = 0;
+    if (decompressed_buffer &&
+        decompress_gzip_safe((uint8_t*)response_buffer, response_len,
+                             decompressed_buffer, DECOMPRESSED_BUFFER_SIZE, &d_len)) {
+        out.assign(decompressed_buffer, d_len);
+    } else {
+        response_buffer[response_len] = '\0';
+        out.assign(response_buffer, response_len);
+    }
+    return true;
+}
+
+// URL 编码（城市名是中文，必须 percent-encode）
+static std::string url_encode(const std::string& in) {
+    static const char* hex = "0123456789ABCDEF";
+    std::string out;
+    out.reserve(in.size() * 3);
+    for (unsigned char c : in) {
+        if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
+            out.push_back((char)c);
+        } else {
+            out.push_back('%');
+            out.push_back(hex[c >> 4]);
+            out.push_back(hex[c & 0x0F]);
+        }
+    }
+    return out;
+}
+
+// "2026-11-17" -> "周二"
+static std::string DateToWeek(const std::string& date) {
+    int y = 0, m = 0, d = 0;
+    if (sscanf(date.c_str(), "%d-%d-%d", &y, &m, &d) != 3 || m < 1 || m > 12) {
+        return "";
+    }
+    static const int t[] = {0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4};
+    if (m < 3) {
+        y -= 1;
+    }
+    int w = (y + y / 4 - y / 100 + y / 400 + t[m - 1] + d) % 7;
+    static const char* names[] = {"周日", "周一", "周二", "周三", "周四", "周五", "周六"};
+    return names[(w < 0) ? 0 : w];
+}
+
+// 只保留数字："高温 17℃" -> "17"
+static std::string DigitsOnly(const std::string& in) {
+    std::string out;
+    for (char c : in) {
+        if (c >= '0' && c <= '9') {
+            out.push_back(c);
+        }
+    }
+    return out;
+}
+
+// 从 NVS 命名空间 "weather" 读运行时可改配置
+void WeatherManager::loadConfigFromNvs() {
+    Settings settings("weather", false);
+    std::string host = settings.GetString("api_host");
+    std::string key = settings.GetString("api_key");
+    std::string city = settings.GetString("city");
+    if (!host.empty() && !key.empty()) {
+        api_host_ = host;
+        api_key_ = key;
+    }
+    if (!city.empty()) {
+        city_ = city;
+    }
+    std::string loc_id = settings.GetString("loc_id");
+    std::string loc_name = settings.GetString("loc_name");
+    if (!loc_id.empty()) {
+        loc_id_ = loc_id;
+        loc_name_ = loc_name;
+    }
+    ESP_LOGI(TAG, "天气配置: 城市=%s, 和风=%s, LocationID=%s",
+             city_.c_str(), hasQWeather() ? "已配置" : "未配置",
+             loc_id_.empty() ? "(待查询)" : loc_id_.c_str());
+}
+
+// 和风 LocationID：NVS 缓存 > geo 城市查询 > config.h 城市代码兜底
+std::string WeatherManager::ResolveLocationId() {
+    if (!loc_id_.empty()) {
+        return loc_id_;
+    }
+    std::string body;
+    char url[384];
+    snprintf(url, sizeof(url), "https://%s/geo/v2/city/lookup?location=%s&lang=zh&number=1&key=%s",
+             api_host_.c_str(), url_encode(city_).c_str(), api_key_.c_str());
+    if (httpGetJson(url, body, 12000)) {
+        cJSON* root = cJSON_Parse(body.c_str());
+        if (root) {
+            cJSON* code = cJSON_GetObjectItem(root, "code");
+            cJSON* locs = cJSON_GetObjectItem(root, "location");
+            if (code && cJSON_IsString(code) && strcmp(code->valuestring, "200") == 0 &&
+                locs && cJSON_GetArraySize(locs) > 0) {
+                cJSON* first = cJSON_GetArrayItem(locs, 0);
+                cJSON* id = cJSON_GetObjectItem(first, "id");
+                cJSON* name = cJSON_GetObjectItem(first, "name");
+                if (id && cJSON_IsString(id)) {
+                    loc_id_ = id->valuestring;
+                    if (name && cJSON_IsString(name)) {
+                        loc_name_ = name->valuestring;
+                    }
+                    Settings wr("weather", true);
+                    wr.SetString("loc_id", loc_id_);
+                    wr.SetString("loc_name", loc_name_);
+                    ESP_LOGI(TAG, "和风 geo 定位成功: %s (%s)",
+                             loc_name_.c_str(), loc_id_.c_str());
+                }
+            }
+            cJSON_Delete(root);
+        }
+    }
+    if (loc_id_.empty()) {
+        // 中国天气网城市代码与和风 LocationID 同源，可直接兜底
+        loc_id_ = WEATHER_CITY_CODE;
+        ESP_LOGW(TAG, "geo 定位失败，直接用城市代码 %s", loc_id_.c_str());
+    }
+    return loc_id_;
+}
+
+// 和风天气：实时 + 空气质量 + 3 天预报 + 预警
+bool WeatherManager::updateQWeather() {
+    const std::string loc = ResolveLocationId();
+    if (loc.empty()) {
+        return false;
+    }
+    std::string body;
+    char url[448];
+    auto str_of = [](cJSON* obj, const char* k) -> std::string {
+        cJSON* it = obj ? cJSON_GetObjectItem(obj, k) : nullptr;
+        if (it == nullptr) {
+            return "";
+        }
+        if (cJSON_IsString(it)) {
+            return it->valuestring;
+        }
+        if (cJSON_IsNumber(it)) {
+            char buf[24];
+            snprintf(buf, sizeof(buf), "%d", it->valueint);
+            return buf;
+        }
+        return "";
+    };
+
+    // 1) 实时天气
+    snprintf(url, sizeof(url), "https://%s/v7/weather/now?location=%s&lang=zh&key=%s",
+             api_host_.c_str(), loc.c_str(), api_key_.c_str());
+    if (!httpGetJson(url, body, 15000)) {
+        return false;
+    }
+    cJSON* root = cJSON_Parse(body.c_str());
+    if (root == nullptr) {
+        ESP_LOGW(TAG, "和风实时天气解析失败 (head=%.80s)", body.c_str());
+        return false;
+    }
+    cJSON* code = cJSON_GetObjectItem(root, "code");
+    cJSON* now = cJSON_GetObjectItem(root, "now");
+    if (!(code && cJSON_IsString(code) && strcmp(code->valuestring, "200") == 0 && now)) {
+        ESP_LOGW(TAG, "和风实时天气返回异常 code=%s",
+                 (code && cJSON_IsString(code)) ? code->valuestring : "null");
+        cJSON_Delete(root);
+        return false;
+    }
+    latest_data_.temp = str_of(now, "temp");
+    latest_data_.text = str_of(now, "text");
+    latest_data_.feels_like = str_of(now, "feelsLike");
+    latest_data_.humidity = str_of(now, "humidity");
+    latest_data_.wind_dir = str_of(now, "windDir");
+    latest_data_.wind_scale = str_of(now, "windScale");
+    latest_data_.vis = str_of(now, "vis");
+    latest_data_.pressure = str_of(now, "pressure");
+    std::string upd = str_of(root, "updateTime");
+    latest_data_.update_time = upd.empty() ? "qweather" : upd;
+    latest_data_.city = loc_name_.empty() ? city_ : loc_name_;
+    cJSON_Delete(root);
+
+    // 2) 空气质量
+    snprintf(url, sizeof(url), "https://%s/v7/air/now?location=%s&lang=zh&key=%s",
+             api_host_.c_str(), loc.c_str(), api_key_.c_str());
+    if (httpGetJson(url, body, 12000)) {
+        cJSON* aroot = cJSON_Parse(body.c_str());
+        if (aroot) {
+            cJSON* anow = cJSON_GetObjectItem(aroot, "now");
+            if (anow) {
+                latest_data_.aqi = str_of(anow, "aqi");
+                latest_data_.aqi_category = str_of(anow, "category");
+                latest_data_.pm25 = str_of(anow, "pm2p5");
+            }
+            cJSON_Delete(aroot);
+        }
+    }
+
+    // 3) 3 天预报（含日出日落 / 最高最低 / 风）
+    snprintf(url, sizeof(url), "https://%s/v7/weather/3d?location=%s&lang=zh&key=%s",
+             api_host_.c_str(), loc.c_str(), api_key_.c_str());
+    if (httpGetJson(url, body, 15000)) {
+        cJSON* droot = cJSON_Parse(body.c_str());
+        if (droot) {
+            cJSON* daily = cJSON_GetObjectItem(droot, "daily");
+            int n = daily ? cJSON_GetArraySize(daily) : 0;
+            latest_data_.daily_count = (n > 3) ? 3 : n;
+            for (int i = 0; i < latest_data_.daily_count; ++i) {
+                cJSON* d = cJSON_GetArrayItem(daily, i);
+                WeatherDaily& wd = latest_data_.daily[i];
+                wd.date = str_of(d, "fxDate");
+                wd.week = DateToWeek(wd.date);
+                wd.text_day = str_of(d, "textDay");
+                wd.text_night = str_of(d, "textNight");
+                wd.temp_min = str_of(d, "tempMin");
+                wd.temp_max = str_of(d, "tempMax");
+                wd.wind_dir = str_of(d, "windDirDay");
+                wd.wind_scale = str_of(d, "windScaleDay");
+                wd.sunrise = str_of(d, "sunrise");
+                wd.sunset = str_of(d, "sunset");
+            }
+            if (latest_data_.daily_count > 0) {
+                latest_data_.sunrise = latest_data_.daily[0].sunrise;
+                latest_data_.sunset = latest_data_.daily[0].sunset;
+            }
+            cJSON_Delete(droot);
+        }
+    }
+
+    // 4) 预警（只取第一条：类型 + 颜色等级）
+    latest_data_.warning.clear();
+    snprintf(url, sizeof(url), "https://%s/v7/warning/now?location=%s&lang=zh&key=%s",
+             api_host_.c_str(), loc.c_str(), api_key_.c_str());
+    if (httpGetJson(url, body, 12000)) {
+        cJSON* wroot = cJSON_Parse(body.c_str());
+        if (wroot) {
+            cJSON* arr = cJSON_GetObjectItem(wroot, "warning");
+            if (arr && cJSON_GetArraySize(arr) > 0) {
+                cJSON* w0 = cJSON_GetArrayItem(arr, 0);
+                latest_data_.warning = str_of(w0, "typeName") + str_of(w0, "severityColor");
+            }
+            cJSON_Delete(wroot);
+        }
+    }
+
+    latest_data_.valid = true;
+    ESP_LOGI(TAG, "天气更新成功(和风): %s %s %s°C 体感%s 湿度%s%% %s%s级 AQI %s %s 日出%s 日落%s%s%s",
+             latest_data_.city.c_str(), latest_data_.text.c_str(), latest_data_.temp.c_str(),
+             latest_data_.feels_like.c_str(), latest_data_.humidity.c_str(),
+             latest_data_.wind_dir.c_str(), latest_data_.wind_scale.c_str(),
+             latest_data_.aqi.c_str(), latest_data_.aqi_category.c_str(),
+             latest_data_.sunrise.c_str(), latest_data_.sunset.c_str(),
+             latest_data_.warning.empty() ? "" : " 预警:",
+             latest_data_.warning.c_str());
+    return true;
+}
+
 bool WeatherManager::update() {
     if (!response_buffer) {
         ESP_LOGW(TAG, "天气缓冲区未分配");
         return false;
     }
-    // 未配置和风天气 Key 时，退回免密钥数据源：先中国天气网，失败再试 Open-Meteo
-    if (api_key_.empty() || api_host_.empty()) {
-        if (updateItboy()) {
+    // 1) 优先和风天气（维度最全：实时 / 空气质量 / 3 天预报 / 预警）
+    if (hasQWeather()) {
+        if (updateQWeather()) {
             return true;
         }
-        return updateOpenMeteo();
+        ESP_LOGW(TAG, "和风天气更新失败，回退免密钥数据源");
     }
-
-    // 第一步：通过和风天气 GeoAPI 进行 IP 定位
-    response_len = 0;
-    memset(response_buffer, 0, RESPONSE_BUFFER_SIZE);
-    char geo_url[256];
-    // 使用 auto_ip 让服务端按公网出口 IP 识别城市
-    snprintf(geo_url, sizeof(geo_url), "https://%s/geo/v2/city/lookup?location=auto_ip&key=%s",
-             api_host_.c_str(), api_key_.c_str());
-
-    ESP_LOGI(TAG, "正在进行 IP 定位...");
-    esp_http_client_config_t geo_config = {};
-    geo_config.url = geo_url;
-    geo_config.event_handler = http_event_handler;
-    geo_config.timeout_ms = 8000;
-    geo_config.crt_bundle_attach = esp_crt_bundle_attach;
-    
-    esp_http_client_handle_t geo_client = esp_http_client_init(&geo_config);
-    esp_http_client_set_header(geo_client, "Host", api_host_.c_str());
-    esp_err_t geo_err = esp_http_client_perform(geo_client);
-    int geo_status = esp_http_client_get_status_code(geo_client);
-    
-    // 默认位置（苏州）
-    double lat = 31.23, lon = 120.62; 
-    std::string city_name = "苏州";
-
-    if (geo_err == ESP_OK && geo_status == 200 && response_len > 0) {
-        // geo 响应也可能是 gzip 压缩的，先尝试解压
-        const char* geo_json = NULL;
-        int geo_d_len = 0;
-        if (decompressed_buffer &&
-            decompress_gzip_safe((uint8_t*)response_buffer, response_len,
-                                 decompressed_buffer, DECOMPRESSED_BUFFER_SIZE, &geo_d_len)) {
-            geo_json = decompressed_buffer;
-            ESP_LOGI(TAG, "IP 定位响应已 gzip 解压 (%d -> %d bytes)", response_len, geo_d_len);
-        } else {
-            response_buffer[response_len] = '\0';
-            geo_json = response_buffer;
-        }
-        cJSON *root = cJSON_Parse(geo_json);
-        if (root) {
-            cJSON *code = cJSON_GetObjectItem(root, "code");
-            if (code && cJSON_IsString(code) && strcmp(code->valuestring, "200") == 0) {
-                cJSON *location_array = cJSON_GetObjectItem(root, "location");
-                if (location_array && cJSON_GetArraySize(location_array) > 0) {
-                    cJSON *first_city = cJSON_GetArrayItem(location_array, 0);
-                    cJSON *lat_item = cJSON_GetObjectItem(first_city, "lat");
-                    cJSON *lon_item = cJSON_GetObjectItem(first_city, "lon");
-                    if (lat_item && lon_item &&
-                        cJSON_IsString(lat_item) && cJSON_IsString(lon_item)) {
-                        lat = atof(lat_item->valuestring);
-                        lon = atof(lon_item->valuestring);
-                        city_name = pick_city_name_for_display(first_city, city_name);
-                        ESP_LOGI(TAG, "定位成功: %s (%.2f, %.2f)", city_name.c_str(), lat, lon);
-                    } else {
-                        ESP_LOGW(TAG, "定位响应缺少必要字段（lat/lon），使用默认城市");
-                    }
-                }
-            } else {
-                const char *api_code = (code && cJSON_IsString(code)) ? code->valuestring : "null";
-                ESP_LOGW(TAG, "IP 定位接口返回 code=%s，使用默认城市", api_code);
-            }
-            cJSON_Delete(root);
-        } else {
-            // 打印响应前 80 字节帮助诊断（可能是 HTML 网关页、乱码等）
-            ESP_LOGW(TAG, "IP 定位响应 JSON 解析失败 (len=%d, head=%.80s)，使用默认城市",
-                     response_len, geo_json);
-        }
-    } else {
-        // 打印失败细节，便于区分网络错误 / HTTP 错误 / 参数错误
-        if (response_len > 0) {
-            response_buffer[response_len] = '\0';
-            ESP_LOGW(TAG, "IP 定位请求失败 (err=%d, status=%d, body=%.120s)，使用默认城市",
-                     geo_err, geo_status, response_buffer);
-        } else {
-            ESP_LOGW(TAG, "IP 定位请求失败 (err=%d, status=%d, empty body)，使用默认城市",
-                     geo_err, geo_status);
-        }
+    // 2) 免密钥兜底：中国天气网 -> Open-Meteo
+    if (updateItboy()) {
+        return true;
     }
-    esp_http_client_cleanup(geo_client);
-
-    // 第二步：获取实时天气数据
-    response_len = 0;
-    memset(response_buffer, 0, RESPONSE_BUFFER_SIZE);
-    char weather_url[512];
-    snprintf(weather_url, sizeof(weather_url), 
-             "https://%s/v7/weather/now?location=%.2f,%.2f&key=%s&lang=zh", 
-             api_host_.c_str(), lon, lat, api_key_.c_str());
-
-    ESP_LOGI(TAG, "获取天气数据...");
-    esp_http_client_config_t weather_config = {};
-    weather_config.url = weather_url;
-    weather_config.event_handler = http_event_handler;
-    weather_config.timeout_ms = 15000;
-    weather_config.crt_bundle_attach = esp_crt_bundle_attach;
-    esp_http_client_handle_t client = esp_http_client_init(&weather_config);
-    
-    esp_http_client_set_header(client, "Host", api_host_.c_str());
-    esp_http_client_set_header(client, "User-Agent", "ESP32-Weather-Station");
-    esp_http_client_set_header(client, "Accept-Encoding", "gzip");
-    
-    esp_err_t err = esp_http_client_perform(client);
-    int status_code = esp_http_client_get_status_code(client);
-    bool success = false;
-
-    if (err == ESP_OK && status_code == 200 && response_len > 0) {
-        int d_len = 0;
-        const char* final_json = NULL;
-        if (decompress_gzip_safe((uint8_t*)response_buffer, response_len, 
-                                  decompressed_buffer, DECOMPRESSED_BUFFER_SIZE, &d_len)) {
-            final_json = decompressed_buffer;
-        } else {
-            response_buffer[response_len] = '\0';
-            final_json = response_buffer;
-        }
-
-        if (final_json) {
-            parseWeatherJson(final_json);
-            latest_data_.city = city_name;
-            success = latest_data_.valid;
-        }
-    } else {
-        ESP_LOGE(TAG, "天气请求失败 (err=%d, status=%d)", err, status_code);
-    }
-    esp_http_client_cleanup(client);
-    return success;
+    return updateOpenMeteo();
 }
 
 // WMO 天气代码 → 中文描述（Open-Meteo 使用的编码）
@@ -347,6 +521,53 @@ bool WeatherManager::updateItboy() {
     latest_data_.temp = wendu->valuestring;
     latest_data_.text = type->valuestring;
     latest_data_.update_time = "weather.com.cn";
+
+    // 免密钥源也补齐部分维度：AQI / 湿度 / 风力 / 日出日落 / 3 天预报
+    auto it_str = [](cJSON* obj, const char* k) -> std::string {
+        cJSON* it = obj ? cJSON_GetObjectItem(obj, k) : nullptr;
+        if (it == nullptr) {
+            return "";
+        }
+        if (cJSON_IsString(it)) {
+            return it->valuestring;
+        }
+        if (cJSON_IsNumber(it)) {
+            char buf[24];
+            snprintf(buf, sizeof(buf), "%d", it->valueint);
+            return buf;
+        }
+        return "";
+    };
+    latest_data_.humidity = it_str(data, "shidu");
+    latest_data_.aqi = it_str(today, "aqi");
+    latest_data_.aqi_category = it_str(data, "quality");
+    latest_data_.pm25 = it_str(data, "pm25");
+    latest_data_.wind_dir = it_str(today, "fx");
+    latest_data_.wind_scale = DigitsOnly(it_str(today, "fl"));
+    latest_data_.sunrise = it_str(today, "sunrise");
+    latest_data_.sunset = it_str(today, "sunset");
+    latest_data_.warning.clear();
+    latest_data_.feels_like.clear();
+    latest_data_.vis.clear();
+    latest_data_.pressure.clear();
+    latest_data_.daily_count = 0;
+    int dn = forecast ? cJSON_GetArraySize(forecast) : 0;
+    for (int i = 0; i < dn && i < 3; ++i) {
+        cJSON* d = cJSON_GetArrayItem(forecast, i);
+        WeatherDaily& wd = latest_data_.daily[i];
+        wd.date = it_str(d, "ymd");
+        wd.week = it_str(d, "week");
+        wd.text_day = it_str(d, "type");
+        wd.text_night = it_str(d, "type");
+        wd.temp_max = DigitsOnly(it_str(d, "high"));
+        wd.temp_min = DigitsOnly(it_str(d, "low"));
+        wd.wind_dir = it_str(d, "fx");
+        wd.wind_scale = DigitsOnly(it_str(d, "fl"));
+        wd.sunrise = it_str(d, "sunrise");
+        wd.sunset = it_str(d, "sunset");
+        latest_data_.daily_count = i + 1;
+    }
+
     latest_data_.valid = true;
 
     ESP_LOGI(TAG, "天气更新成功(中国天气网): %s %s %s°C",
