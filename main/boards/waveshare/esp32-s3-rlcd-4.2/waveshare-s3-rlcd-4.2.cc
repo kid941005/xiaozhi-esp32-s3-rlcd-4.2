@@ -5,6 +5,7 @@
 #include <esp_system.h>
 #include <esp_netif.h>
 #include <string>
+#include <mutex>
 #include <soc/rtc.h>
 #include "custom_lcd_display.h"
 #include "wifi_board.h"
@@ -69,9 +70,8 @@ private:
     i2c_master_bus_handle_t i2c_bus_;
     Button boot_button_;
     Button user_button_;  // GPIO18 用户按键
-    CustomLcdDisplay *display_;
-    adc_oneshot_unit_handle_t adc1_handle;
-    adc_cali_handle_t cali_handle;
+    CustomLcdDisplay *display_ = nullptr;
+    std::mutex battery_mutex_;   // 保护 GetBatteryStatusLocked 内的 static 采样历史/状态
 
     // 校验时间标签是否为 HH:MM（24 小时制）
     bool IsValidMemoTimeLabel(const std::string& time_str) {
@@ -769,21 +769,34 @@ private:
             adc_oneshot_unit_init_cfg_t init_config = {
                 .unit_id = ADC_UNIT_1,
             };
-            adc_oneshot_new_unit(&init_config, &adc_handle);
+            esp_err_t e_unit = adc_oneshot_new_unit(&init_config, &adc_handle);
 
             adc_oneshot_chan_cfg_t ch_config = {
                 .atten = ADC_ATTEN_DB_12,
                 .bitwidth = ADC_BITWIDTH_12,
             };
-            adc_oneshot_config_channel(adc_handle, ADC_CHANNEL_3, &ch_config);
+            esp_err_t e_chan = (e_unit == ESP_OK)
+                                   ? adc_oneshot_config_channel(adc_handle, ADC_CHANNEL_3, &ch_config)
+                                   : e_unit;
 
             adc_cali_curve_fitting_config_t cali_config = {
                 .unit_id = ADC_UNIT_1,
                 .atten = ADC_ATTEN_DB_12,
                 .bitwidth = ADC_BITWIDTH_12,
             };
-            if (adc_cali_create_scheme_curve_fitting(&cali_config, &cali_handle) == ESP_OK) {
+            esp_err_t e_cali = (e_chan == ESP_OK)
+                                   ? adc_cali_create_scheme_curve_fitting(&cali_config, &cali_handle)
+                                   : e_chan;
+
+            if (e_unit == ESP_OK && e_chan == ESP_OK && e_cali == ESP_OK) {
                 initialized = true;
+            } else {
+                ESP_LOGE(TAG, "电池 ADC 初始化失败: unit=%s chan=%s cali=%s",
+                         esp_err_to_name(e_unit), esp_err_to_name(e_chan), esp_err_to_name(e_cali));
+                if (e_unit != ESP_OK && adc_handle) {
+                    adc_oneshot_del_unit(adc_handle);
+                    adc_handle = nullptr;
+                }
             }
         }
         if (!initialized) {
@@ -809,8 +822,14 @@ private:
         return (uint16_t)battery_mv;
     }
 
-    // 采集一次电池状态（百分比 / 充电判断 / 剩余电量）
+    // 采集一次电池状态：DataUpdateTask / 系统信息 / MCP 可能并发调用，
+    // 内部 static 采样历史必须串行化，否则电量会因数据竞争跳变
     BatteryStatus GetBatteryStatus() {
+        std::lock_guard<std::mutex> lock(battery_mutex_);
+        return GetBatteryStatusLocked();
+    }
+
+    BatteryStatus GetBatteryStatusLocked() {
         BatteryStatus st;
         uint16_t mv = BatterygetVoltage();
         st.voltage_mv = mv;

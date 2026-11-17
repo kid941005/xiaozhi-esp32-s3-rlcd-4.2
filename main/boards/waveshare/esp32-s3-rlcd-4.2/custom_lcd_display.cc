@@ -504,8 +504,12 @@ void CustomLcdDisplay::RefreshMemoDisplay() {
 
 void CustomLcdDisplay::SetChatMessage(const char* role, const char* content) {
     DisplayLockGuard lock(this);
-    if (chat_status_label_ == nullptr && music_chat_status_label_ == nullptr) return;
     if (!content || strlen(content) == 0) return;
+    if (chat_status_label_ == nullptr) {
+        // 天气页标签不存在时至少同步音乐页文案，避免空指针写入
+        if (music_chat_status_label_) lv_label_set_text(music_chat_status_label_, content);
+        return;
+    }
 
     // 停止可能正在运行的滚动动画（系统信息或之前的 AI 滚动）
     lv_anim_delete(chat_status_label_, nullptr);
@@ -668,6 +672,15 @@ void CustomLcdDisplay::ClearChatMessages() {
     if (chat_status_label_) lv_label_set_text(chat_status_label_, "AI 待命");
     if (music_chat_status_label_) lv_label_set_text(music_chat_status_label_, "");
     // 表情不清除，保持常驻
+}
+
+bool CustomLcdDisplay::PollSystemInfoTimeout() {
+    if (!showing_system_info_) return false;
+    if (showing_system_info_since_ms_ == 0) return false;
+    if (lv_tick_elaps(showing_system_info_since_ms_) < 15000) return false;
+    showing_system_info_ = false;
+    showing_system_info_since_ms_ = 0;
+    return true;
 }
 
 // ===== 重写状态栏更新（禁用基类的 Font Awesome 文字更新）=====

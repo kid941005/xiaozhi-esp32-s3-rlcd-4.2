@@ -358,6 +358,7 @@ bool TodoMcpClient::ApplyPayload(const std::string& payload) {
         cJSON* item = cJSON_CreateObject();
         cJSON_AddStringToObject(item, "t", rows[i].time_text.c_str());
         cJSON_AddStringToObject(item, "c", rows[i].title.c_str());
+        cJSON_AddStringToObject(item, "type", "todo");
         cJSON_AddItemToArray(arr, item);
     }
 

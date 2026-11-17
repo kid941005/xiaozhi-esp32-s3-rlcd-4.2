@@ -133,6 +133,7 @@ private:
     
     // 系统信息滚动标志（为 true 时暂停 DataUpdateTask 更新，避免锁竞争）
     std::atomic<bool> showing_system_info_{false};
+    uint32_t showing_system_info_since_ms_ = 0;   // 系统信息开始滚动的时间（用于超时自动恢复）
     
     // 省电模式：5 分钟无活动后降低刷新频率（1秒 → 5秒）
     std::atomic<bool> power_saving_{false};     // 是否处于省电模式
@@ -186,7 +187,12 @@ public:
     lv_obj_t* GetChatStatusLabel() const { return chat_status_label_; }
     
     // 系统信息滚动控制（供 CustomBoard 设置标志，避免 DataUpdateTask 锁竞争）
-    void SetShowingSystemInfo(bool showing) { showing_system_info_ = showing; }
+    void SetShowingSystemInfo(bool showing) {
+        showing_system_info_ = showing;
+        showing_system_info_since_ms_ = showing ? lv_tick_get() : 0;
+    }
+    // 系统信息滚动超过 15 秒自动复位（防止 SetShowingSystemInfo(true) 后 UI 永久停更）
+    bool PollSystemInfoTimeout();
     
     // 省电模式：记录用户活动，唤醒省电模式
     void NotifyUserActivity();

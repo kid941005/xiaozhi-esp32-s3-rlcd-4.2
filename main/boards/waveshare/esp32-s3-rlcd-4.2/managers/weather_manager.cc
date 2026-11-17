@@ -17,21 +17,17 @@
 
 static const char *TAG = "WeatherManager";
 
-// HTTP 响应缓冲区（分配在 SPIRAM 上，避免占用宝贵的内部 RAM）
-static char* response_buffer = NULL;
-static int response_len = 0;
-static const int RESPONSE_BUFFER_SIZE = 8192;
-
-// GZIP 解压缓冲区（和风天气 API 默认返回 gzip 压缩数据）
-static char* decompressed_buffer = NULL;
-static const int DECOMPRESSED_BUFFER_SIZE = 8192;
+// HTTP 响应上下文：按需增长，不再受固定 8KB 缓冲限制（避免大响应被静默截断）
+struct HttpCtx {
+    std::string data;
+};
 
 esp_err_t WeatherManager::http_event_handler(esp_http_client_event_t *evt) {
     switch(evt->event_id) {
         case HTTP_EVENT_ON_DATA:
-            if (response_buffer && response_len + evt->data_len < RESPONSE_BUFFER_SIZE - 1) {
-                memcpy(response_buffer + response_len, evt->data, evt->data_len);
-                response_len += evt->data_len;
+            if (evt->user_data != nullptr && evt->data != nullptr && evt->data_len > 0) {
+                static_cast<HttpCtx*>(evt->user_data)->data.append(
+                    static_cast<const char*>(evt->data), evt->data_len);
             }
             break;
         default:
@@ -41,8 +37,6 @@ esp_err_t WeatherManager::http_event_handler(esp_http_client_event_t *evt) {
 }
 
 WeatherManager::WeatherManager() {
-    response_buffer = (char*)heap_caps_malloc(RESPONSE_BUFFER_SIZE, MALLOC_CAP_SPIRAM);
-    decompressed_buffer = (char*)heap_caps_malloc(DECOMPRESSED_BUFFER_SIZE, MALLOC_CAP_SPIRAM);
     // 编译期默认值：config.h（空）或 gitignore 的 weather_qweather_secret.h
     city_ = WEATHER_CITY;
 #ifdef QWEATHER_HOST
@@ -67,39 +61,49 @@ bool WeatherManager::updateFromExternal(const std::string& city,
                                         const std::string& weather_text,
                                         const std::string& temperature,
                                         const std::string& update_time) {
+    static WeatherData d;   // 放静态区：WeatherData 含 27 个 std::string，栈帧会超 1536 限制
+    d = WeatherData();
     if (city.empty() || weather_text.empty() || temperature.empty()) {
         ESP_LOGW(TAG, "外部天气数据无效：city/text/temp 不能为空");
         return false;
     }
 
-    latest_data_.city = city;
-    latest_data_.text = weather_text;
-    latest_data_.temp = temperature;
-    latest_data_.update_time = update_time.empty() ? "mcp" : update_time;
-    latest_data_.valid = true;
+    d.city = city;
+    d.text = weather_text;
+    d.temp = temperature;
+    d.update_time = update_time.empty() ? "mcp" : update_time;
+    d.valid = true;
 
     ESP_LOGI(TAG, "天气已由外部写入: %s %s %s°C",
-             latest_data_.city.c_str(),
-             latest_data_.text.c_str(),
-             latest_data_.temp.c_str());
+             d.city.c_str(),
+             d.text.c_str(),
+             d.temp.c_str());
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        latest_data_ = d;
+    }
     return true;
 }
 
-// GZIP 安全解压（和风天气 API 返回 gzip 格式）
-static bool decompress_gzip_safe(const uint8_t* src, int src_len, char* dst, int dst_max_len, int* out_len) {
-    if (src_len < 18 || src[0] != 0x1f || src[1] != 0x8b) return false;
+// GZIP 解压到 std::string：按块增长，响应体多大都不会被固定缓冲截断
+static bool gunzip_to_string(const std::string& in, std::string& out) {
+    out.clear();   // 必须清空：out 是复用的响应缓冲，追加会拼上前一个接口的 JSON
+    if (in.size() < 18 || (unsigned char)in[0] != 0x1f || (unsigned char)in[1] != 0x8b) return false;
     z_stream strm = {};
-    strm.next_in = (Bytef*)src;
-    strm.avail_in = src_len;
-    strm.next_out = (Bytef*)dst;
-    strm.avail_out = dst_max_len - 1;
+    strm.next_in = (Bytef*)in.data();
+    strm.avail_in = (uInt)in.size();
     if (inflateInit2(&strm, 15 + 16) != Z_OK) return false;
-    int ret = inflate(&strm, Z_FINISH);
+    static char buf[2048];   // 静态缓冲：避免 2KB 栈帧触发 -Werror=frame-larger-than
+    int ret = Z_OK;
+    do {
+        strm.next_out = (Bytef*)buf;
+        strm.avail_out = sizeof(buf);
+        ret = inflate(&strm, Z_NO_FLUSH);
+        if (ret != Z_OK && ret != Z_STREAM_END) { inflateEnd(&strm); return false; }
+        out.append(buf, sizeof(buf) - strm.avail_out);
+    } while (ret == Z_OK);   // 必须一直解到 Z_STREAM_END：压缩流可能先耗尽 avail_in 但仍有输出待取
     inflateEnd(&strm);
-    if (ret != Z_STREAM_END && ret != Z_OK) return false;
-    *out_len = dst_max_len - 1 - strm.avail_out;
-    dst[*out_len] = '\0';
-    return true;
+    return ret == Z_STREAM_END;
 }
 
 // 判断城市名是否可用于 UI 展示（排除 "Ip" 这类占位值）
@@ -126,19 +130,17 @@ static std::string pick_city_name_for_display(cJSON* first_city, const std::stri
     return fallback_city;
 }
 
-// 通用 HTTPS GET：把响应体（自动处理 gzip）读进 out
-bool WeatherManager::httpGetJson(const std::string& url, std::string& out, int timeout_ms) {
-    if (!response_buffer) {
-        return false;
-    }
-    response_len = 0;
-    memset(response_buffer, 0, RESPONSE_BUFFER_SIZE);
-
+// 通用 HTTP(S) GET：把响应体原始字节读入 out（dynamic，无固定上限）
+bool WeatherManager::httpGetRaw(const std::string& url, int timeout_ms, bool verify_tls, std::string& out) {
+    HttpCtx ctx;
     esp_http_client_config_t config = {};
     config.url = url.c_str();
     config.event_handler = http_event_handler;
+    config.user_data = &ctx;
     config.timeout_ms = timeout_ms;
-    config.crt_bundle_attach = esp_crt_bundle_attach;
+    if (verify_tls) {
+        config.crt_bundle_attach = esp_crt_bundle_attach;
+    }
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (client == nullptr) {
@@ -151,20 +153,25 @@ bool WeatherManager::httpGetJson(const std::string& url, std::string& out, int t
     int status = esp_http_client_get_status_code(client);
     esp_http_client_cleanup(client);
 
-    if (err != ESP_OK || status != 200 || response_len <= 0) {
+    if (err != ESP_OK || status != 200 || ctx.data.empty()) {
         ESP_LOGW(TAG, "HTTP 请求失败 (err=%d, status=%d, len=%d) url=%.110s",
-                 err, status, response_len, url.c_str());
+                 err, status, (int)ctx.data.size(), url.c_str());
         return false;
     }
-    int d_len = 0;
-    if (decompressed_buffer &&
-        decompress_gzip_safe((uint8_t*)response_buffer, response_len,
-                             decompressed_buffer, DECOMPRESSED_BUFFER_SIZE, &d_len)) {
-        out.assign(decompressed_buffer, d_len);
-    } else {
-        response_buffer[response_len] = '\0';
-        out.assign(response_buffer, response_len);
+    out.swap(ctx.data);
+    return true;
+}
+
+// 通用 HTTPS GET：成功时把响应体（自动处理 gzip）写入 out
+bool WeatherManager::httpGetJson(const std::string& url, std::string& out, int timeout_ms) {
+    std::string raw;
+    if (!httpGetRaw(url, timeout_ms, true, raw)) {
+        return false;
     }
+    if (gunzip_to_string(raw, out)) {
+        return true;
+    }
+    out.swap(raw);
     return true;
 }
 
@@ -468,6 +475,8 @@ std::string WeatherManager::ResolveLocationId() {
 
 // 和风天气：实时 + 空气质量 + 3 天预报 + 预警
 bool WeatherManager::updateQWeather() {
+    static WeatherData d;   // 放静态区：WeatherData 含 27 个 std::string，栈帧会超 1536 限制
+    d = WeatherData();
     const std::string loc = ResolveLocationId();
     if (loc.empty()) {
         return false;
@@ -509,17 +518,17 @@ bool WeatherManager::updateQWeather() {
         cJSON_Delete(root);
         return false;
     }
-    latest_data_.temp = str_of(now, "temp");
-    latest_data_.text = str_of(now, "text");
-    latest_data_.feels_like = str_of(now, "feelsLike");
-    latest_data_.humidity = str_of(now, "humidity");
-    latest_data_.wind_dir = str_of(now, "windDir");
-    latest_data_.wind_scale = str_of(now, "windScale");
-    latest_data_.vis = str_of(now, "vis");
-    latest_data_.pressure = str_of(now, "pressure");
+    d.temp = str_of(now, "temp");
+    d.text = str_of(now, "text");
+    d.feels_like = str_of(now, "feelsLike");
+    d.humidity = str_of(now, "humidity");
+    d.wind_dir = str_of(now, "windDir");
+    d.wind_scale = str_of(now, "windScale");
+    d.vis = str_of(now, "vis");
+    d.pressure = str_of(now, "pressure");
     std::string upd = str_of(root, "updateTime");
-    latest_data_.update_time = upd.empty() ? "qweather" : upd;
-    latest_data_.city = loc_name_.empty() ? city_ : loc_name_;
+    d.update_time = upd.empty() ? "qweather" : upd;
+    d.city = loc_name_.empty() ? city_ : loc_name_;
     cJSON_Delete(root);
 
     // 2) 空气质量
@@ -530,11 +539,17 @@ bool WeatherManager::updateQWeather() {
         if (aroot) {
             cJSON* anow = cJSON_GetObjectItem(aroot, "now");
             if (anow) {
-                latest_data_.aqi = str_of(anow, "aqi");
-                latest_data_.aqi_category = str_of(anow, "category");
-                latest_data_.pm25 = str_of(anow, "pm2p5");
+                d.aqi = str_of(anow, "aqi");
+                d.aqi_category = str_of(anow, "category");
+                d.pm25 = str_of(anow, "pm2p5");
+            } else {
+                cJSON* acode = cJSON_GetObjectItem(aroot, "code");
+                ESP_LOGW(TAG, "和风空气质量无 now 字段 code=%s head=%.60s",
+                         (acode && cJSON_IsString(acode)) ? acode->valuestring : "null", body.c_str());
             }
             cJSON_Delete(aroot);
+        } else {
+            ESP_LOGW(TAG, "和风空气质量解析失败 head=%.80s", body.c_str());
         }
     }
 
@@ -546,31 +561,37 @@ bool WeatherManager::updateQWeather() {
         if (droot) {
             cJSON* daily = cJSON_GetObjectItem(droot, "daily");
             int n = daily ? cJSON_GetArraySize(daily) : 0;
-            latest_data_.daily_count = (n > 3) ? 3 : n;
-            for (int i = 0; i < latest_data_.daily_count; ++i) {
-                cJSON* d = cJSON_GetArrayItem(daily, i);
-                WeatherDaily& wd = latest_data_.daily[i];
-                wd.date = str_of(d, "fxDate");
+            d.daily_count = (n > 3) ? 3 : n;
+            for (int i = 0; i < d.daily_count; ++i) {
+                cJSON* day = cJSON_GetArrayItem(daily, i);
+                WeatherDaily& wd = d.daily[i];
+                wd.date = str_of(day, "fxDate");
                 wd.week = DateToWeek(wd.date);
-                wd.text_day = str_of(d, "textDay");
-                wd.text_night = str_of(d, "textNight");
-                wd.temp_min = str_of(d, "tempMin");
-                wd.temp_max = str_of(d, "tempMax");
-                wd.wind_dir = str_of(d, "windDirDay");
-                wd.wind_scale = str_of(d, "windScaleDay");
-                wd.sunrise = str_of(d, "sunrise");
-                wd.sunset = str_of(d, "sunset");
+                wd.text_day = str_of(day, "textDay");
+                wd.text_night = str_of(day, "textNight");
+                wd.temp_min = str_of(day, "tempMin");
+                wd.temp_max = str_of(day, "tempMax");
+                wd.wind_dir = str_of(day, "windDirDay");
+                wd.wind_scale = str_of(day, "windScaleDay");
+                wd.sunrise = str_of(day, "sunrise");
+                wd.sunset = str_of(day, "sunset");
             }
-            if (latest_data_.daily_count > 0) {
-                latest_data_.sunrise = latest_data_.daily[0].sunrise;
-                latest_data_.sunset = latest_data_.daily[0].sunset;
+            if (d.daily_count > 0) {
+                d.sunrise = d.daily[0].sunrise;
+                d.sunset = d.daily[0].sunset;
+            } else {
+                cJSON* dcode = cJSON_GetObjectItem(droot, "code");
+                ESP_LOGW(TAG, "和风 3 天预报无 daily code=%s head=%.60s",
+                         (dcode && cJSON_IsString(dcode)) ? dcode->valuestring : "null", body.c_str());
             }
             cJSON_Delete(droot);
+        } else {
+            ESP_LOGW(TAG, "和风 3 天预报解析失败 head=%.80s", body.c_str());
         }
     }
 
     // 4) 预警（只取第一条：类型 + 颜色等级）
-    latest_data_.warning.clear();
+    d.warning.clear();
     snprintf(url, sizeof(url), "https://%s/v7/warning/now?location=%s&lang=zh&key=%s",
              api_host_.c_str(), loc.c_str(), api_key_.c_str());
     if (httpGetJson(url, body, 12000)) {
@@ -588,29 +609,29 @@ bool WeatherManager::updateQWeather() {
                 else if (color == "Orange") color_zh = "橙色";
                 else if (color == "Red")    color_zh = "红色";
                 else if (color == "Black")  color_zh = "黑色";
-                latest_data_.warning = str_of(w0, "typeName") + color_zh;
+                d.warning = str_of(w0, "typeName") + color_zh;
             }
             cJSON_Delete(wroot);
         }
     }
 
-    latest_data_.valid = true;
+    d.valid = true;
     ESP_LOGI(TAG, "天气更新成功(和风): %s %s %s°C 体感%s 湿度%s%% %s%s级 AQI %s %s 日出%s 日落%s%s%s",
-             latest_data_.city.c_str(), latest_data_.text.c_str(), latest_data_.temp.c_str(),
-             latest_data_.feels_like.c_str(), latest_data_.humidity.c_str(),
-             latest_data_.wind_dir.c_str(), latest_data_.wind_scale.c_str(),
-             latest_data_.aqi.c_str(), latest_data_.aqi_category.c_str(),
-             latest_data_.sunrise.c_str(), latest_data_.sunset.c_str(),
-             latest_data_.warning.empty() ? "" : " 预警:",
-             latest_data_.warning.c_str());
+             d.city.c_str(), d.text.c_str(), d.temp.c_str(),
+             d.feels_like.c_str(), d.humidity.c_str(),
+             d.wind_dir.c_str(), d.wind_scale.c_str(),
+             d.aqi.c_str(), d.aqi_category.c_str(),
+             d.sunrise.c_str(), d.sunset.c_str(),
+             d.warning.empty() ? "" : " 预警:",
+             d.warning.c_str());
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        latest_data_ = d;
+    }
     return true;
 }
 
 bool WeatherManager::update() {
-    if (!response_buffer) {
-        ESP_LOGW(TAG, "天气缓冲区未分配");
-        return false;
-    }
     // 1) 优先和风天气（维度最全：实时 / 空气质量 / 3 天预报 / 预警）
     if (hasQWeather()) {
         // 每次开机只做一次 IP 定位，决定这次用哪个城市查天气
@@ -660,39 +681,19 @@ static const char* wmo_code_to_zh(int code) {
 // 免密钥天气源（主）：中国天气网数据接口（纯 HTTP，国内直连快，无需 Key）
 // 返回结构：{"cityInfo":{"city":"成都市"},"data":{"wendu":"12.8","forecast":[{"type":"小雨",...}]}}
 bool WeatherManager::updateItboy() {
-    if (!response_buffer) {
-        return false;
-    }
-    response_len = 0;
-    memset(response_buffer, 0, RESPONSE_BUFFER_SIZE);
-
+    static WeatherData d;   // 放静态区：WeatherData 含 27 个 std::string，栈帧会超 1536 限制
+    d = WeatherData();
     char url[192];
     snprintf(url, sizeof(url), "http://t.weather.itboy.net/api/weather/city/%s", WEATHER_CITY_CODE);
 
-    esp_http_client_config_t config = {};
-    config.url = url;
-    config.event_handler = http_event_handler;
-    config.timeout_ms = 8000;
-
-    esp_http_client_handle_t client = esp_http_client_init(&config);
-    if (client == nullptr) {
+    std::string body;
+    if (!httpGetRaw(url, 8000, false, body)) {
         return false;
     }
-    esp_http_client_set_header(client, "User-Agent", "ESP32-RLCD-Weather");
 
-    esp_err_t err = esp_http_client_perform(client);
-    int status = esp_http_client_get_status_code(client);
-    esp_http_client_cleanup(client);
-
-    if (err != ESP_OK || status != 200 || response_len <= 0) {
-        ESP_LOGW(TAG, "中国天气网请求失败 (err=%d, status=%d, len=%d)", err, status, response_len);
-        return false;
-    }
-    response_buffer[response_len] = 0;
-
-    cJSON* root = cJSON_Parse(response_buffer);
+    cJSON* root = cJSON_Parse(body.c_str());
     if (root == nullptr) {
-        ESP_LOGW(TAG, "中国天气网响应解析失败 (head=%.80s)", response_buffer);
+        ESP_LOGW(TAG, "中国天气网响应解析失败 (head=%.80s)", body.c_str());
         return false;
     }
 
@@ -722,10 +723,10 @@ bool WeatherManager::updateItboy() {
         }
     }
 
-    latest_data_.city = city;
-    latest_data_.temp = wendu->valuestring;
-    latest_data_.text = type->valuestring;
-    latest_data_.update_time = "weather.com.cn";
+    d.city = city;
+    d.temp = wendu->valuestring;
+    d.text = type->valuestring;
+    d.update_time = "weather.com.cn";
 
     // 免密钥源也补齐部分维度：AQI / 湿度 / 风力 / 日出日落 / 3 天预报
     auto it_str = [](cJSON* obj, const char* k) -> std::string {
@@ -743,54 +744,54 @@ bool WeatherManager::updateItboy() {
         }
         return "";
     };
-    latest_data_.humidity = it_str(data, "shidu");
-    latest_data_.aqi = it_str(today, "aqi");
-    latest_data_.aqi_category = it_str(data, "quality");
-    latest_data_.pm25 = it_str(data, "pm25");
-    latest_data_.wind_dir = it_str(today, "fx");
-    latest_data_.wind_scale = DigitsOnly(it_str(today, "fl"));
-    latest_data_.sunrise = it_str(today, "sunrise");
-    latest_data_.sunset = it_str(today, "sunset");
-    latest_data_.warning.clear();
-    latest_data_.feels_like.clear();
-    latest_data_.vis.clear();
-    latest_data_.pressure.clear();
-    latest_data_.daily_count = 0;
+    d.humidity = it_str(data, "shidu");
+    d.aqi = it_str(today, "aqi");
+    d.aqi_category = it_str(data, "quality");
+    d.pm25 = it_str(data, "pm25");
+    d.wind_dir = it_str(today, "fx");
+    d.wind_scale = DigitsOnly(it_str(today, "fl"));
+    d.sunrise = it_str(today, "sunrise");
+    d.sunset = it_str(today, "sunset");
+    d.warning.clear();
+    d.feels_like.clear();
+    d.vis.clear();
+    d.pressure.clear();
+    d.daily_count = 0;
     int dn = forecast ? cJSON_GetArraySize(forecast) : 0;
     for (int i = 0; i < dn && i < 3; ++i) {
-        cJSON* d = cJSON_GetArrayItem(forecast, i);
-        WeatherDaily& wd = latest_data_.daily[i];
-        wd.date = it_str(d, "ymd");
-        wd.week = it_str(d, "week");
-        wd.text_day = it_str(d, "type");
-        wd.text_night = it_str(d, "type");
-        wd.temp_max = DigitsOnly(it_str(d, "high"));
-        wd.temp_min = DigitsOnly(it_str(d, "low"));
-        wd.wind_dir = it_str(d, "fx");
-        wd.wind_scale = DigitsOnly(it_str(d, "fl"));
-        wd.sunrise = it_str(d, "sunrise");
-        wd.sunset = it_str(d, "sunset");
-        latest_data_.daily_count = i + 1;
+        cJSON* day = cJSON_GetArrayItem(forecast, i);
+        WeatherDaily& wd = d.daily[i];
+        wd.date = it_str(day, "ymd");
+        wd.week = it_str(day, "week");
+        wd.text_day = it_str(day, "type");
+        wd.text_night = it_str(day, "type");
+        wd.temp_max = DigitsOnly(it_str(day, "high"));
+        wd.temp_min = DigitsOnly(it_str(day, "low"));
+        wd.wind_dir = it_str(day, "fx");
+        wd.wind_scale = DigitsOnly(it_str(day, "fl"));
+        wd.sunrise = it_str(day, "sunrise");
+        wd.sunset = it_str(day, "sunset");
+        d.daily_count = i + 1;
     }
 
-    latest_data_.valid = true;
+    d.valid = true;
 
     ESP_LOGI(TAG, "天气更新成功(中国天气网): %s %s %s°C",
-             latest_data_.city.c_str(), latest_data_.text.c_str(),
-             latest_data_.temp.c_str());
+             d.city.c_str(), d.text.c_str(),
+             d.temp.c_str());
     cJSON_Delete(root);
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        latest_data_ = d;
+    }
     return true;
 }
 
 // 免密钥天气源（备用）：Open-Meteo（无需注册、无 Key）
 // 请求：当前温度 + WMO 天气代码；坐标由 config.h 的 WEATHER_LAT/WEATHER_LON 指定
 bool WeatherManager::updateOpenMeteo() {
-    if (!response_buffer) {
-        return false;
-    }
-    response_len = 0;
-    memset(response_buffer, 0, RESPONSE_BUFFER_SIZE);
-
+    static WeatherData d;   // 放静态区：WeatherData 含 27 个 std::string，栈帧会超 1536 限制
+    d = WeatherData();
     char url[320];
     snprintf(url, sizeof(url),
              "https://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f"
@@ -799,43 +800,18 @@ bool WeatherManager::updateOpenMeteo() {
 
     ESP_LOGI(TAG, "使用 Open-Meteo 获取天气 (%.4f, %.4f)", (double)WEATHER_LAT, (double)WEATHER_LON);
 
-    esp_http_client_config_t config = {};
-    config.url = url;
-    config.event_handler = http_event_handler;
-    config.timeout_ms = 10000;
-    config.crt_bundle_attach = esp_crt_bundle_attach;
-
-    esp_http_client_handle_t client = esp_http_client_init(&config);
-    if (client == nullptr) {
-        ESP_LOGE(TAG, "Open-Meteo 客户端创建失败");
+    std::string body;
+    if (!httpGetRaw(url, 10000, true, body)) {
         return false;
     }
-    esp_http_client_set_header(client, "User-Agent", "ESP32-RLCD-Weather");
-    esp_http_client_set_header(client, "Accept-Encoding", "gzip");
-
-    esp_err_t err = esp_http_client_perform(client);
-    int status = esp_http_client_get_status_code(client);
-    esp_http_client_cleanup(client);
-
-    if (err != ESP_OK || status != 200 || response_len <= 0) {
-        ESP_LOGW(TAG, "Open-Meteo 请求失败 (err=%d, status=%d, len=%d)", err, status, response_len);
-        return false;
+    std::string json;
+    if (!gunzip_to_string(body, json)) {
+        json.swap(body);
     }
 
-    const char* json = nullptr;
-    int d_len = 0;
-    if (decompressed_buffer &&
-        decompress_gzip_safe((uint8_t*)response_buffer, response_len,
-                             decompressed_buffer, DECOMPRESSED_BUFFER_SIZE, &d_len)) {
-        json = decompressed_buffer;
-    } else {
-        response_buffer[response_len] = '\0';
-        json = response_buffer;
-    }
-
-    cJSON* root = cJSON_Parse(json);
+    cJSON* root = cJSON_Parse(json.c_str());
     if (root == nullptr) {
-        ESP_LOGW(TAG, "Open-Meteo 响应解析失败 (head=%.80s)", json);
+        ESP_LOGW(TAG, "Open-Meteo 响应解析失败 (head=%.80s)", json.c_str());
         return false;
     }
 
@@ -852,16 +828,20 @@ bool WeatherManager::updateOpenMeteo() {
     char temp_str[16];
     snprintf(temp_str, sizeof(temp_str), "%.0f", temp->valuedouble);
 
-    latest_data_.city = WEATHER_CITY;
-    latest_data_.temp = temp_str;
-    latest_data_.text = wmo_code_to_zh(code);
-    latest_data_.update_time = "open-meteo";
-    latest_data_.valid = true;
+    d.city = WEATHER_CITY;
+    d.temp = temp_str;
+    d.text = wmo_code_to_zh(code);
+    d.update_time = "open-meteo";
+    d.valid = true;
 
     ESP_LOGI(TAG, "天气更新成功(Open-Meteo): %s %s %s°C (code=%d)",
-             latest_data_.city.c_str(), latest_data_.text.c_str(),
-             latest_data_.temp.c_str(), code);
+             d.city.c_str(), d.text.c_str(),
+             d.temp.c_str(), code);
     cJSON_Delete(root);
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        latest_data_ = d;
+    }
     return true;
 }
 

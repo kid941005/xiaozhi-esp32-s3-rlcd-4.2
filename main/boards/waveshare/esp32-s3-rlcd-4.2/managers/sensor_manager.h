@@ -26,7 +26,7 @@ public:
     SensorData getTempHumidity();
     
     // RTC 时间操作
-    void getRtcTime(struct tm *timeinfo);
+    bool getRtcTime(struct tm *timeinfo);
     void setRtcTime(struct tm *timeinfo);
     
     // NTP 网络时间同步（需要网络连接）

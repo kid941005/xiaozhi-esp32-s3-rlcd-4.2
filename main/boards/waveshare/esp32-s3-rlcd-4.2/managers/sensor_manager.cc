@@ -1,4 +1,5 @@
 #include "sensor_manager.h"
+#include <mutex>
 
 // 敏感配置（天气 API Key 等）不入库：有 secret_config.h 就用，没有就用默认值，
 // 保证仓库克隆后可直接编译。
@@ -55,9 +56,11 @@ void SensorManager::init(i2c_master_bus_handle_t bus_handle) {
     // 启动时从硬件 RTC 恢复系统时间
     // 这样即使没有网络，系统也能显示上次同步的时间
     // 注意：RTC 存的是本地时间（CST+8），mktime 会根据已设置的时区转成 epoch
-    struct tm ti;
-    getRtcTime(&ti);
-    time_t t = mktime(&ti);
+    struct tm ti = {};
+    time_t t = 0;
+    if (getRtcTime(&ti)) {
+        t = mktime(&ti);
+    }
     if (t > 1700000000) { // 检查 RTC 是否有有效时间（2023年以后）
         struct timeval tv = { .tv_sec = t, .tv_usec = 0 };
         settimeofday(&tv, NULL);
@@ -81,13 +84,21 @@ void SensorManager::initRTC() {
 }
 
 void SensorManager::syncNtpTime() {
+    // 防重入：多个任务同时调用会互相 deinit 对方的 SNTP 会话，导致同步失败
+    static std::mutex s_ntp_mutex;
+    std::lock_guard<std::mutex> ntp_lock(s_ntp_mutex);
+
     // 同步前确保时区设置正确（防止被 ota.cc 的 settimeofday 等操作干扰）
     setenv("TZ", TIMEZONE_STRING, 1);
     tzset();
     
     ESP_LOGI(TAG, "正在同步 NTP 时间...");
     esp_sntp_config_t config = ESP_NETIF_SNTP_DEFAULT_CONFIG(NTP_SERVER);
-    esp_netif_sntp_init(&config);
+    esp_err_t init_err = esp_netif_sntp_init(&config);
+    if (init_err != ESP_OK) {
+        ESP_LOGW(TAG, "SNTP 初始化失败: %s", esp_err_to_name(init_err));
+        return;
+    }
 
     int retry = 0;
     while (esp_netif_sntp_sync_wait(pdMS_TO_TICKS(2000)) != ESP_OK && ++retry < 5) {
@@ -137,8 +148,8 @@ SensorData SensorManager::getTempHumidity() {
 static uint8_t bcd2dec(uint8_t val) { return (val >> 4) * 10 + (val & 0x0f); }
 static uint8_t dec2bcd(uint8_t val) { return ((val / 10) << 4) + (val % 10); }
 
-void SensorManager::getRtcTime(struct tm *timeinfo) {
-    if (!pcf85063_handle_) return;
+bool SensorManager::getRtcTime(struct tm *timeinfo) {
+    if (!pcf85063_handle_ || timeinfo == nullptr) return false;
     uint8_t buf[7];
     uint8_t reg = 0x04;
     if (i2c_master_transmit_receive(pcf85063_handle_, &reg, 1, buf, 7, pdMS_TO_TICKS(100)) == ESP_OK) {
@@ -149,7 +160,9 @@ void SensorManager::getRtcTime(struct tm *timeinfo) {
         timeinfo->tm_wday = bcd2dec(buf[4] & 0x07);
         timeinfo->tm_mon  = bcd2dec(buf[5] & 0x1F) - 1;
         timeinfo->tm_year = bcd2dec(buf[6]) + 100;
+        return true;
     }
+    return false;
 }
 
 void SensorManager::setRtcTime(struct tm *timeinfo) {

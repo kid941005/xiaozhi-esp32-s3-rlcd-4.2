@@ -40,11 +40,21 @@ LV_FONT_DECLARE(font_material_symbols_16_4);  // 16px 图标字体（★ ☑）
 
 // ===== 内置猫脸线稿（资源包没有 emoji 素材时的兜底图形）=====
 // 全部用 lv_obj/lv_line 画，不依赖任何图片资源；坐标按 48x48 设计，按 size 等比缩放。
-static lv_point_precise_t cf_ear_l[4];
-static lv_point_precise_t cf_ear_r[4];
-static lv_point_precise_t cf_mouth_v[2];
-static lv_point_precise_t cf_mouth_v2[3];
-static lv_point_precise_t cf_wsk[4][2];
+// lv_line_set_points 只保存指针、不拷贝点数组，因此每次调用单独分配点集，
+// 并挂到 box 的 LV_EVENT_DELETE 上释放。若用文件级 static，会让天气页(48px)与
+// 音乐页(40px)共享同一份坐标，后创建者覆盖前者，导致其中一页猫脸错位。
+struct CatFacePoints {
+    lv_point_precise_t ear_l[4];
+    lv_point_precise_t ear_r[4];
+    lv_point_precise_t mouth_v[2];
+    lv_point_precise_t mouth_v2[3];
+    lv_point_precise_t wsk[4][2];
+};
+
+static void CatFacePointsFree(lv_event_t *e) {
+    void *p = lv_event_get_user_data(e);
+    if (p) lv_free(p);
+}
 
 static lv_obj_t *CfLine(lv_obj_t *parent, lv_point_precise_t *pts, uint32_t n, int size) {
     lv_obj_t *line = lv_line_create(parent);
@@ -85,6 +95,13 @@ lv_obj_t *CreateCatFace(lv_obj_t *parent, int size) {
     lv_obj_remove_flag(box, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_remove_flag(box, LV_OBJ_FLAG_CLICKABLE);
 
+    CatFacePoints *pts = (CatFacePoints *)lv_malloc(sizeof(CatFacePoints));
+    if (pts == nullptr) {
+        ESP_LOGE("weather_ui", "猫脸点集分配失败（size=%d）", s);
+        return box;
+    }
+    lv_obj_add_event_cb(box, CatFacePointsFree, LV_EVENT_DELETE, pts);
+
     // 脸（圆）
     const int face_d = CF(34);
     lv_obj_t *face = lv_obj_create(box);
@@ -98,16 +115,16 @@ lv_obj_t *CreateCatFace(lv_obj_t *parent, int size) {
     lv_obj_align(face, LV_ALIGN_BOTTOM_MID, 0, 0);
 
     // 耳朵
-    cf_ear_l[0] = {CF(11), CF(18)};
-    cf_ear_l[1] = {CF(8), CF(3)};
-    cf_ear_l[2] = {CF(22), CF(12)};
-    cf_ear_l[3] = {CF(11), CF(18)};
-    cf_ear_r[0] = {CF(37), CF(18)};
-    cf_ear_r[1] = {CF(40), CF(3)};
-    cf_ear_r[2] = {CF(26), CF(12)};
-    cf_ear_r[3] = {CF(37), CF(18)};
-    CfLine(box, cf_ear_l, 4, s);
-    CfLine(box, cf_ear_r, 4, s);
+    pts->ear_l[0] = {CF(11), CF(18)};
+    pts->ear_l[1] = {CF(8), CF(3)};
+    pts->ear_l[2] = {CF(22), CF(12)};
+    pts->ear_l[3] = {CF(11), CF(18)};
+    pts->ear_r[0] = {CF(37), CF(18)};
+    pts->ear_r[1] = {CF(40), CF(3)};
+    pts->ear_r[2] = {CF(26), CF(12)};
+    pts->ear_r[3] = {CF(37), CF(18)};
+    CfLine(box, pts->ear_l, 4, s);
+    CfLine(box, pts->ear_r, 4, s);
 
     // 眼睛
     CfDot(box, CF(16), CF(24), CF(4), CF(4));
@@ -115,25 +132,25 @@ lv_obj_t *CreateCatFace(lv_obj_t *parent, int size) {
 
     // 鼻子 + 嘴
     CfDot(box, CF(22), CF(31), CF(4), CF(3));
-    cf_mouth_v[0] = {CF(24), CF(34)};
-    cf_mouth_v[1] = {CF(24), CF(36)};
-    CfLine(box, cf_mouth_v, 2, s);
-    cf_mouth_v2[0] = {CF(19), CF(39)};
-    cf_mouth_v2[1] = {CF(24), CF(36)};
-    cf_mouth_v2[2] = {CF(29), CF(39)};
-    CfLine(box, cf_mouth_v2, 3, s);
+    pts->mouth_v[0] = {CF(24), CF(34)};
+    pts->mouth_v[1] = {CF(24), CF(36)};
+    CfLine(box, pts->mouth_v, 2, s);
+    pts->mouth_v2[0] = {CF(19), CF(39)};
+    pts->mouth_v2[1] = {CF(24), CF(36)};
+    pts->mouth_v2[2] = {CF(29), CF(39)};
+    CfLine(box, pts->mouth_v2, 3, s);
 
     // 胡须（左右各两根）
-    cf_wsk[0][0] = {CF(9), CF(26)};
-    cf_wsk[0][1] = {CF(14), CF(27)};
-    cf_wsk[1][0] = {CF(9), CF(31)};
-    cf_wsk[1][1] = {CF(14), CF(30)};
-    cf_wsk[2][0] = {CF(39), CF(26)};
-    cf_wsk[2][1] = {CF(34), CF(27)};
-    cf_wsk[3][0] = {CF(39), CF(31)};
-    cf_wsk[3][1] = {CF(34), CF(30)};
+    pts->wsk[0][0] = {CF(9), CF(26)};
+    pts->wsk[0][1] = {CF(14), CF(27)};
+    pts->wsk[1][0] = {CF(9), CF(31)};
+    pts->wsk[1][1] = {CF(14), CF(30)};
+    pts->wsk[2][0] = {CF(39), CF(26)};
+    pts->wsk[2][1] = {CF(34), CF(27)};
+    pts->wsk[3][0] = {CF(39), CF(31)};
+    pts->wsk[3][1] = {CF(34), CF(30)};
     for (int i = 0; i < 4; i++) {
-        CfLine(box, cf_wsk[i], 2, s);
+        CfLine(box, pts->wsk[i], 2, s);
     }
 #undef CF
     return box;

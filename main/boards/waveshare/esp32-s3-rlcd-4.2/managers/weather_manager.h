@@ -1,5 +1,6 @@
 #pragma once
 #include <string>
+#include <mutex>
 #include "esp_http_client.h"
 
 // 单日预报（和风天气 3 天预报的每一天）
@@ -54,7 +55,10 @@ public:
 
     // 获取最新天气数据（线程安全，直接读取缓存）
     // 即使网络断开，也能返回上次成功获取的数据
-    WeatherData getLatestData() { return latest_data_; }
+    WeatherData getLatestData() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return latest_data_;
+    }
 
     // 设置 API 密钥和主机（从配置中读取）
     void setApiConfig(const char* key, const char* host);
@@ -87,6 +91,7 @@ public:
 
 private:
     WeatherManager();
+    mutable std::mutex mutex_;   // 保护 latest_data_：多任务并发读写 std::string 会 UB
     WeatherData latest_data_;
 
     // API 配置
@@ -110,6 +115,8 @@ private:
     static esp_err_t http_event_handler(esp_http_client_event_t *evt);
     void parseWeatherJson(const char* json_data);
 
+    // 通用 HTTP(S) GET：把响应体原始字节写入 out（verify_tls=false 时不校验证书）
+    bool httpGetRaw(const std::string& url, int timeout_ms, bool verify_tls, std::string& out);
     // 通用 HTTPS GET：成功时把响应体（自动处理 gzip）写入 out
     bool httpGetJson(const std::string& url, std::string& out, int timeout_ms);
 

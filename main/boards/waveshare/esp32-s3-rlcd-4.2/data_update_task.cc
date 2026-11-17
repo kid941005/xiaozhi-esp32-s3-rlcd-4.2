@@ -182,6 +182,16 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
         // 记录本轮是否分钟变了（备忘闹钟检查也要用）
         bool minute_changed = (timeinfo.tm_min != self->last_min_);
         
+        // ===== 系统信息滚动超时自动恢复（防止标志置位后 UI 永久停更）=====
+        if (self->PollSystemInfoTimeout()) {
+            {
+                DisplayLockGuard lock(self);
+                lv_anim_delete(self->GetChatStatusLabel(), nullptr);
+            }
+            self->ClearChatMessages();
+            ESP_LOGI(TAG, "系统信息滚动超时，恢复常规 UI");
+        }
+
         // ===== UI 更新（每秒）=====
         // 🔑 如果正在显示系统信息滚动，跳过整个 UI 更新块（避免锁竞争）
         if (!self->showing_system_info_) {
@@ -194,9 +204,11 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                 // 正常每秒循环 drift ≈ 1s，如果绝对值 > 7200s（2小时），肯定异常
                 if (drift < -7200 || drift > 7200) {
                     ESP_LOGW(TAG, "系统时间被篡改（偏差 %ld 秒），从 RTC 恢复", drift);
-                    struct tm rtc_tm;
-                    SensorManager::getInstance().getRtcTime(&rtc_tm);
-                    time_t rtc_epoch = mktime(&rtc_tm);
+                    struct tm rtc_tm = {};
+                    time_t rtc_epoch = 0;
+                    if (SensorManager::getInstance().getRtcTime(&rtc_tm)) {
+                        rtc_epoch = mktime(&rtc_tm);
+                    }
                     if (rtc_epoch > 1700000000) {
                         struct timeval tv = { .tv_sec = rtc_epoch, .tv_usec = 0 };
                         settimeofday(&tv, NULL);
@@ -273,6 +285,12 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                             cJSON *memo_item = cJSON_GetArrayItem(memo_arr, mi);
                             cJSON *mt = cJSON_GetObjectItem(memo_item, "t");
                             cJSON *mc = cJSON_GetObjectItem(memo_item, "c");
+                            cJSON *mtype = cJSON_GetObjectItem(memo_item, "type");
+                            // MCP 待办（type=todo）与手动备忘共用 memo/items，闹钟只处理手动备忘
+                            if (mtype && cJSON_IsString(mtype) && mtype->valuestring &&
+                                strcmp(mtype->valuestring, "todo") == 0) {
+                                continue;
+                            }
                             
                             // 🔍 调试：打印每条备忘的时间
                             if (mt && mt->valuestring) {
@@ -311,6 +329,8 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                             ESP_LOGI(TAG, "✅ 已过期备忘已自动删除");
                         }
                         cJSON_Delete(memo_arr);
+                    } else if (memo_arr) {
+                        cJSON_Delete(memo_arr);   // 不是数组也要释放，避免 cJSON 泄漏
                     }
                 }
             }
