@@ -204,10 +204,11 @@ void LvglDisplay::UpdateStatusBar(bool update_all) {
         }
 
         // Update icon if mute state changes
-        if (codec->output_volume() == 0 && !muted_) {
+        const bool should_mute = codec->muted() || codec->output_volume() == 0;
+        if (should_mute && !muted_) {
             muted_ = true;
             lv_label_set_text(mute_label_, MATERIAL_SYMBOLS_VOLUME_OFF);
-        } else if (codec->output_volume() > 0 && muted_) {
+        } else if (!should_mute && muted_) {
             muted_ = false;
             lv_label_set_text(mute_label_, "");
         }

@@ -30,6 +30,9 @@ public:
     virtual ~AudioCodec();
     
     virtual void SetOutputVolume(int volume);
+    // 静音只影响硬件输出，不修改用户音量（NVS 仍保留用户设定）
+    virtual void SetMute(bool mute);
+    virtual void ApplyOutputVolume(int volume);
     virtual void SetInputGain(float gain);
     virtual void EnableInput(bool enable);
     virtual void EnableOutput(bool enable);
@@ -45,6 +48,7 @@ public:
     inline int input_channels() const { return input_channels_; }
     inline int output_channels() const { return output_channels_; }
     inline int output_volume() const { return output_volume_; }
+    inline bool muted() const { return muted_; }
     inline float input_gain() const { return input_gain_; }
     inline bool input_enabled() const { return input_enabled_; }
     inline bool output_enabled() const { return output_enabled_; }
@@ -62,6 +66,7 @@ protected:
     int input_channels_ = 1;
     int output_channels_ = 1;
     int output_volume_ = 50;
+    bool muted_ = false;
     float input_gain_ = 0.0;
 
     virtual int Read(int16_t* dest, int samples) = 0;

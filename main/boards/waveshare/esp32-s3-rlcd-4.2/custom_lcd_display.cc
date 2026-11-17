@@ -34,6 +34,7 @@
 #include "managers/power_manager.h"
 #include "material_symbols.h"
 #include "ui_assets.h"
+#include "managers/todo_mcp_client.h"
 
 static const char *TAG = "CustomDisplay";
 
@@ -842,6 +843,8 @@ void CustomLcdDisplay::SwitchToMusicPage() {
         ApplyDisplayMode();
         ESP_LOGI(TAG, "自动切换到音乐页");
     }
+    // 进入音乐页时立即向飞牛 MCP 拉一次 music_status（下一次轮询会提前唤醒）
+    TodoMcpClient::GetInstance().RequestRefresh();
 }
 
 void CustomLcdDisplay::SwitchToWeatherPage() {

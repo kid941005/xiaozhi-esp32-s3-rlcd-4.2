@@ -49,10 +49,25 @@ void AudioCodec::Start() {
 
 void AudioCodec::SetOutputVolume(int volume) {
     output_volume_ = volume;
-    ESP_LOGI(TAG, "Set output volume to %d", output_volume_);
-    
+    ESP_LOGI(TAG, "Set output volume to %d (muted=%d)", output_volume_, muted_);
+
     Settings settings("audio", true);
     settings.SetInt("output_volume", output_volume_);
+    ApplyOutputVolume(muted_ ? 0 : output_volume_);
+}
+
+void AudioCodec::SetMute(bool mute) {
+    if (muted_ == mute) {
+        return;
+    }
+    muted_ = mute;
+    ESP_LOGI(TAG, "Set mute to %s (volume=%d)", mute ? "true" : "false", output_volume_);
+    ApplyOutputVolume(muted_ ? 0 : output_volume_);
+}
+
+void AudioCodec::ApplyOutputVolume(int volume) {
+    // 默认编解码器没有独立硬件音量接口，由子类覆写。
+    (void)volume;
 }
 
 void AudioCodec::SetInputGain(float gain) {

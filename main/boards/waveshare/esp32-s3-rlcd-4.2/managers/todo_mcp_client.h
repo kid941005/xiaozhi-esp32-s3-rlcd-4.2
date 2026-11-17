@@ -31,6 +31,11 @@ public:
     void SetUrl(const std::string& url);
     std::string GetUrl();
 
+    // 最近一次 music_status 的元数据（飞牛音乐 MCP）。音乐页空闲时用于显示上次播放。
+    std::string GetLastMusicTitle();
+    std::string GetLastMusicArtist();
+    bool ConsumeMusicUpdated();
+
 private:
     TodoMcpClient() = default;
     ~TodoMcpClient() = default;
@@ -43,12 +48,16 @@ private:
     // 一条长连接内的全部拉取，返回时连接已不可用
     void RunSession(const std::string& url);
     bool ApplyPayload(const std::string& payload);
+    bool ApplyMusicStatusPayload(const std::string& payload);
     static void TaskEntry(void* arg);
 
     EventGroupHandle_t event_group_ = nullptr;
     std::function<void()> on_updated_;
     std::mutex mutex_;
     std::string msg_reply_;
+    std::string music_title_;
+    std::string music_artist_;
+    bool music_updated_ = false;
     int pending_id_ = 0;
     volatile bool broken_ = false;
 };

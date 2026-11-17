@@ -26,6 +26,7 @@
 #include "managers/sensor_manager.h"
 #include "managers/weather_manager.h"
 #include "managers/lunar_calendar.h"
+#include "managers/todo_mcp_client.h"
 #include "date_utils.h"
 #include "ui_assets.h"
 // 敏感配置（天气 API Key 等）不入库：有 secret_config.h 就用，没有就用默认值
@@ -203,6 +204,18 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
         if (!self->showing_system_info_) {
             DisplayLockGuard lock(self);
 
+            // 音乐页空闲时，用飞牛 MCP 的 music_status 元数据回填歌名/歌手；
+            // 正在播放时由 PlayMusicFromUrl/歌词任务接管，避免覆盖实时信息。
+            if (self->IsMusicMode() && !Application::GetInstance().IsMusicPlaying() &&
+                TodoMcpClient::GetInstance().ConsumeMusicUpdated()) {
+                if (self->music_title_label_ != nullptr && self->music_artist_label_ != nullptr) {
+                    lv_label_set_text(self->music_title_label_,
+                                      TodoMcpClient::GetInstance().GetLastMusicTitle().c_str());
+                    lv_label_set_text(self->music_artist_label_,
+                                      TodoMcpClient::GetInstance().GetLastMusicArtist().c_str());
+                }
+            }
+
             // 时间跳变保护：NTP 同步后，如果系统 epoch 被外部改了（偏差>2小时），
             // 从硬件 RTC 恢复正确时间
             if (time_synced && self->last_valid_epoch_ > 0) {
@@ -349,6 +362,7 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
         // 🔑 如果正在显示系统信息滚动，跳过 UI 更新（避免锁竞争）
         if (!self->showing_system_info_) {
             DisplayLockGuard lock(self);
+
             static uint32_t last_noncritical_ui_update_ms = 0;
             const bool allow_noncritical_update =
                 !in_audio_session ||

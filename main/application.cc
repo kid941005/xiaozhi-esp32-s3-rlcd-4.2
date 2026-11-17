@@ -36,6 +36,29 @@ struct MusicPlaybackTaskArgs {
     std::string artist;
     std::string lyric_url;
 };
+
+// LRCLIB 查询参数需要 percent-encoding（UTF-8 按字节转义）
+std::string UrlEncode(const std::string& text) {
+    static const char* hex = "0123456789ABCDEF";
+    std::string out;
+    out.reserve(text.size() * 3);
+    for (unsigned char c : text) {
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+            c == '-' || c == '_' || c == '.' || c == '~') {
+            out.push_back(static_cast<char>(c));
+        } else {
+            out.push_back('%');
+            out.push_back(hex[(c >> 4) & 0x0F]);
+            out.push_back(hex[c & 0x0F]);
+        }
+    }
+    return out;
+}
+
+std::string BuildLrclibUrl(const std::string& title, const std::string& artist) {
+    return "https://lrclib.net/api/get?artist_name=" + UrlEncode(artist) +
+           "&track_name=" + UrlEncode(title);
+}
 }  // namespace
 
 
@@ -94,7 +117,11 @@ void Application::Initialize() {
     auto codec = board.GetAudioCodec();
     audio_service_.Initialize(codec);
     audio_service_.Start();
-    ESP_LOGI(TAG, "After board/audio init");
+    // 开机默认静音：只关硬件输出，不覆盖用户音量设置；用户调音量或调用 MCP 工具即可解除
+    if (codec != nullptr) {
+        codec->SetMute(true);
+    }
+    ESP_LOGI(TAG, "After board/audio init (startup muted)");
     SystemInfo::PrintHeapStats();
 
     AudioServiceCallbacks callbacks;
@@ -1571,13 +1598,21 @@ bool Application::PlayMusicFromUrl(const std::string& url, const std::string& ti
         UpdateMusicLyric(lyric);
     }
 
+    // 未提供歌词时，用歌名/歌手查 LRCLIB（飞牛 MCP 只给歌名/歌手/直链，不含歌词）
+    std::string effective_lyric_url = lyric_url;
+    if (lyric.empty() && effective_lyric_url.empty() && !title.empty() && title != "unknown" &&
+        !artist.empty() && artist != "unknown") {
+        effective_lyric_url = BuildLrclibUrl(title, artist);
+        ESP_LOGI(TAG, "未提供歌词，尝试 LRCLIB: %s", effective_lyric_url.c_str());
+    }
+
     auto* args = new MusicPlaybackTaskArgs();
     args->app = this;
     args->url = url;
     args->title = display_title;
     args->artist = display_artist;
-    // 优先使用直接歌词文本；如果为空则把 lyric_url 传给播放任务，让它自行拉取
-    args->lyric_url = lyric.empty() ? lyric_url : "";
+    // 优先使用直接歌词文本；如果为空则把 lyric_url（或 LRCLIB 查询地址）传给播放任务
+    args->lyric_url = lyric.empty() ? effective_lyric_url : "";
 
     BaseType_t created = xTaskCreate([](void* arg) {
         std::unique_ptr<MusicPlaybackTaskArgs> task_args(static_cast<MusicPlaybackTaskArgs*>(arg));
@@ -1623,6 +1658,53 @@ void Application::MusicPlaybackTask(std::string url, std::string title, std::str
         if (lyric_http->Open("GET", lyric_url)) {
             if (lyric_http->GetStatusCode() == 200) {
                 std::string lyric_text = lyric_http->ReadAll();
+                // LRCLIB 返回 JSON：取 syncedLyrics；没有时间轴时用 plainLyrics 生成伪 LRC
+                if (lyric_url.find("lrclib.net") != std::string::npos && !lyric_text.empty()) {
+                    cJSON* lrc_root = cJSON_Parse(lyric_text.c_str());
+                    if (lrc_root != nullptr) {
+                        cJSON* synced = cJSON_GetObjectItem(lrc_root, "syncedLyrics");
+                        cJSON* plain = cJSON_GetObjectItem(lrc_root, "plainLyrics");
+                        cJSON* duration = cJSON_GetObjectItem(lrc_root, "duration");
+                        if (cJSON_IsNumber(duration) && duration->valuedouble > 0) {
+                            lyric_total_ms = static_cast<uint32_t>(duration->valuedouble * 1000);
+                        }
+                        bool got_lyrics = false;
+                        if (cJSON_IsString(synced) && synced->valuestring != nullptr &&
+                            synced->valuestring[0] != 0) {
+                            lyric_text = synced->valuestring;
+                            got_lyrics = true;
+                        } else if (cJSON_IsString(plain) && plain->valuestring != nullptr &&
+                                   plain->valuestring[0] != 0) {
+                            std::string plain_text = plain->valuestring;
+                            lyric_text.clear();
+                            size_t plain_pos = 0;
+                            int fake_sec = 0;
+                            while (plain_pos < plain_text.size()) {
+                                size_t line_end2 = plain_text.find('\n', plain_pos);
+                                if (line_end2 == std::string::npos) line_end2 = plain_text.size();
+                                std::string plain_line = plain_text.substr(plain_pos, line_end2 - plain_pos);
+                                plain_pos = line_end2 + 1;
+                                if (!plain_line.empty() && plain_line.back() == '\r') plain_line.pop_back();
+                                if (plain_line.empty()) continue;
+                                char fake_ts[32];
+                                snprintf(fake_ts, sizeof(fake_ts), "[%02d:%02d.00]", fake_sec / 60, fake_sec % 60);
+                                lyric_text += fake_ts;
+                                lyric_text += plain_line;
+                                lyric_text += "\n";
+                                fake_sec += 4;
+                            }
+                            got_lyrics = !lyric_text.empty();
+                        }
+                        if (!got_lyrics) {
+                            lyric_text.clear();
+                            ESP_LOGW(TAG, "LRCLIB 未返回可用歌词");
+                        }
+                        cJSON_Delete(lrc_root);
+                    } else {
+                        lyric_text.clear();
+                        ESP_LOGW(TAG, "LRCLIB 响应解析失败");
+                    }
+                }
                 if (!lyric_text.empty()) {
                     ESP_LOGI(TAG, "歌词拉取成功，长度=%d bytes", (int)lyric_text.size());
 
@@ -1677,7 +1759,7 @@ void Application::MusicPlaybackTask(std::string url, std::string title, std::str
                     // 按时间排序
                     std::sort(lyrics.begin(), lyrics.end(),
                               [](const LyricLine& a, const LyricLine& b) { return a.time_ms < b.time_ms; });
-                    if (!lyrics.empty()) {
+                    if (!lyrics.empty() && lyric_total_ms == 0) {
                         lyric_total_ms = std::max<uint32_t>(lyrics.back().time_ms, 1);
                     }
 

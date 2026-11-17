@@ -184,8 +184,14 @@ void BoxAudioCodec::CreateDuplexChannels(gpio_num_t mclk, gpio_num_t bclk, gpio_
 }
 
 void BoxAudioCodec::SetOutputVolume(int volume) {
-    ESP_ERROR_CHECK(esp_codec_dev_set_out_vol(output_dev_, volume));
+    // 硬件音量统一走 ApplyOutputVolume，基类会考虑静音状态
     AudioCodec::SetOutputVolume(volume);
+}
+
+void BoxAudioCodec::ApplyOutputVolume(int volume) {
+    if (output_dev_ != nullptr) {
+        ESP_ERROR_CHECK(esp_codec_dev_set_out_vol(output_dev_, volume));
+    }
 }
 
 void BoxAudioCodec::EnableInput(bool enable) {
@@ -235,7 +241,7 @@ void BoxAudioCodec::EnableOutput(bool enable) {
             .mclk_multiple = 0,
         };
         ESP_ERROR_CHECK(esp_codec_dev_open(output_dev_, &fs));
-        ESP_ERROR_CHECK(esp_codec_dev_set_out_vol(output_dev_, output_volume_));
+        ApplyOutputVolume(muted_ ? 0 : output_volume_);
     } else {
         ESP_ERROR_CHECK(esp_codec_dev_close(output_dev_));
     }

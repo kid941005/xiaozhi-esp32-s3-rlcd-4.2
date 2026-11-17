@@ -63,13 +63,17 @@ void McpServer::AddCommonTools() {
             PropertyList({Property("volume", kPropertyTypeInteger, 0, 100)}),
             [&board](const PropertyList& properties) -> ReturnValue {
                 auto codec = board.GetAudioCodec();
-                codec->SetOutputVolume(properties["volume"].value<int>());
+                int volume = properties["volume"].value<int>();
+                codec->SetOutputVolume(volume);
+                // 音量为 0 视为静音；调大音量自动解除开机静音
+                codec->SetMute(volume == 0);
                 return true;
             });
 
     AddTool("self.music.play_url",
             "Play music directly from a URL on device side. Supports MP3 stream playback. "
-            "Pass lyric_url so the device can fetch lyrics automatically; fallback to lyric text if provided.",
+            "Pass title and artist so the device can fetch synced lyrics from LRCLIB automatically; "
+            "lyric_url or lyric text takes precedence when provided.",
             PropertyList({Property("url", kPropertyTypeString),
                           Property("title", kPropertyTypeString, std::string("unknown")),
                           Property("artist", kPropertyTypeString, std::string("unknown")),

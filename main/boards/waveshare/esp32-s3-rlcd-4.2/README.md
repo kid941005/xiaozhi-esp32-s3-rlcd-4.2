@@ -62,7 +62,8 @@ idf.py build flash monitor
 - **天气（双源 + 免密钥兜底）**：地址由后端 `/xiaozhi/weather` 下发（手动配置优先，IP 定位仅兜底）；和风 QWeather 主源取实时/体感/湿度/风向风级/能见度/气压/AQI/PM2.5/三日预报/日出日落/灾害预警；失败自动回退中国天气网、Open-Meteo。时钟卡第三行只显示「地址 天气 温度」。
 - **天气详情页**：独立整页展示全部天气维度，实体键循环 / 语音 `self.disp.switch mode=detail` / HTTP `/page?p=detail` 三种进入方式。
 - **待办（MCP 自取）**：设备作为 MCP 客户端与外部接入点保持长连接，每分钟调 `list_todos`；只显示**今天**的待办，行格式「20:00 标题」；也可用 `self.todo.sync` 手动下发。
-- **音乐页**：唱片 + 歌名/歌手/三行歌词 + 进度条；顶栏左环境温湿度、中时钟、右 WiFi/电池胶囊。
+- **音乐页**：唱片 + 歌名/歌手/三行歌词 + 进度条；顶栏左环境温湿度、中时钟、右 WiFi/电池胶囊。歌名/歌手优先取飞牛 MCP `music_status` 的上次播放记录，歌词未随播放指令传入时自动从 LRCLIB 拉取同步歌词。
+- **开机静音**：启动后音频硬件音量为 0，NVS 里保存的用户音量不变；语音或 MCP 调大音量时自动解除静音。
 - **AI 对话卡**：无 emoji 素材时用内置矢量猫脸兜底，显示状态文案与情绪。
 - **屏幕截图与调试端点**：`GET /shot.bmp`（1-bit BMP）、`GET /dbg`（关键控件几何）、`GET /page?p=weather|detail|music|toggle`（远程切页）、`GET /dither?mode=&thr=`（二值化调参）。
 - **1-bit 显示优化**：默认硬阈值 112（可调），可选 Bayer4/Bayer8/带状抖动；静态文案使用 16px 1bpp 点阵字库，动态中文用 4bpp 字库。
@@ -121,6 +122,19 @@ idf.py build flash monitor
 - 底部 AI 卡 376×72 @(12,222)：40px 猫脸 + 「待命」+ 竖分隔线 + 状态文字，与天气页 AI 卡同一套（`CreateCatFace()` 定义在 `weather_ui.cc`、声明在 `ui_cat_face.h`，两页共用）。
 - **1-bit 坑**：`LV_OPA_20/40` 的低不透明度在 1-bit 屏上会被阈值直接吃掉（40% 白亮度 102 < 阈值 112 → 变黑），唱片纹路和分隔线必须用 `LV_OPA_COVER` 才看得见。
 - 字体：静态文案用 16px 1bpp 点阵（`font_puhui_16_1`），歌名/歌手/歌词/状态文字等动态中文用 `font_puhui_16_4`。
+
+### 音乐数据来源（飞牛 MCP + LRCLIB 歌词）
+
+- **歌名/歌手**：待办 MCP 客户端 `TodoMcpClient` 在每轮 `list_todos` 之后追加一次 `music_status` 调用，解析 `上一次播放：<歌名> - <歌手>（时间）`。仅当当前在音乐页且没有本地播放时，`data_update_task.cc` 才把结果写进 `music_title_label_` / `music_artist_label_`；播放中由播放任务接管，避免覆盖实时信息。切到音乐页会 `RequestRefresh()` 立即拉一次。
+- **播放**：语音或 `self.music.play_url` 传 `url/title/artist` 即进入音乐页播放；直链由飞牛 MCP 的 `music_play` 给出（15 分钟有效，播放前现取）。
+- **歌词**：`self.music.play_url` 未传 `lyric`/`lyric_url` 且歌名、歌手已知时，`Application::PlayMusicFromUrl()` 自动拼 LRCLIB 查询 URL（`https://lrclib.net/api/get?artist_name=…&track_name=…`）。`MusicPlaybackTask` 解析 `syncedLyrics`；没有时间轴时用 `plainLyrics` 按每 4 秒一行生成伪 LRC；`duration` 用作进度条总时长。
+- 飞牛网关当前没有歌词工具（`music_play` 只返回歌名/歌手/直链），因此歌词走 LRCLIB 兜底；后续网关补 `music_lyrics` 后可改为优先网关。
+
+### 开机静音
+
+- `Application::Initialize()` 在 `audio_service_.Start()` 之后调用 `codec->SetMute(true)`，硬件输出音量置 0；NVS 里的 `audio/output_volume` 保留用户上次音量，不会被写成 0。
+- 解除静音：语音调大音量或 `self.audio_speaker.set_volume` 传 `volume>0` 时自动 `SetMute(false)` 并恢复原音量；传 0 则重新静音。
+- `AudioCodec::SetOutputVolume()` 统一走 `ApplyOutputVolume(muted_ ? 0 : output_volume_)`；`BoxAudioCodec::EnableOutput(true)` 重新打开输出时也走该函数，不会绕过静音。状态栏静音图标按 `codec->muted() || output_volume()==0` 判断。
 
 ## 天气数据源（和风天气优先，免密钥兜底）
 

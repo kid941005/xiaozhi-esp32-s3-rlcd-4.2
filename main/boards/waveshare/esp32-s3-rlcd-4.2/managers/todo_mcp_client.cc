@@ -86,6 +86,15 @@ const char* kInitRequest =
 const char* kInitializedNote =
     "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}";
 
+std::string BuildMusicStatusRequest(int id) {
+    char buf[192];
+    std::snprintf(buf, sizeof(buf),
+                  "{\"jsonrpc\":\"2.0\",\"id\":%d,\"method\":\"tools/call\",\"params\":"
+                  "{\"name\":\"music_status\",\"arguments\":{}}}",
+                  id);
+    return std::string(buf);
+}
+
 std::string BuildListTodosRequest(int id) {
     char buf[256];
     std::snprintf(buf, sizeof(buf),
@@ -120,6 +129,23 @@ std::string TodoMcpClient::GetUrl() {
         SetUrl(url);
     }
     return url;
+}
+
+std::string TodoMcpClient::GetLastMusicTitle() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return music_title_;
+}
+
+std::string TodoMcpClient::GetLastMusicArtist() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return music_artist_;
+}
+
+bool TodoMcpClient::ConsumeMusicUpdated() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    bool updated = music_updated_;
+    music_updated_ = false;
+    return updated;
 }
 
 void TodoMcpClient::RequestRefresh() {
@@ -273,6 +299,27 @@ void TodoMcpClient::RunSession(const std::string& url) {
             break;
         }
 
+        // 同一会话里顺带拉一次 music_status，供音乐页空闲时显示上次播放。
+        // 失败不影响待办刷新，也不参与 consec_fail 计数。
+        pending_id_ = 3;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            msg_reply_.clear();
+        }
+        xEventGroupClearBits(event_group_, kReplyBit);
+        if (ws->Send(BuildMusicStatusRequest(pending_id_))) {
+            bits = xEventGroupWaitBits(event_group_, kReplyBit, pdTRUE, pdFALSE,
+                                       pdMS_TO_TICKS(kCallTimeoutMs));
+            if (bits & kReplyBit) {
+                std::string payload;
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    payload = msg_reply_;
+                }
+                ApplyMusicStatusPayload(payload);
+            }
+        }
+
         // 等到下一次拉取，期间网络恢复事件可以提前触发
         xEventGroupClearBits(event_group_, kRefreshBit);
         xEventGroupWaitBits(event_group_, kRefreshBit, pdTRUE, pdFALSE, pdMS_TO_TICKS(kPollMs));
@@ -382,4 +429,45 @@ bool TodoMcpClient::ApplyPayload(const std::string& payload) {
         on_updated_();
     }
     return true;
+}
+
+
+bool TodoMcpClient::ApplyMusicStatusPayload(const std::string& payload) {
+    if (payload.empty()) return false;
+    cJSON* root = cJSON_Parse(payload.c_str());
+    if (root == nullptr) return false;
+
+    cJSON* result = cJSON_GetObjectItem(root, "result");
+    cJSON* content = (result != nullptr) ? cJSON_GetObjectItem(result, "content") : nullptr;
+    cJSON* first = (content != nullptr && cJSON_IsArray(content)) ? cJSON_GetArrayItem(content, 0) : nullptr;
+    cJSON* text = (first != nullptr) ? cJSON_GetObjectItem(first, "text") : nullptr;
+
+    bool changed = false;
+    if (text != nullptr && cJSON_IsString(text) && text->valuestring != nullptr) {
+        const std::string raw = text->valuestring;
+        const std::string prefix = "上一次播放：";
+        if (raw.rfind(prefix, 0) == 0) {
+            std::string rest = raw.substr(prefix.size());
+            size_t cut = rest.find("（");
+            if (cut == std::string::npos) cut = rest.find('(');
+            if (cut != std::string::npos) rest = rest.substr(0, cut);
+            size_t dash = rest.find(" - ");
+            if (dash != std::string::npos) {
+                std::string title = rest.substr(0, dash);
+                std::string artist = rest.substr(dash + 3);
+                std::lock_guard<std::mutex> lock(mutex_);
+                if (title != music_title_ || artist != music_artist_) {
+                    music_title_ = title;
+                    music_artist_ = artist;
+                    music_updated_ = true;
+                    changed = true;
+                }
+            }
+        }
+    }
+    cJSON_Delete(root);
+    if (changed) {
+        ESP_LOGI(TAG, "音乐元数据: %s - %s", GetLastMusicTitle().c_str(), GetLastMusicArtist().c_str());
+    }
+    return changed;
 }
