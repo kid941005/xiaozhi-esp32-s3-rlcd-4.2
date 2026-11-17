@@ -116,14 +116,24 @@ private:
     lv_obj_t *music_ai_face_ = nullptr;       // 音乐页面：内置猫脸（无 emoji 素材时兜底）
 
     // ===== 天气详情页（detail_ui.cc）=====
+    // 信息层级：当前天气 hero（大温度 + 天气徽标 + 今日温差）> 体感/湿度/风 > 指标条 > 三日预报 > 日出日落/预警
     lv_obj_t *detail_page_ = nullptr;
-    lv_obj_t *d_city_label_ = nullptr;        // 标题行右侧：城市名
+    lv_obj_t *d_city_label_ = nullptr;        // 标题行：城市名
     lv_obj_t *d_update_label_ = nullptr;      // 标题行最右：更新时间
-    lv_obj_t *d_cell_value_label_[6] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
-    lv_obj_t *d_aqi_label_ = nullptr;         // AQI 条
-    lv_obj_t *d_forecast_label_[3] = {nullptr, nullptr, nullptr};  // 今天/明天/后天
+    lv_obj_t *d_hero_cond_badge_ = nullptr;   // 天气徽标底（黑底白字）
+    lv_obj_t *d_hero_cond_label_ = nullptr;   // 天气现象：阴/多云/小雨
+    lv_obj_t *d_hero_temp_label_ = nullptr;   // 当前温度大字：16°
+    lv_obj_t *d_hero_range_label_ = nullptr;  // 今日 10~17°C
+    lv_obj_t *d_hero_extra_value_[3] = {nullptr, nullptr, nullptr};  // 体感/湿度/风
+    lv_obj_t *d_metric_value_[3] = {nullptr, nullptr, nullptr};      // AQI/能见度/气压
+    lv_obj_t *d_metric_sub_[3] = {nullptr, nullptr, nullptr};        // AQI 的 PM2.5，其余留空
+    lv_obj_t *d_fc_day_[3] = {nullptr, nullptr, nullptr};            // 今天/明天/后天
+    lv_obj_t *d_fc_text_[3] = {nullptr, nullptr, nullptr};           // 白天天气
+    lv_obj_t *d_fc_high_[3] = {nullptr, nullptr, nullptr};           // 最高温（大字）
+    lv_obj_t *d_fc_low_[3] = {nullptr, nullptr, nullptr};            // 最低温（小字 /10°）
     lv_obj_t *d_sun_label_ = nullptr;         // 日出日落
-    lv_obj_t *d_warn_label_ = nullptr;        // 预警（无预警显示占位文案）
+    lv_obj_t *d_warn_card_ = nullptr;         // 预警条底（有预警时反色）
+    lv_obj_t *d_warn_label_ = nullptr;        // 预警文案
 
     // 图片图标（不能用基类的 label，因为我们用 lv_image 而不是 Font Awesome 文字）
     lv_obj_t *wifi_icon_img_ = nullptr;
