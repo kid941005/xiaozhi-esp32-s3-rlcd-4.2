@@ -122,7 +122,8 @@ private:
     lv_obj_t *d_update_label_ = nullptr;      // 标题行最右：更新时间
     lv_obj_t *d_hero_cond_badge_ = nullptr;   // 天气徽标底（黑底白字）
     lv_obj_t *d_hero_cond_label_ = nullptr;   // 天气现象：阴/多云/小雨
-    lv_obj_t *d_hero_temp_label_ = nullptr;   // 当前温度大字：16°
+    lv_obj_t *d_hero_temp_label_ = nullptr;   // 当前温度数字（大字）
+    lv_obj_t *d_hero_unit_label_ = nullptr;   // 温度单位 °C
     lv_obj_t *d_hero_range_label_ = nullptr;  // 今日 10~17°C
     lv_obj_t *d_hero_extra_value_[3] = {nullptr, nullptr, nullptr};  // 体感/湿度/风
     lv_obj_t *d_metric_value_[3] = {nullptr, nullptr, nullptr};      // AQI/能见度/气压

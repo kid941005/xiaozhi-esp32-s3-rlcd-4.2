@@ -226,7 +226,7 @@ NVS weather/city（手动配置 self.weather.set_city）
 ┌──────────────────────────────────────────────┐
 │ ◉ 天气 常州                        🕘 更新 09:53│
 │ ┌────────────────────┐ ┌───────────────────┐ │
-│ │ [雾] 11°           │ │ 🌡 体感       7°C │ │
+│ │ [雾] 11 °C         │ │ 🌡 体感       7°C │ │
 │ │ 今日 2~14°C        │ │ ☁ 湿度       78% │ │
 │ │                    │ │ ➤ 风     西风 4级 │ │
 │ └────────────────────┘ └───────────────────┘ │
@@ -246,7 +246,7 @@ NVS weather/city（手动配置 self.weather.set_city）
 ```
 
 - 几何：页边距 8、间距 6；标题行 y=6 h=18；Hero y=30，左卡宽 206（竖屏 160）/高 94（竖屏 112），右侧为体感/湿度/风三行并带 1px 分隔线；指标条 y=130 h=44；三日预报 y=180 h=66；底栏 `y=屏高-8-32` h=32（横屏日出卡宽 190，预警卡占剩余宽度；竖屏日出/预警各占整行）。竖屏把 `屏高-固定高度` 均摊到 4 个间距。
-- 主次：Hero 用 `alibaba_puhui_48` 大温度 + 黑底白字天气徽标 + 今日温差；体感/湿度/风为 16px 次级信息；AQI/能见度/气压 44px 指标条；预报最高温 24px、最低温 14px；预警非空时黑底白字白框反色。
+- 主次：Hero 用 `alibaba_puhui_48` 大温度数字 + 独立 `°C` 单位（`alibaba_puhui_24`，与数字间隔 6px、与天气徽标间隔 10px）+ 黑底白字天气徽标 + 今日温差；体感/湿度/风为 16px 次级信息；AQI/能见度/气压 44px 指标条；预报最高温 24px、最低温 14px；预警非空时黑底白字白框反色。
 - 图标：`font_material_symbols_16_4`（`material_symbols.h`）。标题 `LOCATION_ON`/`SCHEDULE`；Hero 依次 `DEVICE_THERMOSTAT`/`CLOUD_DOWNLOAD`/`NAVIGATION`；指标 `FAVORITE`/`EYEGLASSES`/`PROGRESS_ACTIVITY`（AQI 卡右上角已有 PM2.5 数值，标题缩为「AQI」且不放图标，避免与 PM2.5 重叠）；日出 `BRIGHTNESS_6`；预警 `WARNING`。
 - 字体：`alibaba_puhui_24/48` 是 1bpp 但字符集只覆盖常用天气字与数字，仅用于纯温度数字；动态中文（天气现象、城市、预警、能见度单位外的说明）统一用全字符集 `font_puhui_16_4`（16px/4bpp）或 `font_puhui_14_1`（14px/1bpp）；静态短文案可用 `font_puhui_16_1`。`font_puhui_16_1` 仅 447 字，缺「海/风/黄」等，**不能用于预警等动态中文**。竖屏 3 位数温度自动降为 24px 防裁切。
 - 进入方式：**实体按键循环** 天气 → 天气详情 → 音乐 → 天气（`CycleDisplayMode()`）；MCP 工具 `self.disp.switch` 参数 `mode=detail`；调试端点 `GET /page?p=detail`。

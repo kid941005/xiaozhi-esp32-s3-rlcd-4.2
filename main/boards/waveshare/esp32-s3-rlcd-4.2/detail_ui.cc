@@ -180,10 +180,15 @@ void CustomLcdDisplay::SetupWeatherDetailUI() {
     d_hero_temp_label_ = lv_label_create(hero_left);
     lv_obj_set_style_text_font(d_hero_temp_label_, &alibaba_puhui_48, 0);
     lv_obj_set_style_text_color(d_hero_temp_label_, lv_color_black(), 0);
-    lv_obj_set_pos(d_hero_temp_label_, 60, 1);
-    lv_obj_set_width(d_hero_temp_label_, kHeroLeftW - 64);
-    lv_label_set_long_mode(d_hero_temp_label_, LV_LABEL_LONG_CLIP);
+    lv_obj_set_pos(d_hero_temp_label_, 60, 0);
     lv_label_set_text(d_hero_temp_label_, "--");
+
+    // 温度单位独立成标签，与数字留出明确间距，避免数字与 °C 挤在一起
+    d_hero_unit_label_ = lv_label_create(hero_left);
+    lv_obj_set_style_text_font(d_hero_unit_label_, &alibaba_puhui_24, 0);
+    lv_obj_set_style_text_color(d_hero_unit_label_, lv_color_black(), 0);
+    lv_label_set_text(d_hero_unit_label_, "°C");
+    lv_obj_align_to(d_hero_unit_label_, d_hero_temp_label_, LV_ALIGN_OUT_RIGHT_TOP, 6, 10);
 
     d_hero_range_label_ = MakeLabel(hero_left, &font_puhui_14_1, lv_color_black(),
                                     10, kHeroH - 24, "今日 --~--°C");
@@ -395,21 +400,26 @@ void CustomLcdDisplay::RefreshWeatherDetail() {
     const bool small_temp = UI_PORTRAIT && wd.temp.size() > 2;
     lv_obj_set_style_text_font(d_hero_temp_label_,
                                small_temp ? &alibaba_puhui_24 : &alibaba_puhui_48, 0);
-    const int temp_x = 8 + badge_w + 6;
-    lv_obj_set_pos(d_hero_temp_label_, temp_x, small_temp ? 20 : 1);
-    lv_obj_set_width(d_hero_temp_label_, kHeroLeftW - temp_x - 4);
+    lv_obj_set_style_text_font(d_hero_unit_label_,
+                               small_temp ? &font_puhui_14_1 : &alibaba_puhui_24, 0);
+    // 与天气徽标保持 10px 间距，数字和单位分开排版
+    const int temp_x = 8 + badge_w + 10;
+    lv_obj_set_pos(d_hero_temp_label_, temp_x, small_temp ? 16 : 0);
     if (wd.temp.empty()) {
         lv_label_set_text(d_hero_temp_label_, "--");
+        lv_label_set_text(d_hero_unit_label_, "");
     } else {
-        snprintf(buf, sizeof(buf), "%s°", wd.temp.c_str());
-        lv_label_set_text(d_hero_temp_label_, buf);
+        lv_label_set_text(d_hero_temp_label_, wd.temp.c_str());
+        lv_label_set_text(d_hero_unit_label_, "°C");
     }
+    lv_obj_align_to(d_hero_unit_label_, d_hero_temp_label_, LV_ALIGN_OUT_RIGHT_TOP,
+                    small_temp ? 3 : 6, small_temp ? 6 : 10);
 
     if (wd.daily_count > 0) {
-        snprintf(buf, sizeof(buf), "今日 %s~%s°C",
+        snprintf(buf, sizeof(buf), "今日 %s ~ %s°C",
                  nz(wd.daily[0].temp_min, "--"), nz(wd.daily[0].temp_max, "--"));
     } else {
-        snprintf(buf, sizeof(buf), "今日 --~--°C");
+        snprintf(buf, sizeof(buf), "今日 -- ~ --°C");
     }
     lv_label_set_text(d_hero_range_label_, buf);
 
