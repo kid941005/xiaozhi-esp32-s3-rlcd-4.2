@@ -1,4 +1,4 @@
-# ESP32-S3-RLCD-4.2 · 小智 AI 桌面终端
+# xiaozhi-esp32-s3-rlcd-4.2
 
 基于 [xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) 的微雪 **ESP32-S3-RLCD-4.2** 定制固件。
 

@@ -1,4 +1,4 @@
-# An MCP-based Chatbot
+# xiaozhi-esp32-s3-rlcd-4.2
 
 （中文 | [English](README.md) | [日本語](README_ja.md)）
 

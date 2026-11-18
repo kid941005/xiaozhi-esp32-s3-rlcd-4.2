@@ -1,4 +1,4 @@
-# MCP ベースのチャットボット
+# xiaozhi-esp32-s3-rlcd-4.2
 
 （日本語 | [中文](README_zh.md) | [English](README.md)）
 
