@@ -170,12 +170,12 @@ void CustomLcdDisplay::SetupWeatherUI() {
     // 64px 字体的数字实际墨高约 44px，39x50 翻页卡内上下各留约 3px；
     // 已按最新实机截图复核无裁切。若后续换字体或改卡高，需重新按墨高（不是 font_size）复核。
     const lv_font_t *font_clock  = &alibaba_black_64;
-    const lv_font_t *font_ai     = &font_puhui_16_1_full;   // 7415 常用汉字
+    const lv_font_t *font_ai     = &font_puhui_16_1_full;   // 6656 字形全字库
     const lv_font_t *font_tiny   = &font_puhui_14_1;   // 14px
     // 静态文案（内容固定的控件）用 16px 1bpp 点阵字体：字形本身就是二值点阵，
     // 不会像 4bpp 字体那样被 flush 阈值切出毛边，RLCD 上更清晰。
     const lv_font_t *font_static = &font_puhui_16_1;
-    const lv_font_t *font_icon   = &font_material_symbols_16_4;
+    const lv_font_t *font_icon   = &font_material_symbols_16_1;
 
     // ===== 状态栏（右上角白底胶囊：WiFi + 电池 + 电量）=====
     // 与音乐页共用 BuildStatusCapsule()，仅尺寸/对齐/字体不同。

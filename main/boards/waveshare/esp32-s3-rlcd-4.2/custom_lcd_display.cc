@@ -434,7 +434,7 @@ void CustomLcdDisplay::RefreshMemoDisplayInternal() {
         lv_obj_set_flex_align(head, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
         lv_obj_t *icon = lv_label_create(head);
-        lv_obj_set_style_text_font(icon, &font_material_symbols_16_4, 0);
+        lv_obj_set_style_text_font(icon, &font_material_symbols_16_1, 0);
         lv_obj_set_style_text_color(icon, lv_color_black(), 0);
         lv_label_set_text(icon, MATERIAL_SYMBOLS_STAR);
 

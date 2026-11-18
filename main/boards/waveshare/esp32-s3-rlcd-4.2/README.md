@@ -93,7 +93,7 @@ idf.py build flash monitor
 - 待办卡：标题「待办」+ 右上 ☑ ★ 两个 material symbols 图标 + 分隔线 + 列表容器 `memo_rows_`（`LV_FLEX_FLOW_COLUMN`，位置 `(12,44)`、尺寸 `memo_rows_w_ × (todo_h-50)`，`pad_row=3`）。**每项占两行**：第一行「★ + 时间」（时间用 16px 1bpp 字库，纯 ASCII；全天待办显示「全天」，无时间显示 `--:--`），第二行「事项」文本（`font_puhui_16_1_full`，`text_line_space=1`，占满整行宽自动换行，**`max_height=42` + `LV_LABEL_LONG_DOT` 最多两行、超出显示省略号**）。**项与项之间画一条虚线**（`lv_line` + `line_width=2` + `line_dash_width=5` / `line_dash_gap=4`，点数组存 `memo_dash_pts_[6][2]` 成员，因为 `lv_line` 不拷贝点数组；最后一项之后不画）。最多建 6 项，建完 `lv_obj_update_layout` 量出实际高度后裁剪，放不下的折成「…还有N条」（实测可用高度 199px，单行项 45px、两行项 66px，通常可放 3 项）。
 - 待办数据来自 NVS `memo/items`（JSON 数组，字段 `t`=时间行如 `13:00`／`全天`，`c`=事项内容），由 MCP 工具 `self.memo.add / list / done / clear` 增删，或由 `self.todo.sync` 整批覆盖；`RefreshMemoDisplayInternal()` 每次清空容器重建行。
 - AI 卡：左侧 56px 表情区（48px 表情图 + 情绪标签），竖线分隔（距左边 70px），右侧状态文字左对齐垂直居中；卡片高度 < 90px 时自动切紧凑模式（表情 30px、14px 字体）。
-- 字体：中文文案统一用 `font_puhui_16_1_full`（16px/1bpp，6656 字形，缺字回退 `font_puhui_14_1`）和 `font_puhui_14_1`；图标用 `font_material_symbols_16_4`（`material_symbols.h` 的 `MATERIAL_SYMBOLS_STAR` / `MATERIAL_SYMBOLS_CHECK_CIRCLE`）；大字时间用 `alibaba_black_64`。**注意**：`alibaba_puhui_16` 字符集不含「环境」，顶栏必须用 `font_puhui_16_1_full`，否则整词不显示。
+- 字体：中文文案统一用 `font_puhui_16_1_full`（16px/1bpp，6656 字形，缺字回退 `font_puhui_14_1`）和 `font_puhui_14_1`；图标用 `font_material_symbols_16_1`（16px/1bpp 点阵，`material_symbols.h` 的 `MATERIAL_SYMBOLS_STAR` / `MATERIAL_SYMBOLS_CHECK_CIRCLE`）；大字时间用 `alibaba_black_64`。**注意**：`alibaba_puhui_16` 字符集不含「环境」，顶栏必须用 `font_puhui_16_1_full`，否则整词不显示。
 - 竖屏 300×400 为整宽纵向堆叠：时钟卡 280×140 → 待办卡 280×138 → AI 卡 280×55。
 
 **微调位置**（都在 `weather_ui.cc` 的卡片几何块）：改 `clock_h` / `todo_h` / `ai_h` 可调整三张卡比例；`day_label_` / 翻页时钟 / `weather_label_` 的 `lv_obj_align` / `flip_y` 控制卡内三行位置；翻页卡片尺寸是 `flip_card_w`(39) / `flip_card_h`(50) / `flip_gap`(3) / `colon_w`(10)；`lunar_label_` 的 `-128` 是胶囊左侧的让位量；待办行间距是 `memo_rows_` 的 `lv_obj_set_style_pad_row`。
@@ -247,7 +247,7 @@ NVS weather/city（手动配置 self.weather.set_city）
 
 - 几何：页边距 8、间距 6；标题行 y=6 h=18；Hero y=30，左卡宽 206（竖屏 160）/高 94（竖屏 112），右侧为体感/湿度/风三行并带 1px 分隔线；指标条 y=130 h=44；三日预报 y=180 h=66；底栏 `y=屏高-8-32` h=32（横屏日出卡宽 190，预警卡占剩余宽度；竖屏日出/预警各占整行）。竖屏把 `屏高-固定高度` 均摊到 4 个间距。
 - 主次：Hero 用 `alibaba_puhui_48` 大温度数字 + 独立 `°C` 单位（`alibaba_puhui_24`，与数字间隔 6px、与天气徽标间隔 10px）+ 黑底白字天气徽标 + 今日温差；体感/湿度/风为 16px 次级信息；AQI/能见度/气压 44px 指标条；预报最高温 24px、最低温 14px；预警非空时黑底白字白框反色。
-- 图标：`font_material_symbols_16_4`（`material_symbols.h`）。标题 `LOCATION_ON`/`SCHEDULE`；Hero 依次 `DEVICE_THERMOSTAT`/`CLOUD_DOWNLOAD`/`NAVIGATION`；指标 `FAVORITE`/`EYEGLASSES`/`PROGRESS_ACTIVITY`（AQI 卡右上角已有 PM2.5 数值，标题缩为「AQI」且不放图标，避免与 PM2.5 重叠）；日出 `BRIGHTNESS_6`；预警 `WARNING`。
+- 图标：`font_material_symbols_16_1`（16px/1bpp 点阵，`material_symbols.h`）。标题 `LOCATION_ON`/`SCHEDULE`；Hero 依次 `DEVICE_THERMOSTAT`/`CLOUD_DOWNLOAD`/`NAVIGATION`；指标 `FAVORITE`/`EYEGLASSES`/`PROGRESS_ACTIVITY`（AQI 卡右上角已有 PM2.5 数值，标题缩为「AQI」且不放图标，避免与 PM2.5 重叠）；日出 `BRIGHTNESS_6`；预警 `WARNING`。
 - 字体：`alibaba_puhui_24/48` 是 1bpp 但字符集只覆盖常用天气字与数字，仅用于纯温度数字；动态中文（天气现象、城市、预警、能见度单位外的说明）统一用全字符集 `font_puhui_16_1_full`（16px/1bpp，6656 字形）或 `font_puhui_14_1`（14px/1bpp）；静态短文案可用 `font_puhui_16_1`。`font_puhui_16_1` 仅 447 字，缺「海/风/黄」等，**不能用于预警等动态中文**。竖屏 3 位数温度自动降为 24px 防裁切。
 - 进入方式：**实体按键循环** 天气 → 天气详情 → 音乐 → 天气（`CycleDisplayMode()`）；MCP 工具 `self.disp.switch` 参数 `mode=detail`；调试端点 `GET /page?p=detail`。
 - 刷新：`RefreshWeatherDetail()` 由 `data_update_task` 在详情页激活时调用，内部用整串数据做变更检测，没变就不碰控件（1-bit 屏重绘很贵）。

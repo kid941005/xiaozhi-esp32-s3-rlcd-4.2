@@ -76,10 +76,10 @@ lv_obj_t* MakeLabel(lv_obj_t* parent, const lv_font_t* font, lv_color_t color,
     return label;
 }
 
-// 图标标签（Material Symbols，16px 4bpp）
+// 图标标签（Material Symbols，16px 1bpp 点阵）
 lv_obj_t* MakeIcon(lv_obj_t* parent, const char* symbol, lv_color_t color,
                    int x, int y) {
-    return MakeLabel(parent, &font_material_symbols_16_4, color, x, y, symbol);
+    return MakeLabel(parent, &font_material_symbols_16_1, color, x, y, symbol);
 }
 
 // 1px 分隔线
