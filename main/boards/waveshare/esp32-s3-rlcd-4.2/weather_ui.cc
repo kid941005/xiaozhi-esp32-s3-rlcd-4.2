@@ -170,7 +170,7 @@ void CustomLcdDisplay::SetupWeatherUI() {
     // 64px 字体的数字实际墨高约 44px，39x50 翻页卡内上下各留约 3px；
     // 已按最新实机截图复核无裁切。若后续换字体或改卡高，需重新按墨高（不是 font_size）复核。
     const lv_font_t *font_clock  = &alibaba_black_64;
-    const lv_font_t *font_ai     = &font_puhui_16_4;   // 7415 常用汉字
+    const lv_font_t *font_ai     = &font_puhui_16_1_full;   // 7415 常用汉字
     const lv_font_t *font_tiny   = &font_puhui_14_1;   // 14px
     // 静态文案（内容固定的控件）用 16px 1bpp 点阵字体：字形本身就是二值点阵，
     // 不会像 4bpp 字体那样被 flush 阈值切出毛边，RLCD 上更清晰。
@@ -184,7 +184,7 @@ void CustomLcdDisplay::SetupWeatherUI() {
 
     // ===== 左上角「环境 温度 湿度」（白字，直接在黑底上）=====
     // 静态文案用 16px 1bpp 点阵（font_static）：字形本身是二值点阵，1-bit 屏上无毛边；
-    // 若改回 4bpp（font_puhui_16_4），抗锯齿灰边会被二值化阈值切碎。
+    // 若改回 4bpp（font_puhui_16_1_full），抗锯齿灰边会被二值化阈值切碎。
     sensor_label_ = lv_label_create(screen);
     lv_obj_set_style_text_font(sensor_label_, font_static, 0);
     lv_obj_set_style_text_color(sensor_label_, lv_color_white(), 0);

@@ -443,13 +443,13 @@ void CustomLcdDisplay::RefreshMemoDisplayInternal() {
             if (static_cast<unsigned char>(*p) >= 0x80) { ascii_time = false; break; }
         }
         lv_obj_t *time_lbl = lv_label_create(head);
-        lv_obj_set_style_text_font(time_lbl, ascii_time ? &font_puhui_16_1 : &font_puhui_16_4, 0);
+        lv_obj_set_style_text_font(time_lbl, ascii_time ? &font_puhui_16_1 : &font_puhui_16_1_full, 0);
         lv_obj_set_style_text_color(time_lbl, lv_color_black(), 0);
         lv_label_set_text(time_lbl, (time_str[0] != 0) ? time_str : "--:--");
 
         // 第二行：事项文本（占满整行宽，自动换行）
         lv_obj_t *text = lv_label_create(box);
-        lv_obj_set_style_text_font(text, &font_puhui_16_4, 0);
+        lv_obj_set_style_text_font(text, &font_puhui_16_1_full, 0);
         lv_obj_set_style_text_color(text, lv_color_black(), 0);
         lv_obj_set_style_text_line_space(text, 1, 0);
         lv_obj_set_width(text, row_w);

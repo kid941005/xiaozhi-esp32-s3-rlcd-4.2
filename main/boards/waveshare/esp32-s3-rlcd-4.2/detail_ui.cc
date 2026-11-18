@@ -119,7 +119,7 @@ void CustomLcdDisplay::SetupWeatherDetailUI() {
     MakeLabel(detail_page_, &font_puhui_16_1, lv_color_white(), kPad + 20, kTitleY, "天气");
 
     d_city_label_ = lv_label_create(detail_page_);
-    lv_obj_set_style_text_font(d_city_label_, &font_puhui_16_4, 0);
+    lv_obj_set_style_text_font(d_city_label_, &font_puhui_16_1_full, 0);
     lv_obj_set_style_text_color(d_city_label_, lv_color_white(), 0);
     lv_obj_set_pos(d_city_label_, kPad + 56, kTitleY - 1);
     lv_obj_set_width(d_city_label_, 130);
@@ -215,7 +215,7 @@ void CustomLcdDisplay::SetupWeatherDetailUI() {
         d_hero_extra_value_[i] = lv_label_create(hero_right);
         // 竖屏右卡只有 118 宽，用 14px 全字符集字体并收窄左侧标签占位，避免风值被裁
         lv_obj_set_style_text_font(d_hero_extra_value_[i],
-                                   UI_PORTRAIT ? &font_puhui_14_1 : &font_puhui_16_4, 0);
+                                   UI_PORTRAIT ? &font_puhui_14_1 : &font_puhui_16_1_full, 0);
         lv_obj_set_style_text_color(d_hero_extra_value_[i], lv_color_black(), 0);
         lv_obj_set_width(d_hero_extra_value_[i], hero_right_w - (UI_PORTRAIT ? 36 : 62));
         lv_obj_set_style_text_align(d_hero_extra_value_[i], LV_TEXT_ALIGN_RIGHT, 0);
@@ -246,13 +246,13 @@ void CustomLcdDisplay::SetupWeatherDetailUI() {
         }
 
         if (i == 0) {
-            d_metric_value_[0] = MakeLabel(card, &font_puhui_16_4, lv_color_black(),
+            d_metric_value_[0] = MakeLabel(card, &font_puhui_16_1_full, lv_color_black(),
                                            8, 21, "--");
             d_metric_sub_[0] = MakeLabel(card, &font_puhui_14_1, lv_color_black(),
                                          8, 3, "");
             lv_obj_align(d_metric_sub_[0], LV_ALIGN_TOP_RIGHT, -8, 5);
         } else {
-            d_metric_value_[i] = MakeLabel(card, &font_puhui_16_4, lv_color_black(),
+            d_metric_value_[i] = MakeLabel(card, &font_puhui_16_1_full, lv_color_black(),
                                            8, 21, "--");
         }
         if (d_metric_value_[i] != nullptr) {
@@ -271,7 +271,7 @@ void CustomLcdDisplay::SetupWeatherDetailUI() {
                                  kDayNames[i]);
         lv_obj_align(d_fc_day_[i], LV_ALIGN_TOP_MID, 0, 3);
 
-        d_fc_text_[i] = MakeLabel(card, &font_puhui_16_4, lv_color_black(), 0, 19, "--");
+        d_fc_text_[i] = MakeLabel(card, &font_puhui_16_1_full, lv_color_black(), 0, 19, "--");
         lv_obj_align(d_fc_text_[i], LV_ALIGN_TOP_MID, 0, 19);
 
         d_fc_high_[i] = lv_label_create(card);
@@ -310,7 +310,7 @@ void CustomLcdDisplay::SetupWeatherDetailUI() {
     d_warn_card_ = CreateDetailCard(detail_page_, warn_x, warn_y, warn_w, kFooterH, 1);
     d_warn_icon_ = MakeIcon(d_warn_card_, MATERIAL_SYMBOLS_WARNING, lv_color_black(), 8, 8);
     d_warn_label_ = lv_label_create(d_warn_card_);
-    lv_obj_set_style_text_font(d_warn_label_, &font_puhui_16_4, 0);
+    lv_obj_set_style_text_font(d_warn_label_, &font_puhui_16_1_full, 0);
     lv_obj_set_style_text_color(d_warn_label_, lv_color_black(), 0);
     lv_obj_set_pos(d_warn_label_, 28, 7);
     lv_obj_set_width(d_warn_label_, warn_w - 36);

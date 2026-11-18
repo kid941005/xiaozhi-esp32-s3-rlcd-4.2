@@ -14,7 +14,7 @@ LV_FONT_DECLARE(alibaba_puhui_48);
 LV_FONT_DECLARE(alibaba_black_64);
 
 // 小智自带字体（7415 常用汉字 / 1bpp 点阵 / 图标）
-LV_FONT_DECLARE(font_puhui_16_4);
+LV_FONT_DECLARE(font_puhui_16_1_full);
 LV_FONT_DECLARE(font_puhui_14_1);
 LV_FONT_DECLARE(font_puhui_16_1);
 LV_FONT_DECLARE(font_material_symbols_16_4);

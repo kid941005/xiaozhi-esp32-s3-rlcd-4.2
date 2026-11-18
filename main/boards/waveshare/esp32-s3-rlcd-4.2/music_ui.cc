@@ -1,7 +1,7 @@
 // 音乐页 UI —— 沉浸式播放器布局（左右排布版）
 //
 // 400x300 黑白单色 RLCD，全屏黑底白字。
-// 所有中文文字统一使用小智自带的 font_puhui_16_4（7415 常用汉字），避免缺字。
+// 所有中文文字统一使用小智自带的 font_puhui_16_1_full（7415 常用汉字），避免缺字。
 //
 // 布局：
 // ┌──────────────────────────────────────────┐
@@ -36,7 +36,7 @@ void CustomLcdDisplay::SetupMusicUI() {
     lv_obj_t *root = lv_screen_active();
     const lv_font_t *font_num    = &alibaba_puhui_16;   // 纯数字/ASCII 用
     const lv_font_t *font_time   = &alibaba_puhui_24;   // 时钟数字
-    const lv_font_t *font_cn     = &font_puhui_16_4;    // 所有中文文字统一用这个
+    const lv_font_t *font_cn     = &font_puhui_16_1_full;    // 所有中文文字统一用这个
     const lv_font_t *font_sm     = &font_puhui_14_1;    // 14px 小字
     const lv_font_t *font_static = &font_puhui_16_1;    // 16px 1bpp 点阵（内容固定的文案）
 
