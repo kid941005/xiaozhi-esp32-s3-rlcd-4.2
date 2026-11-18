@@ -2152,6 +2152,7 @@ void Application::MusicPlaybackTask(std::string url, std::string title, std::str
             display->SetMusicLyric("播放失败：请稍后重试");
             display->SetMusicProgress(0, 1);
             display->ShowNotification("音乐播放失败");
+            display->SwitchToWeatherPage();
             if (Application::GetInstance().GetDeviceState() == kDeviceStateIdle) {
                 display->SetStatus(Lang::Strings::STANDBY);
             }
@@ -2203,6 +2204,8 @@ void Application::StopMusicPlayback(bool clear_lyric) {
             auto display = Board::GetInstance().GetDisplay();
             display->SetMusicLyric("");
             display->SetMusicProgress(0, 1);
+            // 播放停止后自动回到天气主页
+            display->SwitchToWeatherPage();
             if (GetDeviceState() == kDeviceStateIdle) {
                 display->SetStatus(Lang::Strings::STANDBY);
             }

@@ -100,6 +100,25 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                                   ds != kDeviceStateUnknown);
 
         uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+
+        // ===== 倒计时 / 临时界面轮询 =====
+        // 独立于 UI 刷新块的显示锁，内部自己加锁；返回值是本次到点的倒计时个数。
+        int expired = self->PollTransientUi(now_ms);
+        if (expired > 0) {
+            app.Alert("倒计时", expired == 1 ? "时间到！" : "多个倒计时已到点",
+                      "happy", Lang::Sounds::OGG_POPUP);
+            self->MarkCountdownAlert(now_ms);
+        } else if (self->ShouldDismissCountdownAlert(now_ms)) {
+            // DismissAlert 内部对空字符串直接 return，这里显式把 AI 卡恢复为待命文案
+            if (app.GetDeviceState() == kDeviceStateIdle) {
+                app.DismissAlert();
+                auto display = Board::GetInstance().GetDisplay();
+                if (display != nullptr) {
+                    display->SetChatMessage("system", Lang::Strings::STANDBY);
+                }
+            }
+        }
+
         const bool in_audio_session = (ds == kDeviceStateConnecting ||
                                        ds == kDeviceStateListening ||
                                        ds == kDeviceStateSpeaking);
@@ -572,8 +591,11 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
             }
         }
 
-        // 动态刷新间隔：正常 1 秒，省电 5 秒
+        // 动态刷新间隔：正常 1 秒，省电 5 秒；倒计时进行中固定 500ms 保证秒级走字
         int delay_ms = self->power_saving_ ? self->SAVING_REFRESH_MS : self->NORMAL_REFRESH_MS;
+        if (self->IsCountdownActive()) {
+            delay_ms = 500;
+        }
         vTaskDelay(pdMS_TO_TICKS(delay_ms));
     }
 }

@@ -44,6 +44,7 @@ private:
         MODE_WEATHER = 0,
         MODE_MUSIC = 1,
         MODE_DETAIL = 2,   // 天气详情页（完整天气维度）
+        MODE_COUNTDOWN = 3, // 独立倒计时页（仅黑底白字剩余时间）
     };
     DisplayMode display_mode_ = MODE_WEATHER;
 
@@ -79,6 +80,8 @@ private:
     std::atomic<int> threshold_{112};     // 模式 0 的阈值
     lv_obj_t *weather_page_ = nullptr;
     lv_obj_t *music_page_ = nullptr;
+    lv_obj_t *countdown_page_ = nullptr;
+    lv_obj_t *countdown_time_label_ = nullptr;   // 倒计时页唯一控件：剩余时间 MM:SS
 
     // ===== 天气站 UI 组件 =====
     // 状态栏（右上角浮动胶囊）
@@ -137,6 +140,23 @@ private:
     lv_obj_t *d_warn_icon_ = nullptr;         // 预警图标（随反色切换黑白）
     lv_obj_t *d_warn_label_ = nullptr;        // 预警文案
 
+    // ===== 独立倒计时页状态（countdown_ui.cc）=====
+    struct CountdownItem {
+        uint32_t remaining_ms = 0;
+    };
+    static constexpr int kMaxCountdowns = 4;
+    CountdownItem countdowns_[kMaxCountdowns] = {};
+    int countdown_count_ = 0;                       // 受 DisplayLock 保护
+    std::atomic<bool> countdown_active_{false};     // 供其它任务无锁读取
+    std::atomic<uint32_t> countdown_alert_clear_ms_{0}; // 到点提醒自动清除时间
+    bool countdown_paused_ = false;
+    uint32_t countdown_last_tick_ms_ = 0;
+    int countdown_last_shown_sec_ = -1;
+    // 天气查询页：播报结束（Speaking→Idle）或兜底超时后自动回主页
+    uint32_t detail_return_deadline_ms_ = 0;
+    bool detail_wait_speaking_ = false;
+    bool detail_saw_speaking_ = false;
+
     // 图片图标（不能用基类的 label，因为我们用 lv_image 而不是 Font Awesome 文字）
     lv_obj_t *wifi_icon_img_ = nullptr;
     lv_obj_t *battery_icon_img_ = nullptr;
@@ -172,7 +192,10 @@ private:
     void SetupWeatherUI();
     void SetupMusicUI();
     void SetupWeatherDetailUI();
+    void SetupCountdownUI();      // 实现在 countdown_ui.cc
     void ApplyDisplayMode();
+    void RenderCountdownLocked(); // 调用方须持有 DisplayLock
+    int PollTransientUi(uint32_t now_ms); // 倒计时递减 + 天气查询页自动返回；返回本次到点个数
     
     // 备忘录
     void LoadMemoFromNvs();   // 从 NVS 加载备忘录到 UI
@@ -247,6 +270,20 @@ public:
     void SwitchToWeatherDetailPage();
     // 刷新天气详情页（调用方需已持有 DisplayLockGuard；内部有数据变更检测）
     void RefreshWeatherDetail();
+
+    // ===== 倒计时（语音 MCP 工具调用）=====
+    bool StartCountdown(int seconds);        // 新建倒计时并自动切到倒计时页
+    bool PauseCountdown();                  // 暂停所有倒计时（"暂停闹钟"）
+    bool ResumeCountdown();                 // 继续倒计时
+    bool CancelCountdown();                 // 取消全部倒计时（"取消闹钟"）并返回主页/音乐页
+    int GetCountdownRemainingSec() const;   // 当前显示项剩余秒数，无则 0
+    bool IsCountdownMode() const { return display_mode_ == MODE_COUNTDOWN; }
+    virtual bool IsCountdownActive() const override { return countdown_active_.load(); }
+    void MarkCountdownAlert(uint32_t now_ms);            // 记录到点提醒，4 秒后自动清除
+    bool ShouldDismissCountdownAlert(uint32_t now_ms);   // 由数据任务在锁外调用，返回 true 时执行 DismissAlert
+
+    // ===== 天气查询：切详情页并在播报结束后自动返回 =====
+    void ShowWeatherDetailForQuery(uint32_t auto_return_ms);
 };
 
 #endif

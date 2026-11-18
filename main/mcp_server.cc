@@ -93,6 +93,15 @@ void McpServer::AddCommonTools() {
                 return std::string("music playback started");
             });
 
+    AddTool("self.music.stop",
+            "Stop current music playback and return to the home screen. "
+            "Use when user says: 停止播放, 停止音乐, 关闭音乐, stop music.",
+            PropertyList(),
+            [](const PropertyList&) -> ReturnValue {
+                Application::GetInstance().StopMusicPlayback();
+                return std::string("music playback stopped");
+            });
+
     auto backlight = board.GetBacklight();
     if (backlight) {
         AddTool("self.screen.set_brightness", "Set the brightness of the screen.",

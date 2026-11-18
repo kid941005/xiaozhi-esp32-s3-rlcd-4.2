@@ -343,6 +343,7 @@ CustomLcdDisplay::CustomLcdDisplay(esp_lcd_panel_io_handle_t panel_io,
     SetupWeatherUI();
     SetupMusicUI();
     SetupWeatherDetailUI();
+    SetupCountdownUI();
     // 告诉显示框架：当前自定义 UI 已经初始化完成
     // 否则基类的 SetStatus/ShowNotification 会一直误判为“UI 未准备好”
     setup_ui_called_ = true;
@@ -729,6 +730,7 @@ void CustomLcdDisplay::ApplyDisplayMode() {
     if (weather_page_) lv_obj_add_flag(weather_page_, LV_OBJ_FLAG_HIDDEN);
     if (music_page_) lv_obj_add_flag(music_page_, LV_OBJ_FLAG_HIDDEN);
     if (detail_page_) lv_obj_add_flag(detail_page_, LV_OBJ_FLAG_HIDDEN);
+    if (countdown_page_) lv_obj_add_flag(countdown_page_, LV_OBJ_FLAG_HIDDEN);
 
     // 显示当前页面
     switch (display_mode_) {
@@ -742,16 +744,30 @@ void CustomLcdDisplay::ApplyDisplayMode() {
             if (detail_page_) lv_obj_remove_flag(detail_page_, LV_OBJ_FLAG_HIDDEN);
             RefreshWeatherDetail();   // 切进来立刻填一次数据，不等下一个刷新周期
             break;
+        case MODE_COUNTDOWN:
+            if (countdown_page_) lv_obj_remove_flag(countdown_page_, LV_OBJ_FLAG_HIDDEN);
+            break;
     }
 }
 
 void CustomLcdDisplay::CycleDisplayMode() {
     DisplayLockGuard lock(this);
-    // 三页循环：天气 → 天气详情 → 音乐 → 天气
+    // 倒计时页/音乐播放中禁止手动切页，保证关键界面停留
+    if (countdown_active_.load()) {
+        ESP_LOGI(TAG, "倒计时进行中，忽略手动切页");
+        return;
+    }
+    if (Application::GetInstance().IsMusicPlaying()) {
+        ESP_LOGI(TAG, "音乐播放中，保持音乐页");
+        return;
+    }
+    detail_return_deadline_ms_ = 0;
+    // 三页循环：天气 → 天气详情 → 音乐 → 天气（倒计时页只在收到指令时进入）
     switch (display_mode_) {
         case MODE_WEATHER: display_mode_ = MODE_DETAIL; break;
         case MODE_DETAIL:  display_mode_ = MODE_MUSIC; break;
         case MODE_MUSIC:   display_mode_ = MODE_WEATHER; break;
+        case MODE_COUNTDOWN: display_mode_ = MODE_WEATHER; break;
     }
     ApplyDisplayMode();
     const char* name = (display_mode_ == MODE_MUSIC)   ? "音乐页"
@@ -838,6 +854,11 @@ void CustomLcdDisplay::SetMusicProgress(uint32_t current_ms, uint32_t total_ms) 
 
 void CustomLcdDisplay::SwitchToMusicPage() {
     DisplayLockGuard lock(this);
+    if (countdown_active_.load()) {
+        ESP_LOGI(TAG, "倒计时进行中，不切到音乐页");
+        return;
+    }
+    detail_return_deadline_ms_ = 0;
     if (display_mode_ != MODE_MUSIC) {
         display_mode_ = MODE_MUSIC;
         ApplyDisplayMode();
@@ -849,6 +870,17 @@ void CustomLcdDisplay::SwitchToMusicPage() {
 
 void CustomLcdDisplay::SwitchToWeatherPage() {
     DisplayLockGuard lock(this);
+    // 倒计时/音乐播放期间不允许离开；音乐自然结束后 music_playing_ 已为 false，
+    // 会正常走这里返回主页。
+    if (countdown_active_.load()) {
+        ESP_LOGI(TAG, "倒计时进行中，保持倒计时页");
+        return;
+    }
+    if (Application::GetInstance().IsMusicPlaying()) {
+        ESP_LOGI(TAG, "音乐播放中，保持音乐页");
+        return;
+    }
+    detail_return_deadline_ms_ = 0;
     if (display_mode_ != MODE_WEATHER) {
         display_mode_ = MODE_WEATHER;
         ApplyDisplayMode();
@@ -858,6 +890,18 @@ void CustomLcdDisplay::SwitchToWeatherPage() {
 
 void CustomLcdDisplay::SwitchToWeatherDetailPage() {
     DisplayLockGuard lock(this);
+    if (countdown_active_.load()) {
+        ESP_LOGI(TAG, "倒计时进行中，不切到天气详情页");
+        return;
+    }
+    if (Application::GetInstance().IsMusicPlaying()) {
+        ESP_LOGI(TAG, "音乐播放中，保持音乐页");
+        return;
+    }
+    // 手动切详情页不带播报自动返回
+    detail_return_deadline_ms_ = 0;
+    detail_wait_speaking_ = false;
+    detail_saw_speaking_ = false;
     if (display_mode_ != MODE_DETAIL) {
         display_mode_ = MODE_DETAIL;
         ApplyDisplayMode();

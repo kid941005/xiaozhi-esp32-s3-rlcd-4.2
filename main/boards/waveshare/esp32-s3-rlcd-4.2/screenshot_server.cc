@@ -18,6 +18,7 @@
 #include <esp_log.h>
 
 #include "custom_lcd_display.h"
+#include "application.h"
 #include <settings.h>   // P2 #14：从 NVS 读取可选鉴权 token
 
 static const char *TAG = "Screenshot";
@@ -195,6 +196,122 @@ static esp_err_t PageHandler(httpd_req_t *req) {
     return httpd_resp_send(req, out, n);
 }
 
+
+// 调试端点：/countdown?action=start|pause|resume|cancel|status&sec=300
+// 便于无语音环境下远程验证倒计时页与状态机
+static esp_err_t CountdownHandler(httpd_req_t *req) {
+    if (!CheckAuth(req)) {
+        return ESP_OK;
+    }
+    if (s_display == nullptr) {
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "not ready");
+    }
+    char query[96] = {0};
+    char action[16] = {0};
+    char secbuf[16] = {0};
+    int seconds = 60;
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        if (httpd_query_key_value(query, "action", action, sizeof(action)) != ESP_OK) {
+            strcpy(action, "status");
+        }
+        if (httpd_query_key_value(query, "sec", secbuf, sizeof(secbuf)) == ESP_OK) {
+            seconds = atoi(secbuf);
+        }
+    } else {
+        strcpy(action, "status");
+    }
+
+    bool ok = true;
+    if (strcmp(action, "start") == 0) {
+        ok = s_display->StartCountdown(seconds);
+    } else if (strcmp(action, "pause") == 0) {
+        ok = s_display->PauseCountdown();
+    } else if (strcmp(action, "resume") == 0) {
+        ok = s_display->ResumeCountdown();
+    } else if (strcmp(action, "cancel") == 0) {
+        ok = s_display->CancelCountdown();
+    }
+
+    char out[160];
+    int n = snprintf(out, sizeof(out),
+                     "action=%s ok=%d active=%d remaining=%d page=%s\n",
+                     action, ok ? 1 : 0, s_display->IsCountdownActive() ? 1 : 0,
+                     s_display->GetCountdownRemainingSec(),
+                     s_display->IsCountdownMode() ? "countdown" : "other");
+    httpd_resp_set_type(req, "text/plain; charset=utf-8");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, out, n);
+}
+
+// 调试端点：/weather_query?ms=15000 → 模拟“语音查询天气”切详情页并在 ms 后自动返回
+static esp_err_t WeatherQueryHandler(httpd_req_t *req) {
+    if (!CheckAuth(req)) {
+        return ESP_OK;
+    }
+    if (s_display == nullptr) {
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "not ready");
+    }
+    char query[64] = {0};
+    char msbuf[16] = {0};
+    int ms = 15000;
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK &&
+        httpd_query_key_value(query, "ms", msbuf, sizeof(msbuf)) == ESP_OK) {
+        ms = atoi(msbuf);
+        if (ms < 1000) ms = 1000;
+        if (ms > 60000) ms = 60000;
+    }
+    s_display->ShowWeatherDetailForQuery((uint32_t)ms);
+    char out[96];
+    int n = snprintf(out, sizeof(out), "weather detail shown, auto_return_ms=%d\n", ms);
+    httpd_resp_set_type(req, "text/plain; charset=utf-8");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, out, n);
+}
+
+
+// 调试端点：/music_play?url=<encoded>&title=..&artist=.. → 模拟语音播放，验证自动切页/停留
+static esp_err_t MusicPlayHandler(httpd_req_t *req) {
+    if (!CheckAuth(req)) {
+        return ESP_OK;
+    }
+    char query[512] = {0};
+    char url[384] = {0};
+    char title[64] = {0};
+    char artist[64] = {0};
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
+        httpd_query_key_value(query, "url", url, sizeof(url)) != ESP_OK) {
+        httpd_resp_set_type(req, "text/plain; charset=utf-8");
+        return httpd_resp_send(req, "missing url\n", HTTPD_RESP_USE_STRLEN);
+    }
+    httpd_query_key_value(query, "title", title, sizeof(title));
+    httpd_query_key_value(query, "artist", artist, sizeof(artist));
+    Application::GetInstance().PlayMusicFromUrl(url, title, artist, "");
+    httpd_resp_set_type(req, "text/plain; charset=utf-8");
+    return httpd_resp_send(req, "music play requested\n", HTTPD_RESP_USE_STRLEN);
+}
+
+static esp_err_t MusicStopHandler(httpd_req_t *req) {
+    if (!CheckAuth(req)) {
+        return ESP_OK;
+    }
+    Application::GetInstance().StopMusicPlayback();
+    httpd_resp_set_type(req, "text/plain; charset=utf-8");
+    return httpd_resp_send(req, "music stopped\n", HTTPD_RESP_USE_STRLEN);
+}
+
+static esp_err_t MusicStateHandler(httpd_req_t *req) {
+    if (!CheckAuth(req)) {
+        return ESP_OK;
+    }
+    char out[96];
+    int n = snprintf(out, sizeof(out), "playing=%d page=%s\n",
+                     Application::GetInstance().IsMusicPlaying() ? 1 : 0,
+                     (s_display != nullptr && s_display->IsMusicMode()) ? "music" : "other");
+    httpd_resp_set_type(req, "text/plain; charset=utf-8");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, out, n);
+}
+
 static const httpd_uri_t kShotUri = {
     .uri = "/shot.bmp",
     .method = HTTP_GET,
@@ -223,6 +340,41 @@ static const httpd_uri_t kDitherUri = {
     .user_ctx = nullptr,
 };
 
+static const httpd_uri_t kMusicPlayUri = {
+    .uri = "/music_play",
+    .method = HTTP_GET,
+    .handler = MusicPlayHandler,
+    .user_ctx = nullptr,
+};
+
+static const httpd_uri_t kMusicStopUri = {
+    .uri = "/music_stop",
+    .method = HTTP_GET,
+    .handler = MusicStopHandler,
+    .user_ctx = nullptr,
+};
+
+static const httpd_uri_t kMusicStateUri = {
+    .uri = "/music_state",
+    .method = HTTP_GET,
+    .handler = MusicStateHandler,
+    .user_ctx = nullptr,
+};
+
+static const httpd_uri_t kCountdownUri = {
+    .uri = "/countdown",
+    .method = HTTP_GET,
+    .handler = CountdownHandler,
+    .user_ctx = nullptr,
+};
+
+static const httpd_uri_t kWeatherQueryUri = {
+    .uri = "/weather_query",
+    .method = HTTP_GET,
+    .handler = WeatherQueryHandler,
+    .user_ctx = nullptr,
+};
+
 bool ScreenshotServerStart(CustomLcdDisplay *display) {
     if (s_server != nullptr) {
         return true;
@@ -246,6 +398,7 @@ bool ScreenshotServerStart(CustomLcdDisplay *display) {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = kShotPort;
     config.lru_purge_enable = true;
+    config.max_uri_handlers = 12;      // 调试端点已超过默认 8 个
     config.stack_size = 8192;          // 截图逐像素遍历在同一线程内完成
     if (httpd_start(&s_server, &config) != ESP_OK) {
         ESP_LOGE(TAG, "HTTP 服务启动失败（端口 %d 被占用？）", kShotPort);
@@ -258,6 +411,11 @@ bool ScreenshotServerStart(CustomLcdDisplay *display) {
     httpd_register_uri_handler(s_server, &kDbgUri);
     httpd_register_uri_handler(s_server, &kDitherUri);
     httpd_register_uri_handler(s_server, &kPageUri);
+    httpd_register_uri_handler(s_server, &kCountdownUri);
+    httpd_register_uri_handler(s_server, &kWeatherQueryUri);
+    httpd_register_uri_handler(s_server, &kMusicPlayUri);
+    httpd_register_uri_handler(s_server, &kMusicStopUri);
+    httpd_register_uri_handler(s_server, &kMusicStateUri);
     ESP_LOGI(TAG, "截图服务已启动: http://<设备IP>:%d/shot.bmp", kShotPort);
     return true;
 }

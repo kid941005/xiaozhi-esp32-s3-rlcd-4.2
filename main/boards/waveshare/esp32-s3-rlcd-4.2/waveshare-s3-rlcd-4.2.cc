@@ -430,6 +430,114 @@ private:
             }
         );
 
+        // ===== 天气查询（语音问天气时切详情页并播报当日天气）=====
+        mcp_server.AddTool(
+            "self.weather.query",
+            "Query today's weather, switch the screen to the weather detail page, and return a spoken summary.\n"
+            "Use when user asks: 今天天气怎么样, 今天天气, 天气如何, weather today.\n"
+            "The returned text is meant to be spoken to the user; the device returns to the home page after speaking.",
+            PropertyList(),
+            [this](const PropertyList&) -> ReturnValue {
+                WeatherData d = WeatherManager::getInstance().getLatestData();
+                if (!d.valid) {
+                    return std::string("天气数据还没准备好，请稍后再问一次。");
+                }
+                std::string text = "今天" + d.city + "，" + d.text + "，当前" + d.temp + "°C";
+                if (!d.feels_like.empty()) text += "，体感" + d.feels_like + "°C";
+                if (!d.humidity.empty()) text += "，湿度" + d.humidity + "%";
+                if (!d.wind_dir.empty()) text += "，" + d.wind_dir + d.wind_scale + "级";
+                if (!d.aqi.empty()) {
+                    text += "，空气质量" + d.aqi;
+                    if (!d.aqi_category.empty()) text += " " + d.aqi_category;
+                }
+                if (d.daily_count > 0) {
+                    text += "。今日" + d.daily[0].temp_min + "到" + d.daily[0].temp_max + "°C";
+                }
+                if (!d.sunrise.empty() && !d.sunset.empty()) {
+                    text += "，日出" + d.sunrise + "，日落" + d.sunset;
+                }
+                text += d.warning.empty() ? "。暂无气象预警。" : ("。气象预警：" + d.warning + "。");
+
+                if (display_) {
+                    uint32_t est_ms = 6000u + static_cast<uint32_t>(text.size()) * 220u;
+                    if (est_ms > 60000u) est_ms = 60000u;
+                    display_->ShowWeatherDetailForQuery(est_ms);
+                }
+                ESP_LOGI(TAG, "语音天气查询: %s", text.c_str());
+                return text;
+            }
+        );
+
+    }
+
+    // ===== 倒计时工具（固件级，独立于 MCP 备忘/待办）=====
+    void RegisterCountdownTools() {
+        auto& mcp_server = McpServer::GetInstance();
+
+        mcp_server.AddTool(
+            "self.countdown.start",
+            "Start a firmware countdown timer. Use when user says: 倒计时5分钟, 倒计时 1 分钟, start a countdown.\n"
+            "The screen automatically switches to the dedicated black countdown page and shows remaining time in seconds.\n"
+            "Args:\n  `seconds`: countdown length in seconds (1-86400)",
+            PropertyList({Property("seconds", kPropertyTypeInteger, 1, 86400)}),
+            [this](const PropertyList& properties) -> ReturnValue {
+                if (!display_) {
+                    return std::string("显示器未初始化，暂时无法启动倒计时");
+                }
+                int seconds = properties["seconds"].value<int>();
+                if (!display_->StartCountdown(seconds)) {
+                    return std::string("倒计时启动失败：时长无效或并发倒计时过多");
+                }
+                char buf[64];
+                snprintf(buf, sizeof(buf), "倒计时已开始：%d分%d秒", seconds / 60, seconds % 60);
+                return std::string(buf);
+            });
+
+        mcp_server.AddTool(
+            "self.countdown.pause",
+            "Pause the running countdown. Use when user says: 暂停倒计时, 暂停闹钟, pause countdown.",
+            PropertyList(),
+            [this](const PropertyList&) -> ReturnValue {
+                if (!display_ || !display_->PauseCountdown()) {
+                    return std::string("当前没有可暂停的倒计时");
+                }
+                return std::string("倒计时已暂停");
+            });
+
+        mcp_server.AddTool(
+            "self.countdown.resume",
+            "Resume the paused countdown. Use when user says: 继续倒计时, 继续闹钟, resume countdown.",
+            PropertyList(),
+            [this](const PropertyList&) -> ReturnValue {
+                if (!display_ || !display_->ResumeCountdown()) {
+                    return std::string("当前没有可继续的倒计时");
+                }
+                return std::string("倒计时已继续");
+            });
+
+        mcp_server.AddTool(
+            "self.countdown.cancel",
+            "Cancel the running countdown. Use when user says: 取消倒计时, 取消闹钟, cancel countdown.",
+            PropertyList(),
+            [this](const PropertyList&) -> ReturnValue {
+                if (!display_ || !display_->CancelCountdown()) {
+                    return std::string("当前没有可取消的倒计时");
+                }
+                return std::string("倒计时已取消");
+            });
+
+        mcp_server.AddTool(
+            "self.countdown.status",
+            "Report remaining countdown seconds. Use when user asks: 倒计时还有多久, 还剩多少时间.",
+            PropertyList(),
+            [this](const PropertyList&) -> ReturnValue {
+                if (!display_ || !display_->IsCountdownActive()) {
+                    return std::string("当前没有进行中的倒计时");
+                }
+                char buf[64];
+                snprintf(buf, sizeof(buf), "倒计时剩余 %d 秒", display_->GetCountdownRemainingSec());
+                return std::string(buf);
+            });
     }
 
     void RegisterDisplayTools() {
@@ -479,6 +587,7 @@ private:
                     return std::string("参数 mode 无效，请使用 toggle/weather/detail/music");
                 }
 
+                if (display_->IsCountdownMode()) return std::string("倒计时进行中，已保持倒计时页");
                 if (display_->IsMusicMode()) return std::string("已切换到音乐页");
                 if (display_->IsDetailMode()) return std::string("已切换到天气详情页");
                 return std::string("已切换到天气页");
@@ -702,6 +811,7 @@ private:
     void InitializeTools() {
         RegisterSystemTools();
         RegisterWeatherTools();
+        RegisterCountdownTools();
         RegisterDisplayTools();
         RegisterMemoTools();
         RegisterTodoTools();

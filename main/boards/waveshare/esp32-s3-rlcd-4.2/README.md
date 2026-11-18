@@ -2,7 +2,7 @@
 
 基于 [xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) 的微雪 **ESP32-S3-RLCD-4.2** 定制固件。
 
-4.2 英寸 400×300 单色 RLCD，集成翻页时钟、天气详情、今日待办、音乐播放、语音对话与本地语音打断。
+4.2 英寸 400×300 单色 RLCD，集成翻页时钟、天气详情、今日待办、音乐播放、倒计时、语音对话与本地语音打断。
 
 产品页面：[微雪 ESP32-S3-RLCD-4.2](https://www.waveshare.net/shop/ESP32-S3-RLCD-4.2.htm)
 
@@ -22,7 +22,8 @@
 - **天气（和风主源 + 双免密钥兜底）**：和风 QWeather 取实时天气、体感、湿度、风、能见度、气压、AQI/PM2.5、三日预报、日出日落、灾害预警；失败自动回退中国天气网、Open-Meteo。
 - **天气详情页**：独立整页分层展示全部天气维度，黑底白卡、图标化布局；实体按键 / 语音 / HTTP 三种进入方式。
 - **今日待办（MCP 自取）**：设备作为 MCP 客户端保持长连接，每分钟调用 `list_todos`，只显示今天的事项，按时间升序、两行一条、超出高度自动裁剪。
-- **音乐页**：唱片 + 歌名/歌手 + 三行歌词 + 进度条；歌名/歌手优先取飞牛 MCP `music_status`，歌词未随播放指令传入时自动从 LRCLIB 获取同步歌词。
+- **音乐页**：唱片 + 歌名/歌手 + 三行歌词 + 进度条；歌名/歌手优先取飞牛 MCP `music_status`，歌词未随播放指令传入时自动从 LRCLIB 获取同步歌词。开始播放自动进入音乐页并保持停留，停止或播完自动回天气主页。
+- **倒计时**：语音「倒计时 5 分钟」启动，支持暂停/继续/取消与多倒计时依次提醒；独立黑底白字倒计时页按秒刷新，到点弹窗响铃并自动回主页。
 - **语音与音频**：离线唤醒词、设备端 AEC、本地 VAD 语音打断；开机默认静音，NVS 保留用户上次音量，调大音量自动解除静音。
 - **AI 状态卡**：无 emoji 素材时使用内置矢量猫脸兜底，显示待命/聆听/说话等状态。
 - **低功耗**：DVFS + Tickless + 自动 light sleep；电池电量按电压分段换算，充电状态按电压趋势推断。
@@ -108,11 +109,20 @@ idf.py -p COM7 flash monitor
 - 底部 AI 卡与天气页共用。
 - 播放中显示实时歌词；空闲时显示飞牛 MCP 上次播放记录。
 
+### 倒计时页
+
+- 独立整页，纯黑底 + 居中 48px 白色 MM:SS，只显示倒计时剩余时间。
+- 语音指令：`self.countdown.start`（秒数 1..86400）、`pause`（暂停闹钟）、`resume`（继续闹钟）、`cancel`（取消闹钟）、`status`。
+- 最多同时 4 个倒计时，到点按启动顺序依次提醒；提醒期间显示「时间到！」并播放提示音，随后自动回天气主页。
+- 倒计时进行中按键/MCP 切页会被保持在该页，避免误触离开。
+
 ### 页面切换
 
 - 实体 USER 按键循环：天气 → 天气详情 → 音乐 → 天气。
 - MCP：`self.disp.switch`，参数 `mode=weather|detail|music`。
 - HTTP：`GET /page?p=weather|detail|music|toggle`。
+- 自动切页优先级：倒计时 > 音乐播放 > 天气查询，进行中时手动切页会被忽略；结束后回到天气主页。
+- 天气查询：`self.weather.query` 会把当日天气拼成播报文本、切到详情页，按文本长度估算播报时间后自动返回主页。
 
 ## 数据来源
 
@@ -196,6 +206,10 @@ NVS weather/city（手动 self.weather.set_city）
 | `GET /dbg` | 关键控件文本/位置/尺寸、dither 参数 |
 | `GET /page?p=weather\|detail\|music\|toggle` | 远程切页 |
 | `GET /dither?mode=0..4&thr=16..240` | 在线调整二值化参数 |
+| `GET /countdown?action=start\|pause\|resume\|cancel\|status&sec=300` | 触发/查询倒计时（无语音环境调试） |
+| `GET /weather_query?ms=15000` | 模拟天气查询，切详情页并在 ms 后自动返回 |
+| `GET /music_play?url=...&title=...&artist=...` | 用指定直链模拟播放，验证自动切音乐页 |
+| `GET /music_stop` / `GET /music_state` | 停止播放 / 查询播放状态与当前页 |
 
 主机截图：
 
@@ -216,6 +230,7 @@ main/boards/waveshare/esp32-s3-rlcd-4.2/
 ├── weather_ui.cc                # 天气主页
 ├── detail_ui.cc                 # 天气详情页
 ├── music_ui.cc                  # 音乐页
+├── countdown_ui.cc              # 独立倒计时页
 ├── ui_widgets.{h,cc}            # 状态胶囊、AI 卡等复用控件
 ├── ui_assets.h                  # 字体/图片声明
 ├── managers/                    # 天气、待办 MCP、传感器、电源、农历等
