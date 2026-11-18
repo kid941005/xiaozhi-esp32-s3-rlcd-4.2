@@ -133,7 +133,7 @@ void CustomLcdDisplay::SetupWeatherDetailUI() {
     lv_label_set_text(d_update_label_, "更新 --:--");
     lv_obj_t* update_icon = MakeIcon(detail_page_, MATERIAL_SYMBOLS_SCHEDULE,
                                      lv_color_white(), 0, 0);
-    lv_obj_align_to(update_icon, d_update_label_, LV_ALIGN_OUT_LEFT_MID, -4, 0);
+    lv_obj_align_to(update_icon, d_update_label_, LV_ALIGN_OUT_LEFT_MID, -12, 0);
 
     // ===== 区块位置：横屏固定；竖屏把多余高度均摊到 4 个间距 =====
     int metrics_y;
