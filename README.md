@@ -1,175 +1,253 @@
 # xiaozhi-esp32-s3-rlcd-4.2
 
-(English | [中文](README_zh.md) | [日本語](README_ja.md))
+基于 [xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) 的微雪 **ESP32-S3-RLCD-4.2** 定制固件。
 
-## Introduction
+4.2 英寸 400×300 单色 RLCD，集成翻页时钟、天气主页与详情页、今日待办、音乐播放、语音对话和设备端本地语音打断。
 
-👉 [Human: Give AI a camera vs AI: Instantly finds out the owner hasn't washed hair for three days【bilibili】](https://www.bilibili.com/video/BV1bpjgzKEhd/)
+> 硬件引脚、页面实现细节、完整数据源说明和调试接口见 [板级 README](main/boards/waveshare/esp32-s3-rlcd-4.2/README.md)。
 
-👉 [Handcraft your AI girlfriend, beginner's guide【bilibili】](https://www.bilibili.com/video/BV1XnmFYLEJN/)
+## 界面预览
 
-As a voice interaction entry, the XiaoZhi AI chatbot leverages the AI capabilities of large models like Qwen / DeepSeek, and achieves multi-terminal control via the MCP protocol.
+以下均为设备 `GET /shot.bmp` 直出显存的 **400×300 原始画面（1:1，未放大）**：
 
-<img src="docs/mcp-based-graph.jpg" alt="Control everything via MCP" width="320">
+| 天气主页 | 天气详情页 | 音乐页 |
+| --- | --- | --- |
+| ![天气主页](main/boards/waveshare/esp32-s3-rlcd-4.2/docs/screenshots/weather-main.png) | ![天气详情页](main/boards/waveshare/esp32-s3-rlcd-4.2/docs/screenshots/weather-detail.png) | ![音乐页](main/boards/waveshare/esp32-s3-rlcd-4.2/docs/screenshots/music.png) |
+| 翻页时钟、农历、环境温湿度、今日待办、AI 状态卡 | 大温度主视觉 + 体感/湿度/风 + AQI/能见度/气压 + 三日预报 + 日出日落/预警 | 唱片、歌名/歌手、三行歌词、进度条、AI 状态卡 |
 
-## Recent Updates
+## 功能特性
 
-- The project now requires ESP-IDF v6.0.1 or later. [ESP-IDF `release/v6.1`](https://github.com/espressif/esp-idf/tree/release/v6.1) is the recommended SDK branch. ESP-IDF 5.x is no longer supported. The current matrix contains 171 variants; ESP32-S31 builds require IDF 6.1 or later.
-- MQTT and BluFi cryptographic code has migrated to PSA Crypto. IDF 6 component splits and third-party dependency compatibility have also been addressed.
-- Audio pipeline concurrency, MQTT/UDP packet validation, and release-matrix selection have been hardened.
-- ESP32-P4 Rev1 and Rev3 are both supported on IDF 6 with ESP-SR 2.4.7.
+- **翻页时钟**：4 张 39×50 黑卡 + 1px 白中缝 + 两个 5×5 黑冒号，按分钟逐位更新；日期行显示「11月18日 星期三」。
+- **农历 / 节气 / 节日**：顶栏显示农历日期，按「农历节日 > 公历节日 > 当日节气」优先级显示。
+- **天气**：实时天气、体感、湿度、风、能见度、气压、AQI/PM2.5、三日预报、日出日落和灾害预警；主源失败时自动回退备用数据源。
+- **天气详情页**：独立整页分层展示全部天气维度，黑底白卡、图标化布局；实体按键、语音和 HTTP 均可进入。
+- **今日待办**：设备作为 MCP 客户端保持长连接，每分钟拉取一次，只显示今天的事项，按时间升序、两行一条、超出高度自动裁剪。
+- **音乐页**：唱片 + 歌名/歌手 + 三行歌词 + 进度条；播放中显示实时歌词，空闲时显示最近一次播放记录。
+- **语音与音频**：离线唤醒词、设备端 AEC、本地 VAD 语音打断；开机默认静音，NVS 保留用户上次音量，调大音量自动解除静音。
+- **AI 状态卡**：无 emoji 素材时使用内置矢量猫脸兜底，显示待命/聆听/说话等状态。
+- **低功耗**：DVFS + Tickless + 自动 light sleep；电池电量按电压分段换算，充电状态按电压趋势推断。
+- **在线调试**：HTTP 截图、页面切换、控件几何 dump、1-bit 二值化参数在线调节。
+- **OTA**：支持服务器 OTA、DNS 兜底；默认横屏 400×300，切换一个宏即可使用竖屏 300×400。
 
-### Features Implemented
+## 硬件
 
-- Wi-Fi, wired Ethernet, USB RNDIS, and ML307/EC801E or NT26 Cat.1 4G networking; supported boards can switch between Wi-Fi and 4G
-- Offline voice wake-up with [ESP-SR](https://github.com/espressif/esp-sr), including customizable wake words
-- Two communication transports: [WebSocket](docs/websocket.md) and [MQTT + UDP](docs/mqtt-udp.md)
-- Opus audio streaming with conventional streaming ASR + LLM + TTS pipelines and Realtime end-to-end voice models; AEC-capable hardware supports realtime full-duplex interaction
-- Speaker recognition, identifies the current speaker [3D Speaker](https://github.com/modelscope/3D-Speaker)
-- OLED / LCD displays with emoji and rich expression support, plus camera vision input on supported boards
-- Battery display and power management
-- 39 interface languages, with localized voice prompts where available and English fallback
-- ESP32, ESP32-C3, ESP32-C5, ESP32-C6, ESP32-S3, and ESP32-P4 chip platforms
-- Wi-Fi provisioning through hotspot or BluFi
-- Device-side MCP for device control (Speaker, LED, Servo, GPIO, etc.)
-- Cloud-side MCP to extend large model capabilities (smart home control, PC desktop operation, knowledge search, email, etc.)
-- Customizable wake words, fonts, emojis, and chat backgrounds with online web-based editing ([Custom Assets Generator](https://github.com/78/xiaozhi-assets-generator))
+| 项目 | 参数 |
+| --- | --- |
+| 主控 | ESP32-S3，16 MB Flash，8 MB PSRAM |
+| 屏幕 | 4.2 英寸 RLCD，ST7305，原生 300×400，默认横屏 400×300 |
+| 显示 SPI | DC 5 / CS 40 / SCK 11 / MOSI 12 / RST 41 / TE 6 |
+| 音频 | ES8311 输出 + ES7210 输入，MCLK 16 / BCLK 9 / WS 45 / DIN 10 / DOUT 8，PA GPIO46 |
+| 传感器 | SHTC3 温湿度（I2C 0x70）、PCF85063 RTC（I2C 0x51） |
+| 电池检测 | ADC1_CH3 / GPIO4，200K/100K 分压，×3.0 |
+| 按键 | BOOT GPIO0 / USER GPIO18 |
 
-## Hardware
+说明：PWR 开关机、CHG/WRN 指示灯由电源/充电芯片直接控制，SoC 无对应 GPIO；固件不读取 STAT 引脚，充电状态由电压趋势推断。
 
-### Breadboard DIY Practice
+## 快速开始
 
-See the Feishu document tutorial:
+### 1. 环境
 
-👉 ["XiaoZhi AI Chatbot Encyclopedia"](https://ccnphfhqs21z.feishu.cn/wiki/F5krwD16viZoF0kKkvDcrZNYnhb?from=from_copylink)
+- ESP-IDF **v6.0.1 或更高**（推荐 `release/v6.1`）
+- Python 3、Git
+- Windows / Linux / macOS 均可，Linux 编译更快
 
-Breadboard demo:
+### 2. 编译
 
-![Breadboard Demo](docs/v1/wiring2.jpg)
+```bash
+git clone https://github.com/kid941005/xiaozhi-esp32-s3-rlcd-4.2.git
+cd xiaozhi-esp32-s3-rlcd-4.2
 
-### Supports 138 Board Directories and 171 Release Variants (Partial List)
+idf.py set-target esp32s3
+idf.py menuconfig
+# Xiaozhi Assistant -> Board Type -> Waveshare ESP32-S3-RLCD-4.2
 
-- <a href="https://oshwhub.com/li-chuang-kai-fa-ban/li-chuang-shi-zhan-pai-esp32-s3-kai-fa-ban" target="_blank" title="LiChuang ESP32-S3 Development Board">LiChuang ESP32-S3 Development Board</a>
-- <a href="https://github.com/espressif/esp-box" target="_blank" title="Espressif ESP32-S3-BOX-3">Espressif ESP32-S3-BOX-3</a>
-- <a href="https://docs.m5stack.com/zh_CN/core/CoreS3" target="_blank" title="M5Stack CoreS3">M5Stack CoreS3</a>
-- <a href="https://docs.m5stack.com/en/atom/Atomic%20Echo%20Base" target="_blank" title="AtomS3R + Echo Base">M5Stack AtomS3R + Echo Base</a>
-- <a href="https://gf.bilibili.com/item/detail/1108782064" target="_blank" title="Magic Button 2.4">Magic Button 2.4</a>
-- <a href="https://www.waveshare.net/shop/ESP32-S3-Touch-AMOLED-1.8.htm" target="_blank" title="Waveshare ESP32-S3-Touch-AMOLED-1.8">Waveshare ESP32-S3-Touch-AMOLED-1.8</a>
-- <a href="https://github.com/Xinyuan-LilyGO/T-Circle-S3" target="_blank" title="LILYGO T-Circle-S3">LILYGO T-Circle-S3</a>
-- <a href="https://oshwhub.com/tenclass01/xmini_c3" target="_blank" title="XiaGe Mini C3">XiaGe Mini C3</a>
-- <a href="https://oshwhub.com/movecall/cuican-ai-pendant-lights-up-y" target="_blank" title="Movecall CuiCan ESP32S3">CuiCan AI Pendant</a>
-- <a href="https://github.com/WMnologo/xingzhi-ai" target="_blank" title="WMnologo-Xingzhi-1.54">WMnologo-Xingzhi-1.54TFT</a>
-- <a href="https://www.seeedstudio.com/SenseCAP-Watcher-W1-A-p-5979.html" target="_blank" title="SenseCAP Watcher">SenseCAP Watcher</a>
-- <a href="https://www.bilibili.com/video/BV1BHJtz6E2S/" target="_blank" title="ESP-HI Low Cost Robot Dog">ESP-HI Low Cost Robot Dog</a>
+idf.py build
+```
 
-<div style="display: flex; justify-content: space-between;">
-  <a href="docs/v1/lichuang-s3.jpg" target="_blank" title="LiChuang ESP32-S3 Development Board">
-    <img src="docs/v1/lichuang-s3.jpg" width="240" />
-  </a>
-  <a href="docs/v1/espbox3.jpg" target="_blank" title="Espressif ESP32-S3-BOX3">
-    <img src="docs/v1/espbox3.jpg" width="240" />
-  </a>
-  <a href="docs/v1/m5cores3.jpg" target="_blank" title="M5Stack CoreS3">
-    <img src="docs/v1/m5cores3.jpg" width="240" />
-  </a>
-  <a href="docs/v1/atoms3r.jpg" target="_blank" title="AtomS3R + Echo Base">
-    <img src="docs/v1/atoms3r.jpg" width="240" />
-  </a>
-  <a href="docs/v1/magiclick.jpg" target="_blank" title="Magic Button 2.4">
-    <img src="docs/v1/magiclick.jpg" width="240" />
-  </a>
-  <a href="docs/v1/waveshare.jpg" target="_blank" title="Waveshare ESP32-S3-Touch-AMOLED-1.8">
-    <img src="docs/v1/waveshare.jpg" width="240" />
-  </a>
-  <a href="docs/v1/lilygo-t-circle-s3.jpg" target="_blank" title="LILYGO T-Circle-S3">
-    <img src="docs/v1/lilygo-t-circle-s3.jpg" width="240" />
-  </a>
-  <a href="docs/v1/xmini-c3.jpg" target="_blank" title="XiaGe Mini C3">
-    <img src="docs/v1/xmini-c3.jpg" width="240" />
-  </a>
-  <a href="docs/v1/movecall-cuican-esp32s3.jpg" target="_blank" title="CuiCan">
-    <img src="docs/v1/movecall-cuican-esp32s3.jpg" width="240" />
-  </a>
-  <a href="docs/v1/wmnologo_xingzhi_1.54.jpg" target="_blank" title="WMnologo-Xingzhi-1.54">
-    <img src="docs/v1/wmnologo_xingzhi_1.54.jpg" width="240" />
-  </a>
-  <a href="docs/v1/sensecap_watcher.jpg" target="_blank" title="SenseCAP Watcher">
-    <img src="docs/v1/sensecap_watcher.jpg" width="240" />
-  </a>
-  <a href="docs/v1/esp-hi.jpg" target="_blank" title="ESP-HI Low Cost Robot Dog">
-    <img src="docs/v1/esp-hi.jpg" width="240" />
-  </a>
-</div>
+也可以直接使用项目脚本：
 
-## Software
+```bash
+python scripts/build.py waveshare/esp32-s3-rlcd-4.2 --language zh-CN
+```
 
-### Firmware Flashing
+### 3. 烧录与串口
 
-For beginners, it is recommended to use the firmware that can be flashed without setting up a development environment.
+```bash
+# Linux
+idf.py -p /dev/ttyACM0 flash monitor
 
-The firmware connects to the official [xiaozhi.me](https://xiaozhi.me) server by default. Personal users can register an account to use the Qwen real-time model for free.
+# Windows
+idf.py -p COM7 flash monitor
+```
 
-👉 [Beginner's Firmware Flashing Guide](https://ccnphfhqs21z.feishu.cn/wiki/Zpz4wXBtdimBrLk25WdcXzxcnNS)
+首次启动会自动进入配网；配网完成后设备连接服务并开始同步天气与待办。
 
-### Development Environment
+## 界面与操作
 
-- Cursor or VSCode
-- Install the ESP-IDF plugin. The minimum SDK is [ESP-IDF v6.0.1](https://github.com/espressif/esp-idf/releases/tag/v6.0.1); [ESP-IDF `release/v6.1`](https://github.com/espressif/esp-idf/tree/release/v6.1) is recommended. ESP-IDF 5.x is not supported.
-- Linux is better than Windows for faster compilation and fewer driver issues
-- This project uses Google C++ code style, please ensure compliance when submitting code
+### 天气主页
 
-Use the `release/v6.1` branch rather than the `v6.1` release tag: an ESP32-C3 Wi-Fi initialization failure with that tag is reported in [#2344](https://github.com/78/xiaozhi-esp32/issues/2344). After switching SDK revisions, run `git submodule update --init --recursive` in the ESP-IDF directory, source its `export.sh`, and run `idf.py fullclean` in this project before rebuilding.
+- 顶栏：环境温度/湿度、农历、WiFi/电池胶囊。
+- 时钟卡：日期、翻页时钟、当前城市 + 天气 + 温度。
+- 待办卡：标题「待办」+ 完成/星标图标 + 今日事项列表，每项两行（时间 + 内容）。
+- AI 卡：猫脸 + 情绪标签 + 当前状态文案。
 
-### Developer Documentation
+### 天气详情页
 
-- [Custom Board Guide](docs/custom-board.md) - Learn how to create custom boards for XiaoZhi AI
-- [OTA Configuration, Activation, and Firmware Updates](docs/ota.md) - Device bootstrap HTTP API and protocol capability reporting
-- [MCP Protocol IoT Control Usage](docs/mcp-usage.md) - Learn how to control IoT devices via MCP protocol
-- [MCP Protocol Interaction Flow](docs/mcp-protocol.md) - Device-side MCP protocol implementation
-- [MQTT + UDP Hybrid Communication Protocol Document](docs/mqtt-udp.md)
-- [A detailed WebSocket communication protocol document](docs/websocket.md)
+按「主信息 → 次信息 → 指标 → 预报 → 底栏」分层：
 
-## Large Model Configuration
+1. **Hero**：大温度数字 + 城市 + 天气徽标 + 今日温差。
+2. **次级信息**：体感、湿度、风向风级。
+3. **指标条**：AQI/PM2.5、能见度、气压。
+4. **三日预报**：今天/明天/后天，最高温 24px、最低温 14px。
+5. **底栏**：日出日落 + 气象预警；有预警时黑底白字白框反色。
 
-If you already have a XiaoZhi AI chatbot device and have connected to the official server, you can log in to the [xiaozhi.me](https://xiaozhi.me) console for configuration.
+### 音乐页
 
-👉 [Backend Operation Video Tutorial (Old Interface)](https://www.bilibili.com/video/BV1jUCUY2EKM/)
+- 左侧唱片，右侧歌名/歌手/三行歌词。
+- 底部进度条与播放时间。
+- 底部 AI 卡与天气页共用。
+- 播放中显示实时歌词；空闲时显示最近一次播放记录。
 
-## Related Open Source Projects
+### 页面切换
 
-For server deployment on personal computers, refer to the following open-source projects:
+- 实体 USER 按键循环：天气 → 天气详情 → 音乐 → 天气。
+- MCP：`self.disp.switch`，参数 `mode=weather|detail|music`。
+- HTTP：`GET /page?p=weather|detail|music|toggle`。
 
-- [xinnan-tech/xiaozhi-esp32-server](https://github.com/xinnan-tech/xiaozhi-esp32-server) Python server
-- [joey-zhou/xiaozhi-esp32-server-java](https://github.com/joey-zhou/xiaozhi-esp32-server-java) Java server
-- [AnimeAIChat/xiaozhi-server-go](https://github.com/AnimeAIChat/xiaozhi-server-go) Golang server
-- [hackers365/xiaozhi-esp32-server-golang](https://github.com/hackers365/xiaozhi-esp32-server-golang) Golang server
+## 数据来源
 
-Other client projects using the XiaoZhi communication protocol:
+### 天气
 
-- [huangjunsen0406/py-xiaozhi](https://github.com/huangjunsen0406/py-xiaozhi) Python client
-- [TOM88812/xiaozhi-android-client](https://github.com/TOM88812/xiaozhi-android-client) Android client
-- [100askTeam/xiaozhi-linux](http://github.com/100askTeam/xiaozhi-linux) Linux client by 100ask
-- [78/xiaozhi-sf32](https://github.com/78/xiaozhi-sf32) Bluetooth chip firmware by Sichuan
-- [QuecPython/solution-xiaozhiAI](https://github.com/QuecPython/solution-xiaozhiAI) QuecPython firmware by Quectel
+```
+和风 QWeather（有 host + key）
+  → 中国天气网 itboy（免密钥）
+  → Open-Meteo（免密钥备用）
+```
 
-Custom Assets Tools:
+城市来源优先级：
 
-- [78/xiaozhi-assets-generator](https://github.com/78/xiaozhi-assets-generator) Custom Assets Generator (Wake words, fonts, emojis, backgrounds)
+```
+NVS weather/city（手动 self.weather.set_city）
+  > 服务端下发城市
+  > 上次服务端城市缓存
+  > config.h WEATHER_CITY
+  > IP 定位（仅以上都为空时）
+```
 
-## About the Project
+- 刷新：启动后 15 秒首次拉取，成功每 15 分钟刷新；失败按 60→120→240→300 秒退避。
+- 和风凭证：控制台「项目管理」的 API Host + KEY，不要使用天气插件密钥。
+- 和风 host 必须逐字符核对，错误 host 会表现为所有接口 403 且响应体为空。
 
-This is an open-source ESP32 project, released under the MIT license, allowing anyone to use it for free, including for commercial purposes.
+### 待办
 
-We hope this project helps everyone understand AI hardware development and apply rapidly evolving large language models to real hardware devices.
+- 设备通过独立 WebSocket 连接外部 MCP 接入点。
+- 握手一次后复用长连接，每分钟调用 `list_todos(view=today, limit=10)`。
+- 断线自动重连；服务端 ping，客户端回 pong。
+- 支持 `self.todo.set_url` 修改地址、`self.todo.sync` 手动覆盖列表。
 
-If you have any ideas or suggestions, please feel free to raise Issues or join our [Discord](https://discord.gg/C759fGMBcZ) or QQ group: 1095994019
+### 音乐
 
-## Star History
+- 歌名/歌手：外部音乐服务返回「上一次播放：<歌名> - <歌手>（时间）」。
+- 播放地址：播放前现取直链，有效期约 15 分钟。
+- 歌词：`self.music.play_url` 未传 `lyric`/`lyric_url` 且歌名/歌手已知时，自动查询 LRCLIB；`syncedLyrics` 优先，无时间轴时用 `plainLyrics` 生成每 4 秒一行的伪 LRC，`duration` 作为总时长。
 
-<a href="https://star-history.com/#78/xiaozhi-esp32&Date">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=78/xiaozhi-esp32&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=78/xiaozhi-esp32&type=Date" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=78/xiaozhi-esp32&type=Date" />
- </picture>
-</a>
+## 语音与音频
+
+- **唤醒**：ESP-SR 离线唤醒词，默认「你好小智」。
+- **AEC**：设备端 AEC 开启（`CONFIG_USE_DEVICE_AEC=y`、`AUDIO_INPUT_REFERENCE=true`），TTS 播放期间保持全双工监听。
+- **本地 VAD 打断**：仅在 Speaking + Realtime 模式下生效；人声持续 300 ms 确认，TTS 起播后 800 ms 为热身期，避免自打断；确认后 abort 当前回答、清发送队列并回到监听。
+- **开机静音**：`Application::Initialize()` 在音频启动后 `SetMute(true)`，硬件输出为 0；NVS 保存的用户音量不变。语音或 `self.audio_speaker.set_volume` 调大音量时自动解除，传 0 则重新静音。
+- **状态栏静音图标**：按 `codec->muted() || output_volume() == 0` 判断。
+
+## 1-bit 显示实现
+
+### 二值化
+
+- LVGL 使用 RGB565 全屏缓冲，`Lvgl_flush_cb` 先转 BT.601 亮度，再按阈值转 1-bit。
+- 默认硬阈值 `dither_mode=0`、`threshold=112`；在线可调：`GET /dither?mode=0..4&thr=16..240`。
+- Bayer4/Bayer8/带状抖动对本 UI 为负优化，默认关闭。
+
+### 字库与图标
+
+- 动态中文：`font_puhui_16_1_full`，16px / 1bpp / 6656 字形，缺字回退 `font_puhui_14_1`。
+- 小字：`font_puhui_14_1`，14px / 1bpp 全字库。
+- 静态短文案：`font_puhui_16_1`，16px / 1bpp / 447 字子集，体积最小。
+- 图标：`font_material_symbols_16_1`，16px / 1bpp / 95 字形。
+- 数字/时钟：`alibaba_puhui_16/24/48`、`alibaba_black_64`，均为 1bpp 点阵。
+- 不再使用 4bpp 字体；所有文字和图标在 flush 前就是二值点阵，避免阈值在笔画边缘切出灰阶毛边。
+
+### 竖屏
+
+`config.h` 修改：
+
+```c
+#define RLCD_PORTRAIT 0   // 0 = 横屏 400x300（默认）  1 = 竖屏 300x400
+```
+
+竖屏不是旋转画面，而是重新排版：天气主页四张卡改为整宽单列堆叠；音乐页唱片缩小、信息卡加高；驱动按方向切换 LUT。
+
+## HTTP 调试端点
+
+设备联网后启动只读 HTTP 服务（端口 8080）：
+
+| 端点 | 用途 |
+| --- | --- |
+| `GET /shot.bmp` | 400×300 单色 BMP，直读显存 |
+| `GET /dbg` | 关键控件文本/位置/尺寸、dither 参数 |
+| `GET /page?p=weather\|detail\|music\|toggle` | 远程切页 |
+| `GET /dither?mode=0..4&thr=16..240` | 在线调整二值化参数 |
+
+主机截图：
+
+```bash
+python shot_fetch.py 192.168.137.104 out.png
+# 输出 400x300 原始尺寸 PNG，不做放大
+```
+
+## 目录结构
+
+```text
+xiaozhi-esp32-s3-rlcd-4.2/
+├── main/
+│   ├── application.cc             # 主状态机、语音打断、播放任务
+│   ├── mcp_server.cc              # 设备侧 MCP 工具
+│   └── boards/waveshare/esp32-s3-rlcd-4.2/
+│       ├── config.h               # 板级引脚、分辨率、默认参数
+│       ├── config.json            # 板型描述与 sdkconfig_append
+│       ├── waveshare-s3-rlcd-4.2.cc
+│       ├── rlcd_driver.{h,cc}     # ST7305 RLCD 驱动
+│       ├── custom_lcd_display.{h,cc}
+│       ├── weather_ui.cc          # 天气主页
+│       ├── detail_ui.cc           # 天气详情页
+│       ├── music_ui.cc            # 音乐页
+│       ├── managers/              # 天气、待办、传感器、电源、农历
+│       ├── assets/fonts/          # 1bpp 字体与图标
+│       └── docs/screenshots/      # README 界面截图
+├── scripts/
+└── README.md
+```
+
+## 已知限制
+
+- RLCD 只有黑白两态，没有灰阶；界面不依赖颜色区分信息。
+- 电池电量与充电状态为软件电压推算，不是库仑计，插拔瞬间可能误判。
+- 音乐直链有效期约 15 分钟；歌词走 LRCLIB，外部音乐服务当前无歌词工具。
+- 设备端 AEC 已开启，但实际回声消除效果需按房间/音量现场验证。
+- 截图接口输出 400×300 1-bit BMP，不提供彩色或更高分辨率。
+
+## 相关文档
+
+- [板级 README：硬件、页面实现、数据源与调试](main/boards/waveshare/esp32-s3-rlcd-4.2/README.md)
+- [微雪 ESP32-S3-RLCD-4.2 产品页](https://www.waveshare.net/shop/ESP32-S3-RLCD-4.2.htm)
+- [微雪官方文档](https://docs.waveshare.net/ESP32-S3-RLCD-4.2/)
+- [微雪官方示例](https://github.com/waveshareteam/ESP32-S3-RLCD-4.2)
+- [xiaozhi-esp32 上游项目](https://github.com/78/xiaozhi-esp32)
+- [自定义板卡指南](docs/custom-board_zh.md)
+- [MCP 协议说明](docs/mcp-protocol_zh.md)
+- [WebSocket 协议](docs/websocket_zh.md)
+
+## 致谢
+
+- [78/xiaozhi-esp32](https://github.com/78/xiaozhi-esp32)：小智 AI 对话终端固件
+- [Waveshare](https://www.waveshare.net/)：ESP32-S3-RLCD-4.2 硬件与示例
+- 和风天气、中国天气网、Open-Meteo、LRCLIB 等数据服务
