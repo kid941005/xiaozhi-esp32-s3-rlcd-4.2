@@ -133,6 +133,7 @@ private:
     lv_obj_t *d_fc_low_[3] = {nullptr, nullptr, nullptr};            // 最低温（小字 /10°）
     lv_obj_t *d_sun_label_ = nullptr;         // 日出日落
     lv_obj_t *d_warn_card_ = nullptr;         // 预警条底（有预警时反色）
+    lv_obj_t *d_warn_icon_ = nullptr;         // 预警图标（随反色切换黑白）
     lv_obj_t *d_warn_label_ = nullptr;        // 预警文案
 
     // 图片图标（不能用基类的 label，因为我们用 lv_image 而不是 Font Awesome 文字）
