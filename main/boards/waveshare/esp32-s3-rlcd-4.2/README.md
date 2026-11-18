@@ -10,10 +10,10 @@
 
 以下均为设备 `GET /shot.bmp` 直出显存的 **400×300 原始画面（1:1，未放大）**：
 
-| 天气主页 | 天气详情页 | 音乐页 |
-| --- | --- | --- |
-| ![天气主页](docs/screenshots/weather-main.png) | ![天气详情页](docs/screenshots/weather-detail.png) | ![音乐页](docs/screenshots/music.png) |
-| 翻页时钟、农历、环境温湿度、今日待办、AI 状态卡 | 大温度主视觉 + 体感/湿度/风 + AQI/能见度/气压 + 三日预报 + 日出日落/预警 | 唱片、歌名/歌手、三行歌词、进度条、AI 状态卡 |
+| 天气主页 | 天气详情页 | 音乐页 | 倒计时页 |
+| --- | --- | --- | --- |
+| ![天气主页](docs/screenshots/weather-main.png) | ![天气详情页](docs/screenshots/weather-detail.png) | ![音乐页](docs/screenshots/music.png) | ![倒计时页](docs/screenshots/countdown.png) |
+| 翻页时钟、农历、环境温湿度、今日待办、AI 状态卡 | 大温度主视觉 + 体感/湿度/风 + AQI/能见度/气压 + 三日预报 + 日出日落/预警 | 唱片、歌名/歌手、三行歌词、进度条、AI 状态卡 | 纯黑底 + 居中 48px 白色剩余时间 |
 
 ## 功能特性
 
