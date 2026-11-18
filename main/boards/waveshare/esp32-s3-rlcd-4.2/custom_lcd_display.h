@@ -253,6 +253,7 @@ public:
     virtual void SetMusicProgress(uint32_t current_ms, uint32_t total_ms) override;
     virtual void SwitchToMusicPage() override;
     virtual void SwitchToWeatherPage() override;
+    virtual void SwitchToHomePage() override;
     
     // 启动数据更新任务（需要在网络连接后调用）
     void StartDataUpdateTask();

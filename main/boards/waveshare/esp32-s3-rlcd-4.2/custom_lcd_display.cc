@@ -888,6 +888,23 @@ void CustomLcdDisplay::SwitchToWeatherPage() {
     }
 }
 
+void CustomLcdDisplay::SwitchToHomePage() {
+    DisplayLockGuard lock(this);
+    // 音乐停止/播完/失败后的强制返回：不受 IsMusicPlaying 保护条件影响，确保回到天气主页
+    if (countdown_active_.load()) {
+        ESP_LOGI(TAG, "倒计时进行中，保持倒计时页");
+        return;
+    }
+    detail_return_deadline_ms_ = 0;
+    detail_wait_speaking_ = false;
+    detail_saw_speaking_ = false;
+    if (display_mode_ != MODE_WEATHER) {
+        display_mode_ = MODE_WEATHER;
+        ApplyDisplayMode();
+        ESP_LOGI(TAG, "返回天气主页");
+    }
+}
+
 void CustomLcdDisplay::SwitchToWeatherDetailPage() {
     DisplayLockGuard lock(this);
     if (countdown_active_.load()) {

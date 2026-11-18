@@ -97,6 +97,8 @@ public:
     // 页面切换能力（默认空实现，支持多页面的屏幕可重写）
     virtual void SwitchToMusicPage();
     virtual void SwitchToWeatherPage();
+    // 强制返回天气主页（用于音乐停止/播完/失败，绕过音乐页保护）
+    virtual void SwitchToHomePage();
     // 倒计时页是否正在运行（默认无倒计时能力）
     virtual bool IsCountdownActive() const { return false; }
 

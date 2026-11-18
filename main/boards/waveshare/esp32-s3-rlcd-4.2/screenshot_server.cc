@@ -10,6 +10,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cctype>
 #include <cstring>
 #include <string>
 #include <esp_err.h>
@@ -22,6 +23,30 @@
 #include <settings.h>   // P2 #14：从 NVS 读取可选鉴权 token
 
 static const char *TAG = "Screenshot";
+
+// httpd_query_key_value 不做 URL 解码，这里就地解开 %XX 和 +。
+static void UrlDecodeInPlace(char *s) {
+    if (s == nullptr) return;
+    auto hex = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    };
+    char *w = s;
+    for (char *r = s; *r != '\0'; ++r) {
+        if (*r == '+') {
+            *w++ = ' ';
+        } else if (*r == '%' && isxdigit(static_cast<unsigned char>(r[1])) &&
+                   isxdigit(static_cast<unsigned char>(r[2]))) {
+            *w++ = static_cast<char>((hex(r[1]) << 4) | hex(r[2]));
+            r += 2;
+        } else {
+            *w++ = *r;
+        }
+    }
+    *w = '\0';
+}
 
 static httpd_handle_t s_server = nullptr;
 static CustomLcdDisplay *s_display = nullptr;
@@ -285,6 +310,9 @@ static esp_err_t MusicPlayHandler(httpd_req_t *req) {
     }
     httpd_query_key_value(query, "title", title, sizeof(title));
     httpd_query_key_value(query, "artist", artist, sizeof(artist));
+    UrlDecodeInPlace(url);
+    UrlDecodeInPlace(title);
+    UrlDecodeInPlace(artist);
     Application::GetInstance().PlayMusicFromUrl(url, title, artist, "");
     httpd_resp_set_type(req, "text/plain; charset=utf-8");
     return httpd_resp_send(req, "music play requested\n", HTTPD_RESP_USE_STRLEN);

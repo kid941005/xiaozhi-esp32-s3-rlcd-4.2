@@ -74,3 +74,7 @@ void Display::SwitchToMusicPage() {
 void Display::SwitchToWeatherPage() {
     // default single-page device: no-op
 }
+
+void Display::SwitchToHomePage() {
+    // default single-page device: no-op
+}

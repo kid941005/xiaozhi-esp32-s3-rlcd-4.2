@@ -1874,7 +1874,9 @@ void Application::MusicPlaybackTask(std::string url, std::string title, std::str
                 // 音乐页可见时，必须把失败信息写到歌词区，避免用户看不到弹窗。
                 display->SetMusicLyric("播放失败：链接无效或网络异常");
                 display->SetMusicProgress(0, 1);
+                display->SetChatMessage("system", "AI 待命");
                 display->ShowNotification("音乐播放失败：网络连接异常");
+                display->SwitchToHomePage();
             });
             notify_failed = true;
             break;
@@ -1886,7 +1888,9 @@ void Application::MusicPlaybackTask(std::string url, std::string title, std::str
                 // 资源不可用时，同步更新音乐页提示，避免只在通知区显示。
                 display->SetMusicLyric("播放失败：资源不可用");
                 display->SetMusicProgress(0, 1);
+                display->SetChatMessage("system", "AI 待命");
                 display->ShowNotification("音乐播放失败：资源不可用");
+                display->SwitchToHomePage();
             });
             notify_failed = true;
             break;
@@ -2151,8 +2155,9 @@ void Application::MusicPlaybackTask(std::string url, std::string title, std::str
         Schedule([display]() {
             display->SetMusicLyric("播放失败：请稍后重试");
             display->SetMusicProgress(0, 1);
+            display->SetChatMessage("system", "AI 待命");
             display->ShowNotification("音乐播放失败");
-            display->SwitchToWeatherPage();
+            display->SwitchToHomePage();
             if (Application::GetInstance().GetDeviceState() == kDeviceStateIdle) {
                 display->SetStatus(Lang::Strings::STANDBY);
             }
@@ -2170,8 +2175,8 @@ void Application::MusicPlaybackTask(std::string url, std::string title, std::str
             // 播放结束后主动重置 AI 文案，避免停留在上一条工具/提示文本
             display->SetChatMessage("system", "AI 待命");
             display->ShowNotification("音乐播放结束");
-            // 自动返回天气首页，避免停留在空白音乐页
-            display->SwitchToWeatherPage();
+            // 自动返回天气主页，避免停留在空白音乐页
+            display->SwitchToHomePage();
             if (Application::GetInstance().GetDeviceState() == kDeviceStateIdle) {
                 display->SetStatus(Lang::Strings::STANDBY);
             }
@@ -2204,8 +2209,9 @@ void Application::StopMusicPlayback(bool clear_lyric) {
             auto display = Board::GetInstance().GetDisplay();
             display->SetMusicLyric("");
             display->SetMusicProgress(0, 1);
-            // 播放停止后自动回到天气主页
-            display->SwitchToWeatherPage();
+            display->SetChatMessage("system", "AI 待命");
+            // 播放停止后强制回到天气主页（而非详情页）
+            display->SwitchToHomePage();
             if (GetDeviceState() == kDeviceStateIdle) {
                 display->SetStatus(Lang::Strings::STANDBY);
             }
