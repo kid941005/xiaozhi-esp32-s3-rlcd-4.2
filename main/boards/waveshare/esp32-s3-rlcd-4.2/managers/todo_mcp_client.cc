@@ -42,6 +42,8 @@ constexpr int kFirstDelayMs = 20000;    // 上电后先等网络
 constexpr int kConnectAttempts = 3;     // 建连失败重试次数
 constexpr int kConnectGapMs = 3000;
 constexpr int kMaxConsecFail = 2;       // 连续拉取失败多少次后重连
+constexpr int kListRetryAttempts = 3;   // 单轮 list_todos 失败后的快速重试次数（避免首轮瞬态错误把旧缓存留 60s）
+constexpr int kListRetryTimeoutMs = 10000;  // 每次快速重试的响应超时
 constexpr int kMaxRows = kTodoFetchMaxRows;  // P2 #26：抓取上限，见 ui_limits.h（显示侧仅渲染 kTodoDisplayMaxItems=6）
 
 // 0=周日 … 6=周六
@@ -260,42 +262,56 @@ void TodoMcpClient::RunSession(const std::string& url) {
     ESP_LOGI(TAG, "MCP 会话已建立");
 
     int consec_fail = 0;
+    unsigned list_seq = 0;
     for (;;) {
         if (broken_) {
             ESP_LOGW(TAG, "连接已断开");
             break;
         }
-        pending_id_ = 2;
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            msg_reply_.clear();
-        }
-        xEventGroupClearBits(event_group_, kReplyBit);
 
-        const std::string request = BuildListTodosRequest(pending_id_);
-        if (!ws->Send(request)) {
-            ESP_LOGW(TAG, "发送 tools/call 失败");
-            break;
-        }
-        bits = xEventGroupWaitBits(event_group_, kReplyBit, pdTRUE, pdFALSE,
-                                   pdMS_TO_TICKS(kCallTimeoutMs));
-        if (bits & kReplyBit) {
-            std::string payload;
+        // list_todos 偶发瞬态失败（例如网关首次路由返回 -32601）时，不要直接保留
+        // 旧 NVS 并等到 60s 后的下一轮；先在同一会话内快速重试 3 次。
+        bool list_ok = false;
+        for (int attempt = 1; attempt <= kListRetryAttempts; ++attempt) {
+            // 每次重试用唯一 id，避免上一轮迟到的响应被当成这一轮的结果。
+            pending_id_ = 100 + static_cast<int>(list_seq++ % 1000);
             {
                 std::lock_guard<std::mutex> lock(mutex_);
-                payload = msg_reply_;
+                msg_reply_.clear();
             }
-            if (ApplyPayload(payload)) {
-                consec_fail = 0;
+            xEventGroupClearBits(event_group_, kReplyBit);
+
+            const std::string request = BuildListTodosRequest(pending_id_);
+            if (!ws->Send(request)) {
+                ESP_LOGW(TAG, "发送 tools/call 失败（第 %d/%d 次）", attempt, kListRetryAttempts);
+                break;
+            }
+            bits = xEventGroupWaitBits(event_group_, kReplyBit, pdTRUE, pdFALSE,
+                                       pdMS_TO_TICKS(kListRetryTimeoutMs));
+            if (bits & kReplyBit) {
+                std::string payload;
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    payload = msg_reply_;
+                }
+                if (ApplyPayload(payload)) {
+                    list_ok = true;
+                    consec_fail = 0;
+                    break;
+                }
+                ESP_LOGW(TAG, "list_todos 返回异常（第 %d/%d 次）", attempt, kListRetryAttempts);
             } else {
-                ++consec_fail;
+                ESP_LOGW(TAG, "等待 list_todos 响应超时（第 %d/%d 次）", attempt, kListRetryAttempts);
             }
-        } else {
+            if (attempt < kListRetryAttempts) {
+                vTaskDelay(pdMS_TO_TICKS(attempt * 1000));  // 1s、2s 后退避重试
+            }
+        }
+        if (!list_ok) {
             ++consec_fail;
-            ESP_LOGW(TAG, "等待 list_todos 响应超时（连续 %d 次）", consec_fail);
         }
         if (consec_fail >= kMaxConsecFail) {
-            ESP_LOGW(TAG, "连续 %d 次拉取失败，重建连接", consec_fail);
+            ESP_LOGW(TAG, "连续 %d 轮拉取失败，重建连接", consec_fail);
             break;
         }
 
@@ -344,10 +360,24 @@ bool TodoMcpClient::ApplyPayload(const std::string& payload) {
     bool ok = false;
     int count = 0;
 
+    cJSON* error = cJSON_GetObjectItem(root, "error");
+    if (error != nullptr) {
+        cJSON* code = cJSON_GetObjectItem(error, "code");
+        cJSON* message = cJSON_GetObjectItem(error, "message");
+        ESP_LOGW(TAG, "待办 MCP 返回错误: code=%d message=%s",
+                 cJSON_IsNumber(code) ? code->valueint : 0,
+                 (message != nullptr && cJSON_IsString(message) && message->valuestring != nullptr)
+                     ? message->valuestring
+                     : "(unknown)");
+    }
+
     cJSON* result = cJSON_GetObjectItem(root, "result");
     cJSON* content = (result != nullptr) ? cJSON_GetObjectItem(result, "content") : nullptr;
     cJSON* first = (content != nullptr && cJSON_IsArray(content)) ? cJSON_GetArrayItem(content, 0) : nullptr;
     cJSON* text = (first != nullptr) ? cJSON_GetObjectItem(first, "text") : nullptr;
+    if (text == nullptr || !cJSON_IsString(text) || text->valuestring == nullptr) {
+        ESP_LOGW(TAG, "待办响应缺少 result.content[0].text");
+    }
 
     if (text != nullptr && cJSON_IsString(text) && text->valuestring != nullptr) {
         cJSON* inner = cJSON_Parse(text->valuestring);

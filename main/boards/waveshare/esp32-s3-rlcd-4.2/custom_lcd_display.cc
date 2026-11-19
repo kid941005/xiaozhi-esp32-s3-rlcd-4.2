@@ -417,7 +417,7 @@ void CustomLcdDisplay::RefreshMemoDisplayInternal() {
         lv_obj_set_style_bg_opa(box, LV_OPA_TRANSP, 0);
         lv_obj_set_style_border_width(box, 0, 0);
         lv_obj_set_style_pad_all(box, 0, 0);
-        lv_obj_set_style_pad_row(box, 2, 0);
+        lv_obj_set_style_pad_row(box, 0, 0);   // 行内两行紧贴，保证 3 条待办能同时放进 199px
         lv_obj_remove_flag(box, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_flex_align(box, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
@@ -454,7 +454,7 @@ void CustomLcdDisplay::RefreshMemoDisplayInternal() {
         lv_obj_set_style_text_color(text, lv_color_black(), 0);
         lv_obj_set_style_text_line_space(text, 1, 0);
         lv_obj_set_width(text, row_w);
-        lv_obj_set_style_max_height(text, 42, 0);   // 最多两行，超出用省略号
+        lv_obj_set_style_max_height(text, 39, 0);   // 两行 19+1+19=39，最多两行，超出用省略号
         lv_label_set_long_mode(text, LV_LABEL_LONG_DOT);
         lv_label_set_text(text, (body_str[0] != 0) ? body_str : "备忘提醒");
 
