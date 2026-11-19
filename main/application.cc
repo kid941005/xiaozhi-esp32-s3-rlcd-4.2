@@ -21,10 +21,14 @@
 #include "esp_audio_simple_dec.h"
 #include "esp_audio_simple_dec_default.h"
 #include "esp_ae_rate_cvt.h"
+#include <freertos/idf_additions.h>
 #include <cJSON.h>
 #include <algorithm>
 #include <cstring>
 #include <limits>
+#include <memory>
+#include <mutex>
+#include <vector>
 
 #define TAG "Application"
 
@@ -40,6 +44,24 @@ struct MusicPlaybackTaskArgs {
     std::string title;
     std::string artist;
     std::string lyric_url;
+};
+
+struct MusicLyricLine {
+    uint32_t time_ms;
+    std::string text;
+};
+
+// 后台歌词拉取任务与播放主任务共享的歌词状态。
+struct MusicLyricShare {
+    std::mutex mutex;
+    std::vector<MusicLyricLine> lines;
+    uint32_t total_ms = 0;
+    bool ready = false;
+};
+
+struct MusicLyricTaskArgs {
+    std::string lyric_url;
+    std::shared_ptr<MusicLyricShare> share;
 };
 
 // LRCLIB 查询参数需要 percent-encoding（UTF-8 按字节转义）
@@ -1683,12 +1705,13 @@ bool Application::PlayMusicFromUrl(const std::string& url, const std::string& ti
     // 优先使用直接歌词文本；如果为空则把 lyric_url（或 LRCLIB 查询地址）传给播放任务
     args->lyric_url = lyric.empty() ? effective_lyric_url : "";
 
-    BaseType_t created = xTaskCreate([](void* arg) {
+    // 播放任务栈同样放 PSRAM：12KB 内部栈长期占用会压缩显示 DMA 的余量。
+    BaseType_t created = xTaskCreateWithCaps([](void* arg) {
         std::unique_ptr<MusicPlaybackTaskArgs> task_args(static_cast<MusicPlaybackTaskArgs*>(arg));
         task_args->app->MusicPlaybackTask(std::move(task_args->url), std::move(task_args->title),
                                           std::move(task_args->artist), std::move(task_args->lyric_url));
-        vTaskDelete(nullptr);
-    }, "music_playback", 12288, args, 3, &music_playback_task_handle_);
+        vTaskDeleteWithCaps(nullptr);
+    }, "music_playback", 12288, args, 3, &music_playback_task_handle_, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 
     if (created != pdPASS) {
         delete args;
@@ -1709,141 +1732,165 @@ void Application::MusicPlaybackTask(std::string url, std::string title, std::str
     auto network = board.GetNetwork();
     ESP_LOGI(TAG, "开始播放音乐: %s - %s", title.c_str(), artist.c_str());
 
-    // LRC 歌词结构：(时间戳毫秒, 纯文本)
-    struct LyricLine {
-        uint32_t time_ms;
-        std::string text;
-    };
-    std::vector<LyricLine> lyrics;
+    std::vector<MusicLyricLine> lyrics;
     size_t current_lyric_idx = 0;
     size_t last_displayed_idx = SIZE_MAX;  // 避免重复刷新
     uint32_t lyric_total_ms = 0;
+    bool lyrics_loaded = false;
+    std::shared_ptr<MusicLyricShare> lyric_share;
 
-    // 如果有歌词 URL，拉取并解析 LRC 格式
+    // 歌词改为后台任务拉取：先启动音频，避免 LRCLIB/TLS 握手阻塞起播。
+    // 任务栈放 PSRAM，避免 10KB 内部 SRAM 占用在显示 DMA 时加剧碎片。
     if (!lyric_url.empty()) {
-        ESP_LOGI(TAG, "正在拉取歌词: %s", lyric_url.c_str());
-        auto lyric_http = network->CreateHttp(4);  // 用不同的 connect_id，避免和音乐流(3)的 TLS 连接冲突
-        lyric_http->SetHeader("User-Agent", SystemInfo::GetUserAgent());
-        if (lyric_http->Open("GET", lyric_url)) {
-            if (lyric_http->GetStatusCode() == 200) {
-                std::string lyric_text = lyric_http->ReadAll();
-                // LRCLIB 返回 JSON：取 syncedLyrics；没有时间轴时用 plainLyrics 生成伪 LRC
-                if (lyric_url.find("lrclib.net") != std::string::npos && !lyric_text.empty()) {
-                    cJSON* lrc_root = cJSON_Parse(lyric_text.c_str());
-                    if (lrc_root != nullptr) {
-                        cJSON* synced = cJSON_GetObjectItem(lrc_root, "syncedLyrics");
-                        cJSON* plain = cJSON_GetObjectItem(lrc_root, "plainLyrics");
-                        cJSON* duration = cJSON_GetObjectItem(lrc_root, "duration");
-                        if (cJSON_IsNumber(duration) && duration->valuedouble > 0) {
-                            lyric_total_ms = static_cast<uint32_t>(duration->valuedouble * 1000);
-                        }
-                        bool got_lyrics = false;
-                        if (cJSON_IsString(synced) && synced->valuestring != nullptr &&
-                            synced->valuestring[0] != 0) {
-                            lyric_text = synced->valuestring;
-                            got_lyrics = true;
-                        } else if (cJSON_IsString(plain) && plain->valuestring != nullptr &&
-                                   plain->valuestring[0] != 0) {
-                            std::string plain_text = plain->valuestring;
-                            lyric_text.clear();
-                            size_t plain_pos = 0;
-                            int fake_sec = 0;
-                            while (plain_pos < plain_text.size()) {
-                                size_t line_end2 = plain_text.find('\n', plain_pos);
-                                if (line_end2 == std::string::npos) line_end2 = plain_text.size();
-                                std::string plain_line = plain_text.substr(plain_pos, line_end2 - plain_pos);
-                                plain_pos = line_end2 + 1;
-                                if (!plain_line.empty() && plain_line.back() == '\r') plain_line.pop_back();
-                                if (plain_line.empty()) continue;
-                                char fake_ts[32];
-                                snprintf(fake_ts, sizeof(fake_ts), "[%02d:%02d.00]", fake_sec / 60, fake_sec % 60);
-                                lyric_text += fake_ts;
-                                lyric_text += plain_line;
-                                lyric_text += "\n";
-                                fake_sec += 4;
+        lyric_share = std::make_shared<MusicLyricShare>();
+        auto* lyric_args = new MusicLyricTaskArgs();
+        lyric_args->lyric_url = std::move(lyric_url);
+        lyric_args->share = lyric_share;
+        BaseType_t lyric_created = xTaskCreateWithCaps([](void* arg) {
+            std::unique_ptr<MusicLyricTaskArgs> args(static_cast<MusicLyricTaskArgs*>(arg));
+            auto share = args->share;
+            std::vector<MusicLyricLine> lyrics;
+            uint32_t lyric_total_ms = 0;
+            auto* network = Board::GetInstance().GetNetwork();
+            const std::string& lyric_url = args->lyric_url;
+            ESP_LOGI(TAG, "正在拉取歌词: %s", lyric_url.c_str());
+            auto lyric_http = network->CreateHttp(4);  // 用不同的 connect_id，避免和音乐流(3)的 TLS 连接冲突
+            lyric_http->SetHeader("User-Agent", SystemInfo::GetUserAgent());
+            if (lyric_http->Open("GET", lyric_url)) {
+                if (lyric_http->GetStatusCode() == 200) {
+                    std::string lyric_text = lyric_http->ReadAll();
+                    // LRCLIB 返回 JSON：取 syncedLyrics；没有时间轴时用 plainLyrics 生成伪 LRC
+                    if (lyric_url.find("lrclib.net") != std::string::npos && !lyric_text.empty()) {
+                        cJSON* lrc_root = cJSON_Parse(lyric_text.c_str());
+                        if (lrc_root != nullptr) {
+                            cJSON* synced = cJSON_GetObjectItem(lrc_root, "syncedLyrics");
+                            cJSON* plain = cJSON_GetObjectItem(lrc_root, "plainLyrics");
+                            cJSON* duration = cJSON_GetObjectItem(lrc_root, "duration");
+                            if (cJSON_IsNumber(duration) && duration->valuedouble > 0) {
+                                lyric_total_ms = static_cast<uint32_t>(duration->valuedouble * 1000);
                             }
-                            got_lyrics = !lyric_text.empty();
-                        }
-                        if (!got_lyrics) {
-                            lyric_text.clear();
-                            ESP_LOGW(TAG, "LRCLIB 未返回可用歌词");
-                        }
-                        cJSON_Delete(lrc_root);
-                    } else {
-                        lyric_text.clear();
-                        ESP_LOGW(TAG, "LRCLIB 响应解析失败");
-                    }
-                }
-                if (!lyric_text.empty()) {
-                    ESP_LOGI(TAG, "歌词拉取成功，长度=%d bytes", (int)lyric_text.size());
-
-                    // 解析 LRC 歌词：逐行提取 [mm:ss.xx] 时间戳和纯文本
-                    size_t pos = 0;
-                    while (pos < lyric_text.size()) {
-                        // 找到行尾
-                        size_t line_end = lyric_text.find('\n', pos);
-                        if (line_end == std::string::npos) line_end = lyric_text.size();
-                        std::string line = lyric_text.substr(pos, line_end - pos);
-                        pos = line_end + 1;
-
-                        // 去掉行尾 \r
-                        if (!line.empty() && line.back() == '\r') line.pop_back();
-                        if (line.empty()) continue;
-
-                        // 提取所有时间标签 [mm:ss.xx] 或 [mm:ss.xxx]
-                        std::string pure_text;
-                        std::vector<uint32_t> timestamps;
-                        size_t i = 0;
-                        while (i < line.size() && line[i] == '[') {
-                            size_t close = line.find(']', i);
-                            if (close == std::string::npos) break;
-                            std::string tag = line.substr(i + 1, close - i - 1);
-                            i = close + 1;
-
-                            // 尝试解析时间 mm:ss.xx
-                            int mm = 0, ss = 0, ms = 0;
-                            if (sscanf(tag.c_str(), "%d:%d.%d", &mm, &ss, &ms) >= 2) {
-                                // 处理毫秒位数：.27 → 270ms, .270 → 270ms, .5 → 500ms
-                                if (ms < 10 && tag.find('.') != std::string::npos) {
-                                    size_t dot = tag.find('.');
-                                    size_t ms_digits = tag.size() - dot - 1;
-                                    if (ms_digits == 1) ms *= 100;
-                                    else if (ms_digits == 2) ms *= 10;
+                            bool got_lyrics = false;
+                            if (cJSON_IsString(synced) && synced->valuestring != nullptr &&
+                                synced->valuestring[0] != 0) {
+                                lyric_text = synced->valuestring;
+                                got_lyrics = true;
+                            } else if (cJSON_IsString(plain) && plain->valuestring != nullptr &&
+                                       plain->valuestring[0] != 0) {
+                                std::string plain_text = plain->valuestring;
+                                lyric_text.clear();
+                                size_t plain_pos = 0;
+                                int fake_sec = 0;
+                                while (plain_pos < plain_text.size()) {
+                                    size_t line_end2 = plain_text.find('\n', plain_pos);
+                                    if (line_end2 == std::string::npos) line_end2 = plain_text.size();
+                                    std::string plain_line = plain_text.substr(plain_pos, line_end2 - plain_pos);
+                                    plain_pos = line_end2 + 1;
+                                    if (!plain_line.empty() && plain_line.back() == '\r') plain_line.pop_back();
+                                    if (plain_line.empty()) continue;
+                                    char fake_ts[32];
+                                    snprintf(fake_ts, sizeof(fake_ts), "[%02d:%02d.00]", fake_sec / 60, fake_sec % 60);
+                                    lyric_text += fake_ts;
+                                    lyric_text += plain_line;
+                                    lyric_text += "\n";
+                                    fake_sec += 4;
                                 }
-                                timestamps.push_back(mm * 60000 + ss * 1000 + ms);
+                                got_lyrics = !lyric_text.empty();
                             }
-                            // 非时间标签（如 [ti:标题]）直接跳过
-                        }
-                        pure_text = line.substr(i);
-
-                        // 跳过空歌词和元信息行
-                        if (pure_text.empty()) continue;
-
-                        // 每个时间戳对应同一句歌词
-                        for (uint32_t ts : timestamps) {
-                            lyrics.push_back({ts, pure_text});
+                            if (!got_lyrics) {
+                                lyric_text.clear();
+                                ESP_LOGW(TAG, "LRCLIB 未返回可用歌词");
+                            }
+                            cJSON_Delete(lrc_root);
+                        } else {
+                            lyric_text.clear();
+                            ESP_LOGW(TAG, "LRCLIB 响应解析失败");
                         }
                     }
+                    if (!lyric_text.empty()) {
+                        ESP_LOGI(TAG, "歌词拉取成功，长度=%d bytes", (int)lyric_text.size());
 
-                    // 按时间排序
-                    std::sort(lyrics.begin(), lyrics.end(),
-                              [](const LyricLine& a, const LyricLine& b) { return a.time_ms < b.time_ms; });
-                    if (!lyrics.empty() && lyric_total_ms == 0) {
-                        lyric_total_ms = std::max<uint32_t>(lyrics.back().time_ms, 1);
+                        // 解析 LRC 歌词：逐行提取 [mm:ss.xx] 时间戳和纯文本
+                        size_t pos = 0;
+                        while (pos < lyric_text.size()) {
+                            // 找到行尾
+                            size_t line_end = lyric_text.find('\n', pos);
+                            if (line_end == std::string::npos) line_end = lyric_text.size();
+                            std::string line = lyric_text.substr(pos, line_end - pos);
+                            pos = line_end + 1;
+
+                            // 去掉行尾 \r
+                            if (!line.empty() && line.back() == '\r') line.pop_back();
+                            if (line.empty()) continue;
+
+                            // 提取所有时间标签 [mm:ss.xx] 或 [mm:ss.xxx]
+                            std::string pure_text;
+                            std::vector<uint32_t> timestamps;
+                            size_t i = 0;
+                            while (i < line.size() && line[i] == '[') {
+                                size_t close = line.find(']', i);
+                                if (close == std::string::npos) break;
+                                std::string tag = line.substr(i + 1, close - i - 1);
+                                i = close + 1;
+
+                                // 尝试解析时间 mm:ss.xx
+                                int mm = 0, ss = 0, ms = 0;
+                                if (sscanf(tag.c_str(), "%d:%d.%d", &mm, &ss, &ms) >= 2) {
+                                    // 处理毫秒位数：.27 → 270ms, .270 → 270ms, .5 → 500ms
+                                    if (ms < 10 && tag.find('.') != std::string::npos) {
+                                        size_t dot = tag.find('.');
+                                        size_t ms_digits = tag.size() - dot - 1;
+                                        if (ms_digits == 1) ms *= 100;
+                                        else if (ms_digits == 2) ms *= 10;
+                                    }
+                                    timestamps.push_back(mm * 60000 + ss * 1000 + ms);
+                                }
+                                // 非时间标签（如 [ti:标题]）直接跳过
+                            }
+                            pure_text = line.substr(i);
+
+                            // 跳过空歌词和元信息行
+                            if (pure_text.empty()) continue;
+
+                            // 每个时间戳对应同一句歌词
+                            for (uint32_t ts : timestamps) {
+                                lyrics.push_back({ts, pure_text});
+                            }
+                        }
+
+                        // 按时间排序
+                        std::sort(lyrics.begin(), lyrics.end(),
+                                  [](const MusicLyricLine& a, const MusicLyricLine& b) { return a.time_ms < b.time_ms; });
+                        if (!lyrics.empty() && lyric_total_ms == 0) {
+                            lyric_total_ms = std::max<uint32_t>(lyrics.back().time_ms, 1);
+                        }
+
+                        ESP_LOGI(TAG, "LRC 歌词解析完成，共 %d 行有效歌词", (int)lyrics.size());
+                    } else {
+                        ESP_LOGW(TAG, "歌词内容为空");
                     }
-
-                    ESP_LOGI(TAG, "LRC 歌词解析完成，共 %d 行有效歌词", (int)lyrics.size());
                 } else {
-                    ESP_LOGW(TAG, "歌词内容为空");
+                    ESP_LOGW(TAG, "歌词拉取失败，HTTP 状态码: %d", lyric_http->GetStatusCode());
                 }
+                lyric_http->Close();
             } else {
-                ESP_LOGW(TAG, "歌词拉取失败，HTTP 状态码: %d", lyric_http->GetStatusCode());
+                ESP_LOGW(TAG, "歌词拉取失败：无法连接到歌词服务");
             }
-            lyric_http->Close();
-        } else {
-            ESP_LOGW(TAG, "歌词拉取失败：无法连接到歌词服务");
+
+            {
+                std::lock_guard<std::mutex> lock(share->mutex);
+                share->lines = std::move(lyrics);
+                share->total_ms = lyric_total_ms;
+                share->ready = true;
+            }
+            vTaskDeleteWithCaps(nullptr);
+        }, "music_lyric", 10240, lyric_args, 2, nullptr, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (lyric_created != pdPASS) {
+            delete lyric_args;
+            lyric_share.reset();
+            ESP_LOGW(TAG, "创建歌词拉取任务失败，跳过歌词");
         }
     }
+
     constexpr int kReadBufSize = 2048;
     int out_buf_size = 8192;
     bool decoder_registered = false;
@@ -1944,6 +1991,13 @@ void Application::MusicPlaybackTask(std::string url, std::string title, std::str
             }
             int read_bytes = read_result.value();
             if (read_bytes == 0) {
+                // Content-Length 已知且已读完时立即结束，避免 EOF 后固定 30 次空读延迟。
+                size_t body_length = http->GetBodyLength();
+                if (body_length > 0 && total_read_bytes >= body_length) {
+                    ESP_LOGI(TAG, "音乐流读取完成（Content-Length=%u）", (unsigned)body_length);
+                    playback_finished = true;
+                    break;
+                }
                 zero_read_count++;
                 if (zero_read_count >= kMaxZeroReads) {
                     ESP_LOGI(TAG, "音乐流读取结束（连续空读 %d 次）", zero_read_count);
@@ -2059,6 +2113,16 @@ void Application::MusicPlaybackTask(std::string url, std::string title, std::str
                             codec->EnableOutput(true);
                         }
                         codec->OutputData(pcm);
+
+                        if (!lyrics_loaded && lyric_share) {
+                            std::lock_guard<std::mutex> lock(lyric_share->mutex);
+                            if (lyric_share->ready) {
+                                lyrics = std::move(lyric_share->lines);
+                                lyric_total_ms = lyric_share->total_ms;
+                                lyrics_loaded = true;
+                                ESP_LOGI(TAG, "异步歌词就绪，共 %d 行", (int)lyrics.size());
+                            }
+                        }
 
                         // 计算当前播放位置（无论有没有歌词都需要）
                         uint32_t current_ms = static_cast<uint32_t>(
