@@ -21,8 +21,8 @@
 - **农历 / 节气 / 节日**：顶栏显示农历日期，按「农历节日 > 公历节日 > 当日节气」优先级显示。
 - **天气（和风主源 + 双免密钥兜底）**：和风 QWeather 取实时天气、体感、湿度、风、能见度、气压、AQI/PM2.5、三日预报、日出日落、灾害预警；失败自动回退中国天气网、Open-Meteo。
 - **天气详情页**：独立整页分层展示全部天气维度，黑底白卡、图标化布局；实体按键 / 语音 / HTTP 三种进入方式。
-- **今日待办（MCP 自取）**：设备作为 MCP 客户端保持长连接，每分钟调用 `list_todos`，只显示今天的事项，按时间升序、两行一条、超出高度自动裁剪。
-- **音乐页**：唱片 + 歌名/歌手 + 三行歌词 + 进度条；歌名/歌手优先取飞牛 MCP `music_status`，歌词未随播放指令传入时自动从 LRCLIB 获取同步歌词。开始播放自动进入音乐页并保持停留，停止、播完或播放失败后强制回天气主页（首页），不会停在详情页。
+- **今日待办（MCP 自取）**：设备作为 MCP 客户端保持长连接，每 10 秒调用 `list_todos`，只显示今天的事项，按时间升序、两行一条、超出高度自动裁剪；内容无变化不重复写 NVS。
+- **音乐页**：唱片 + 歌名/歌手 + 三行歌词 + 进度条；歌名/歌手优先取飞牛 MCP `music_status`，歌词未随播放指令传入时由后台任务异步从 LRCLIB 获取同步歌词，不阻塞起播。开始播放自动进入音乐页并保持停留，停止、播完或播放失败后强制回天气主页（首页），不会停在详情页；播放/歌词任务栈均放在 PSRAM，降低内部 SRAM 压力。
 - **倒计时**：语音「倒计时 5 分钟」启动，支持暂停/继续/取消与多倒计时依次提醒；独立黑底白字倒计时页按秒刷新，到点弹窗响铃并自动回主页。
 - **语音与音频**：离线唤醒词、设备端 AEC、本地 VAD 语音打断；开机默认静音，NVS 保留用户上次音量，调大音量自动解除静音。
 - **AI 状态卡**：无 emoji 素材时使用内置矢量猫脸兜底，显示待命/聆听/说话等状态。
@@ -151,15 +151,17 @@ NVS weather/city（手动 self.weather.set_city）
 ### 待办
 
 - 设备通过独立 WebSocket 连接外部 MCP 接入点。
-- 握手一次后复用长连接，每分钟调用 `list_todos(view=today, limit=10)`。
-- 断线自动重连；服务端 ping，客户端回 pong。
+- 握手一次后复用长连接，每 10 秒调用 `list_todos(view=today, limit=10)`；内容无变化时只刷新 UI，不写 NVS。
+- 断线/工具路由异常按 5 秒间隔快速重连；单轮 `list_todos` 失败最多快速重试 3 次。
+- 服务端 ping，客户端回 pong。
 - 支持 `self.todo.set_url` 修改地址、`self.todo.sync` 手动覆盖列表。
 
 ### 音乐
 
 - 歌名/歌手：飞牛 MCP `music_status` 返回「上一次播放：<歌名> - <歌手>（时间）」。
 - 播放地址：飞牛 MCP `music_play` 返回直链，15 分钟有效，播放前现取。
-- 歌词：`self.music.play_url` 未传 `lyric`/`lyric_url` 且歌名/歌手已知时，自动查询 LRCLIB；`syncedLyrics` 优先，无时间轴时用 `plainLyrics` 生成每 4 秒一行的伪 LRC，`duration` 作为总时长。
+- 歌词：`self.music.play_url` 未传 `lyric`/`lyric_url` 且歌名/歌手已知时，自动查询 LRCLIB；`syncedLyrics` 优先，无时间轴时用 `plainLyrics` 生成每 4 秒一行的伪 LRC，`duration` 作为总时长。歌词由 `music_lyric` 后台任务异步拉取，不阻塞音频起播。
+- 播放实现：`Application::PlayMusicFromUrl()` 创建 `music_playback` 任务（PSRAM 栈）；`MusicPlaybackTask()` 负责 HTTP 流读取、MP3 解码、重采样、进度/歌词刷新；读到 `Content-Length` 结尾即结束，避免自然播完延迟；停止/播完/失败统一回天气主页。
 
 ## 语音与音频
 
@@ -231,6 +233,7 @@ main/boards/waveshare/esp32-s3-rlcd-4.2/
 ├── detail_ui.cc                 # 天气详情页
 ├── music_ui.cc                  # 音乐页
 ├── countdown_ui.cc              # 独立倒计时页
+├── screenshot_server.{h,cc}     # HTTP 调试/截图服务
 ├── ui_widgets.{h,cc}            # 状态胶囊、AI 卡等复用控件
 ├── ui_assets.h                  # 字体/图片声明
 ├── managers/                    # 天气、待办 MCP、传感器、电源、农历等

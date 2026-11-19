@@ -21,8 +21,8 @@
 - **农历 / 节气 / 节日**：顶栏显示农历日期，按「农历节日 > 公历节日 > 当日节气」优先级显示。
 - **天气**：实时天气、体感、湿度、风、能见度、气压、AQI/PM2.5、三日预报、日出日落和灾害预警；主源失败时自动回退备用数据源。
 - **天气详情页**：独立整页分层展示全部天气维度，黑底白卡、图标化布局；实体按键、语音和 HTTP 均可进入。
-- **今日待办**：设备作为 MCP 客户端保持长连接，每分钟拉取一次，只显示今天的事项，按时间升序、两行一条、超出高度自动裁剪。
-- **音乐页**：唱片 + 歌名/歌手 + 三行歌词 + 进度条；播放中显示实时歌词，空闲时显示最近一次播放记录。开始播放自动进入音乐页并保持停留，停止或播完自动回天气主页。
+- **今日待办**：设备作为 MCP 客户端保持长连接，每 10 秒拉取一次，只显示今天的事项，按时间升序、两行一条、超出高度自动裁剪；内容无变化不重复写 NVS。
+- **音乐页**：唱片 + 歌名/歌手 + 三行歌词 + 进度条；播放中显示实时歌词，空闲时显示最近一次播放记录。开始播放自动进入音乐页并保持停留，停止、播完或播放失败后强制回天气主页；歌词后台异步拉取，不阻塞起播。
 - **倒计时**：语音「倒计时 5 分钟」启动，支持暂停/继续/取消；独立黑底白字页按秒刷新，到点弹窗响铃并自动回主页。
 - **语音与音频**：离线唤醒词、设备端 AEC、本地 VAD 语音打断；开机默认静音，NVS 保留用户上次音量，调大音量自动解除静音。
 - **AI 状态卡**：无 emoji 素材时使用内置矢量猫脸兜底，显示待命/聆听/说话等状态。
@@ -150,15 +150,17 @@ NVS weather/city（手动 self.weather.set_city）
 ### 待办
 
 - 设备通过独立 WebSocket 连接外部 MCP 接入点。
-- 握手一次后复用长连接，每分钟调用 `list_todos(view=today, limit=10)`。
-- 断线自动重连；服务端 ping，客户端回 pong。
+- 握手一次后复用长连接，每 10 秒调用 `list_todos(view=today, limit=10)`；内容无变化时只刷新 UI，不写 NVS。
+- 断线/工具路由异常按 5 秒间隔快速重连；单轮 `list_todos` 失败最多快速重试 3 次。
+- 服务端 ping，客户端回 pong。
 - 支持 `self.todo.set_url` 修改地址、`self.todo.sync` 手动覆盖列表。
 
 ### 音乐
 
 - 歌名/歌手：外部音乐服务返回「上一次播放：<歌名> - <歌手>（时间）」。
 - 播放地址：播放前现取直链，有效期约 15 分钟。
-- 歌词：`self.music.play_url` 未传 `lyric`/`lyric_url` 且歌名/歌手已知时，自动查询 LRCLIB；`syncedLyrics` 优先，无时间轴时用 `plainLyrics` 生成每 4 秒一行的伪 LRC，`duration` 作为总时长。
+- 歌词：`self.music.play_url` 未传 `lyric`/`lyric_url` 且歌名/歌手已知时，自动查询 LRCLIB；`syncedLyrics` 优先，无时间轴时用 `plainLyrics` 生成每 4 秒一行的伪 LRC，`duration` 作为总时长。歌词由后台任务异步拉取，不阻塞起播。
+- 播放实现：`music_playback` 任务使用 PSRAM 栈，负责 HTTP 流、MP3 解码、重采样与进度刷新；按 `Content-Length` 读完即结束，停止/播完/失败统一回天气主页。
 
 ## 语音与音频
 
@@ -205,6 +207,10 @@ NVS weather/city（手动 self.weather.set_city）
 | `GET /dbg` | 关键控件文本/位置/尺寸、dither 参数 |
 | `GET /page?p=weather\|detail\|music\|toggle` | 远程切页 |
 | `GET /dither?mode=0..4&thr=16..240` | 在线调整二值化参数 |
+| `GET /countdown?action=start\|pause\|resume\|cancel\|status&sec=300` | 触发/查询倒计时（无语音环境调试） |
+| `GET /weather_query?ms=15000` | 模拟天气查询，切详情页并在 ms 后自动返回 |
+| `GET /music_play?url=...&title=...&artist=...` | 用指定直链模拟播放，验证自动切页 |
+| `GET /music_stop` / `GET /music_state` | 停止播放 / 查询播放状态与当前页 |
 
 主机截图：
 
@@ -229,6 +235,8 @@ xiaozhi-esp32-s3-rlcd-4.2/
 │       ├── weather_ui.cc          # 天气主页
 │       ├── detail_ui.cc           # 天气详情页
 │       ├── music_ui.cc            # 音乐页
+│       ├── countdown_ui.cc        # 独立倒计时页
+│       ├── screenshot_server.{h,cc} # HTTP 调试/截图服务
 │       ├── managers/              # 天气、待办、传感器、电源、农历
 │       ├── assets/fonts/          # 1bpp 字体与图标
 │       └── docs/screenshots/      # README 界面截图
