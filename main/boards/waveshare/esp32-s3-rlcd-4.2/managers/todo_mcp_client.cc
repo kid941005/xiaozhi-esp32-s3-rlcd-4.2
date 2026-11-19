@@ -36,8 +36,8 @@ constexpr EventBits_t kReplyBit = BIT2;
 
 constexpr int kInitTimeoutMs = 10000;
 constexpr int kCallTimeoutMs = 20000;
-constexpr int kPollMs = 60 * 1000;      // 长连接下的拉取间隔
-constexpr int kRetryMs = 20 * 1000;     // 断线后重连间隔
+constexpr int kPollMs = 10 * 1000;      // 长连接下的拉取间隔；NVS 仅在内容变化时写入
+constexpr int kRetryMs = 5 * 1000;      // 断线/工具路由异常后的重连间隔
 constexpr int kFirstDelayMs = 20000;    // 上电后先等网络
 constexpr int kConnectAttempts = 3;     // 建连失败重试次数
 constexpr int kConnectGapMs = 3000;
@@ -309,6 +309,12 @@ void TodoMcpClient::RunSession(const std::string& url) {
         }
         if (!list_ok) {
             ++consec_fail;
+            if (last_list_error_code_ == -32601) {
+                // 网关重启/路由表未就绪时会先返回工具不存在；同一会话继续重试也可能命中旧路由，
+                // 直接断开重连，让网关重新选择后端 MCP 服务。
+                ESP_LOGW(TAG, "list_todos 未注册或路由异常，立即重建会话");
+                break;
+            }
         }
         if (consec_fail >= kMaxConsecFail) {
             ESP_LOGW(TAG, "连续 %d 轮拉取失败，重建连接", consec_fail);
@@ -350,6 +356,8 @@ bool TodoMcpClient::ApplyPayload(const std::string& payload) {
     cJSON* root = cJSON_Parse(payload.c_str());
     if (root == nullptr) return false;
 
+    last_list_error_code_ = 0;
+
     // 先收进临时行，按时间线排序后再写 NVS（服务端返回顺序不保证时间序）
     struct Row {
         int minutes;            // 排序键：全天 = -1，有具体时间 = 时*60+分，无时间 = 24*60+1
@@ -358,14 +366,16 @@ bool TodoMcpClient::ApplyPayload(const std::string& payload) {
     };
     static Row rows[kMaxRows];  // 任务栈有限，放静态区避免大栈帧
     bool ok = false;
+    bool changed = false;
     int count = 0;
 
     cJSON* error = cJSON_GetObjectItem(root, "error");
     if (error != nullptr) {
         cJSON* code = cJSON_GetObjectItem(error, "code");
         cJSON* message = cJSON_GetObjectItem(error, "message");
+        last_list_error_code_ = cJSON_IsNumber(code) ? code->valueint : -1;
         ESP_LOGW(TAG, "待办 MCP 返回错误: code=%d message=%s",
-                 cJSON_IsNumber(code) ? code->valueint : 0,
+                 last_list_error_code_,
                  (message != nullptr && cJSON_IsString(message) && message->valuestring != nullptr)
                      ? message->valuestring
                      : "(unknown)");
@@ -448,14 +458,21 @@ bool TodoMcpClient::ApplyPayload(const std::string& payload) {
 
     char* json = cJSON_PrintUnformatted(arr);
     if (json != nullptr) {
-        Settings settings("memo", true);
-        settings.SetString("items", json);
+        const std::string next(json);
         cJSON_free(json);
+
+        // 10 秒轮询下，内容未变化时不要反复写 NVS，避免无谓的 Flash 磨损和重绘。
+        Settings read_settings("memo", false);
+        changed = (read_settings.GetString("items", "") != next);
+        if (changed) {
+            Settings write_settings("memo", true);
+            write_settings.SetString("items", next.c_str());
+        }
     }
     cJSON_Delete(arr);
 
-    ESP_LOGI(TAG, "已拉取当日待办 %d 条", count);
-    if (on_updated_) {
+    ESP_LOGI(TAG, "已拉取当日待办 %d 条（%s）", count, changed ? "有更新" : "无变化");
+    if (changed && on_updated_) {
         on_updated_();
     }
     return true;

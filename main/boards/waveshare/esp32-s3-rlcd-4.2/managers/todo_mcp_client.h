@@ -16,7 +16,7 @@ class WebSocket;
 //
 // 之所以保持长连接而不是每次新建：每次新建都要重新做一次 TLS 握手，
 // 实测周期性重连会偶发握手失败（对端在握手阶段关闭 TCP），长连接只需要
-// 在断线后重连，且刷新更快（1 分钟）。
+// 在断线后重连，且刷新更快（10 秒）。
 class TodoMcpClient {
 public:
     static TodoMcpClient& GetInstance();
@@ -59,6 +59,7 @@ private:
     std::string music_artist_;
     bool music_updated_ = false;
     int pending_id_ = 0;
+    int last_list_error_code_ = 0;
     volatile bool broken_ = false;
 };
 
