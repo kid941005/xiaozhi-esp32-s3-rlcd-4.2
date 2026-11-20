@@ -65,8 +65,9 @@ struct BatteryStatus {
 class CustomBoard : public WifiBoard {
 private:
     i2c_master_bus_handle_t i2c_bus_;
-    Button boot_button_;
-    Button user_button_;  // GPIO18 用户按键
+    Button volume_button_;  // GPIO0 右侧按键：单击音量+10，双击音量-10，长按静音/取消静音
+    Button user_button_;    // GPIO18 左侧按键：单击主页/天气/音乐页切换
+    int volume_before_mute_ = -1;
     CustomLcdDisplay *display_ = nullptr;
     std::mutex battery_mutex_;   // 保护 GetBatteryStatusLocked 内的 static 采样历史/状态
 
@@ -229,18 +230,20 @@ private:
     }
 
     void InitializeButtons() { 
-        // BOOT 按钮（GPIO0）- 主要交互按键
-        boot_button_.OnClick([this]() {
-            if (display_) display_->NotifyUserActivity();  // 记录用户活动
-            auto& app = Application::GetInstance();
-            if (app.GetDeviceState() == kDeviceStateStarting) {
-                EnterWifiConfigMode();
-                return;
-            }
-            app.ToggleChatState();
+        // 右侧按键 BOOT（GPIO0）- 音量调节：单击 +10，双击 -10，长按静音/取消静音
+        volume_button_.OnClick([this]() {
+            AdjustVolume(+10);
         });
 
-        // USER 按钮（GPIO18）- 辅助功能按键
+        volume_button_.OnDoubleClick([this]() {
+            AdjustVolume(-10);
+        });
+
+        volume_button_.OnLongPress([this]() {
+            ToggleMute();
+        });
+
+        // 左侧按键 USER（GPIO18）- 主页/天气/音乐页切换（保留原功能）
         user_button_.OnClick([this]() {
             if (display_) display_->NotifyUserActivity();  // 记录用户活动
             if (display_) {
@@ -248,18 +251,41 @@ private:
             }
             ESP_LOGI(TAG, "USER 按钮单击：切换天气页/音乐页");
         });
+    }
 
-        user_button_.OnDoubleClick([this]() {
-            if (display_) display_->NotifyUserActivity();  // 记录用户活动
-            // 双击：刷新所有数据（天气、传感器、时间）
-            RefreshAllData();
-        });
+    // 调整音量（delta 为 ±10），范围 0~100
+    void AdjustVolume(int delta) {
+        auto codec = GetAudioCodec();
+        if (codec == nullptr) {
+            return;
+        }
+        int volume = codec->output_volume() + delta;
+        if (volume < 0) volume = 0;
+        if (volume > 100) volume = 100;
+        codec->SetOutputVolume(volume);
+        // 调大音量自动解除开机静音；调到 0 视为静音
+        codec->SetMute(volume == 0);
+        if (display_) display_->NotifyUserActivity();
+        ESP_LOGI(TAG, "音量按钮：%d%%（静音=%d）", volume, codec->muted() ? 1 : 0);
+    }
 
-        user_button_.OnLongPress([this]() {
-            if (display_) display_->NotifyUserActivity();  // 记录用户活动
-            // 长按：显示系统信息
-            ShowSystemInfo();
-        });
+    // 长按静音/取消静音：静音前记住原音量，恢复时回到原值（默认 50%）
+    void ToggleMute() {
+        auto codec = GetAudioCodec();
+        if (codec == nullptr) {
+            return;
+        }
+        if (!codec->muted() && codec->output_volume() > 0) {
+            volume_before_mute_ = codec->output_volume();
+            codec->SetMute(true);
+            ESP_LOGI(TAG, "音量按钮：静音（原 %d%%）", volume_before_mute_);
+        } else {
+            int restore = volume_before_mute_ > 0 ? volume_before_mute_ : 50;
+            codec->SetOutputVolume(restore);
+            codec->SetMute(false);
+            ESP_LOGI(TAG, "音量按钮：取消静音（%d%%）", restore);
+        }
+        if (display_) display_->NotifyUserActivity();
     }
 
     // USER 按钮功能实现
@@ -997,10 +1023,10 @@ private:
     }
 
 public:
-    CustomBoard() : boot_button_(BOOT_BUTTON_GPIO), user_button_(USER_BUTTON_GPIO) {    
+    CustomBoard() : volume_button_(BOOT_BUTTON_GPIO), user_button_(USER_BUTTON_GPIO) {
         InitializeI2c();
         InitializeSensors();  // 在 I2C 初始化后立即初始化传感器
-        InitializeButtons();     
+        InitializeButtons();
         InitializeTools();
         InitializeLcdDisplay();
         // 最后启用 DVFS + 自动 light sleep：此前各外设已初始化完毕

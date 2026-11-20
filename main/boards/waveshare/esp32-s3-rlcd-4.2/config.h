@@ -78,8 +78,8 @@
 #define BATTERY_CAPACITY_MAH  0       // 例如 2000（单节锂电）
 #define BATTERY_AVG_CURRENT_MA 0      // 例如 120（整机平均放电电流）
 
-#define BOOT_BUTTON_GPIO        GPIO_NUM_0
-#define USER_BUTTON_GPIO        GPIO_NUM_18  // 用户按键（屏幕右侧 KEY 按钮）
+#define BOOT_BUTTON_GPIO        GPIO_NUM_0   // 右侧按键：单击音量+10，双击音量-10，长按静音/取消静音
+#define USER_BUTTON_GPIO        GPIO_NUM_18  // 左侧按键：单击主页/天气/音乐页切换
 
 
 #define RLCD_DC_PIN    GPIO_NUM_5  
