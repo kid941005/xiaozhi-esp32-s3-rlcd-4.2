@@ -177,9 +177,26 @@ bool WebsocketProtocol::OpenAudioChannel() {
     });
 
     ESP_LOGI(TAG, "Connecting to websocket server: %s with version: %d", url.c_str(), version_);
-    if (auto connected = websocket_->Connect(url.c_str()); !connected) {
-        ESP_LOGE(TAG, "Failed to connect to websocket server: %s",
-                 connected.error().ToString().c_str());
+    // 一次连接超时并不代表服务不可用：唤醒时电源管理重新配置或链路瞬时抖动
+    // 都可能让首次 TCP/TLS 握手超时，而紧接着重试通常就能成功。这里先重试
+    // 一次，避免把一次瞬时失败变成常驻的“无法连接服务”告警。
+    bool connected = false;
+    std::string last_error;
+    for (int attempt = 1; attempt <= 2; ++attempt) {
+        auto result = websocket_->Connect(url.c_str());
+        if (result) {
+            connected = true;
+            break;
+        }
+        last_error = result.error().ToString();
+        ESP_LOGW(TAG, "Failed to connect to websocket server (attempt %d/2): %s",
+                 attempt, last_error.c_str());
+        if (attempt < 2) {
+            vTaskDelay(pdMS_TO_TICKS(500));
+        }
+    }
+    if (!connected) {
+        ESP_LOGE(TAG, "Failed to connect to websocket server: %s", last_error.c_str());
         SetError(Lang::Strings::SERVER_NOT_CONNECTED, url);
         return false;
     }
@@ -200,6 +217,12 @@ bool WebsocketProtocol::OpenAudioChannel() {
         return false;
     }
 
+    // 连接成功后通知应用层清除上一次连接失败留下的告警。WebSocket 协议
+    // 之前没有触发 on_connected_，导致一次瞬时失败后“无法连接服务”横幅
+    // 即使后续连接成功也不会消失。
+    if (on_connected_ != nullptr) {
+        on_connected_();
+    }
     if (on_audio_channel_opened_ != nullptr) {
         on_audio_channel_opened_();
     }
