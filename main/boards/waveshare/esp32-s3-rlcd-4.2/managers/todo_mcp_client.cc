@@ -1,7 +1,9 @@
 #include "todo_mcp_client.h"
 
 #include <cJSON.h>
+#include <esp_crt_bundle.h>
 #include <esp_heap_caps.h>
+#include <esp_http_client.h>
 #include <esp_log.h>
 #include <esp_system.h>
 
@@ -29,16 +31,26 @@
 #define MCP_TODO_URL ""
 #endif
 
+// Reminder REST API 直连（不依赖外部 MCP 接入点）；未配置时为空，功能自动关闭。
+#ifndef REMINDER_API_URL
+#define REMINDER_API_URL ""
+#endif
+#ifndef REMINDER_API_KEY
+#define REMINDER_API_KEY ""
+#endif
+
 namespace {
 constexpr EventBits_t kRefreshBit = BIT0;
 constexpr EventBits_t kInitBit = BIT1;
 constexpr EventBits_t kReplyBit = BIT2;
+constexpr EventBits_t kHttpRefreshBit = BIT3;
 
 constexpr int kInitTimeoutMs = 10000;
 constexpr int kCallTimeoutMs = 20000;
 constexpr int kPollMs = 10 * 1000;      // 长连接下的拉取间隔；NVS 仅在内容变化时写入
 constexpr int kRetryMs = 5 * 1000;      // 断线/工具路由异常后的重连间隔
 constexpr int kFirstDelayMs = 20000;    // 上电后先等网络
+constexpr int kHttpFirstDelayMs = 8000; // HTTP 直连首次拉取（网络通常已就绪）
 constexpr int kConnectAttempts = 3;     // 建连失败重试次数
 constexpr int kConnectGapMs = 3000;
 constexpr int kMaxConsecFail = 2;       // 连续拉取失败多少次后重连
@@ -111,6 +123,57 @@ void LogHeap(const char* when) {
              static_cast<int>(esp_get_free_heap_size()),
              static_cast<int>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
 }
+
+struct HttpCtx {
+    std::string data;
+};
+
+esp_err_t HttpEventHandler(esp_http_client_event_t* evt) {
+    if (evt->event_id == HTTP_EVENT_ON_DATA && evt->user_data != nullptr &&
+        evt->data != nullptr && evt->data_len > 0) {
+        static_cast<HttpCtx*>(evt->user_data)->data.append(
+            static_cast<const char*>(evt->data), evt->data_len);
+    }
+    return ESP_OK;
+}
+
+// API 返回 due_at 是 UTC（...Z），转换成设备本地时间字符串 "YYYY-MM-DD HH:MM"。
+std::string UtcIsoToLocalText(const char* iso, bool all_day) {
+    if (iso == nullptr) return std::string();
+    int y = 0, mo = 0, d = 0, hh = 0, mm = 0, ss = 0;
+    if (std::sscanf(iso, "%d-%d-%dT%d:%d:%d", &y, &mo, &d, &hh, &mm, &ss) != 6) {
+        return std::string();
+    }
+    struct tm utc_tm = {};
+    utc_tm.tm_year = y - 1900;
+    utc_tm.tm_mon = mo - 1;
+    utc_tm.tm_mday = d;
+    utc_tm.tm_hour = hh;
+    utc_tm.tm_min = mm;
+    utc_tm.tm_sec = ss;
+    utc_tm.tm_isdst = 0;
+
+    time_t now = time(nullptr);
+    struct tm local_now = {};
+    struct tm utc_now = {};
+    localtime_r(&now, &local_now);
+    gmtime_r(&now, &utc_now);
+    // mktime 按本地时区解释字段；两者之差即本地时区偏移（东八区为 +28800）。
+    const long local_offset = static_cast<long>(std::difftime(mktime(&local_now), mktime(&utc_now)));
+
+    time_t as_if_local = mktime(&utc_tm);  // 实际 epoch - offset
+    time_t actual = as_if_local + local_offset;
+    struct tm local_tm = {};
+    localtime_r(&actual, &local_tm);
+
+    char buf[32];
+    if (all_day) {
+        std::strftime(buf, sizeof(buf), "%Y-%m-%d", &local_tm);
+    } else {
+        std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M", &local_tm);
+    }
+    return std::string(buf);
+}
 }  // namespace
 
 TodoMcpClient& TodoMcpClient::GetInstance() {
@@ -152,12 +215,58 @@ bool TodoMcpClient::ConsumeMusicUpdated() {
 
 void TodoMcpClient::RequestRefresh() {
     if (event_group_ != nullptr) {
-        xEventGroupSetBits(event_group_, kRefreshBit);
+        xEventGroupSetBits(event_group_, kRefreshBit | kHttpRefreshBit);
     }
 }
 
 void TodoMcpClient::TaskEntry(void* arg) {
     static_cast<TodoMcpClient*>(arg)->Run();
+}
+
+void TodoMcpClient::HttpTaskEntry(void* arg) {
+    static_cast<TodoMcpClient*>(arg)->RunHttp();
+}
+
+void TodoMcpClient::RunHttp() {
+    vTaskDelay(pdMS_TO_TICKS(kHttpFirstDelayMs));
+    for (;;) {
+        FetchTodosDirect();
+        xEventGroupClearBits(event_group_, kHttpRefreshBit);
+        xEventGroupWaitBits(event_group_, kHttpRefreshBit, pdTRUE, pdFALSE, pdMS_TO_TICKS(kPollMs));
+    }
+}
+
+bool TodoMcpClient::FetchTodosDirect() {
+    std::string base(REMINDER_API_URL);
+    while (!base.empty() && base.back() == '/') base.pop_back();
+    if (base.empty()) return false;
+
+    HttpCtx ctx;
+    esp_http_client_config_t config = {};
+    const std::string url = base + "/api/reminder/items?view=today&limit=10";
+    config.url = url.c_str();
+    config.event_handler = HttpEventHandler;
+    config.user_data = &ctx;
+    config.timeout_ms = 10000;
+    config.crt_bundle_attach = esp_crt_bundle_attach;
+
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (client == nullptr) {
+        ESP_LOGW(TAG, "Reminder HTTP 客户端创建失败");
+        return false;
+    }
+    esp_http_client_set_header(client, "X-API-Key", REMINDER_API_KEY);
+    esp_http_client_set_header(client, "Accept", "application/json");
+    esp_err_t err = esp_http_client_perform(client);
+    const int status = esp_http_client_get_status_code(client);
+    esp_http_client_cleanup(client);
+
+    if (err != ESP_OK || status != 200) {
+        ESP_LOGW(TAG, "Reminder HTTP 请求失败 err=%d status=%d len=%d", err, status,
+                 static_cast<int>(ctx.data.size()));
+        return false;
+    }
+    return ApplyReminderApiPayload(ctx.data);
 }
 
 void TodoMcpClient::Start(std::function<void()> on_updated) {
@@ -171,6 +280,13 @@ void TodoMcpClient::Start(std::function<void()> on_updated) {
     // 首次启动时把编译期默认地址落盘，之后以 NVS 为准
     GetUrl();
     xTaskCreate(TaskEntry, "todo_mcp", 8192, this, 2, nullptr);
+
+    // Reminder REST API 直连任务：外部 MCP 接入点不可用时仍能保证待办卡更新。
+    // 仅在本地私有 todo_mcp_secret.h 配置了 URL + API Key 时启用。
+    if (std::strlen(REMINDER_API_URL) > 0 && std::strlen(REMINDER_API_KEY) > 0) {
+        ESP_LOGI(TAG, "Reminder HTTP 直连已启用");
+        xTaskCreate(HttpTaskEntry, "todo_http", 8192, this, 2, nullptr);
+    }
 }
 
 void TodoMcpClient::Run() {
@@ -462,6 +578,7 @@ bool TodoMcpClient::ApplyPayload(const std::string& payload) {
         cJSON_free(json);
 
         // 10 秒轮询下，内容未变化时不要反复写 NVS，避免无谓的 Flash 磨损和重绘。
+        std::lock_guard<std::mutex> nvs_lock(nvs_mutex_);
         Settings read_settings("memo", false);
         changed = (read_settings.GetString("items", "") != next);
         if (changed) {
@@ -478,6 +595,105 @@ bool TodoMcpClient::ApplyPayload(const std::string& payload) {
     return true;
 }
 
+
+bool TodoMcpClient::ApplyReminderApiPayload(const std::string& payload) {
+    if (payload.empty()) return false;
+    cJSON* root = cJSON_Parse(payload.c_str());
+    if (root == nullptr) return false;
+
+    cJSON* code = cJSON_GetObjectItem(root, "code");
+    if (!cJSON_IsNumber(code) || code->valueint != 0) {
+        ESP_LOGW(TAG, "Reminder HTTP 返回错误: code=%d", cJSON_IsNumber(code) ? code->valueint : -1);
+        cJSON_Delete(root);
+        return false;
+    }
+    cJSON* data = cJSON_GetObjectItem(root, "data");
+    if (data == nullptr || !cJSON_IsArray(data)) {
+        ESP_LOGW(TAG, "Reminder HTTP 响应缺少 data 数组");
+        cJSON_Delete(root);
+        return false;
+    }
+
+    struct Row {
+        int minutes;
+        std::string time_text;
+        std::string title;
+    };
+    static Row rows[kMaxRows];
+    int count = 0;
+
+    cJSON* it = nullptr;
+    cJSON_ArrayForEach(it, data) {
+        if (count >= kMaxRows) break;
+        cJSON* title = cJSON_GetObjectItem(it, "title");
+        if (title == nullptr || !cJSON_IsString(title) || title->valuestring == nullptr ||
+            title->valuestring[0] == 0) {
+            continue;
+        }
+        cJSON* due = cJSON_GetObjectItem(it, "due_at");
+        cJSON* all_day = cJSON_GetObjectItem(it, "all_day");
+        const char* due_at = (due != nullptr && cJSON_IsString(due) && due->valuestring != nullptr)
+                                 ? due->valuestring
+                                 : "";
+        const bool is_all_day = cJSON_IsTrue(all_day);
+        std::string due_text;
+        int minutes = 24 * 60 + 1;
+        if (due_at[0] != 0) {
+            due_text = UtcIsoToLocalText(due_at, is_all_day);
+            if (due_text.empty() || !IsToday(due_text.c_str())) {
+                continue;
+            }
+            if (is_all_day) {
+                minutes = -1;
+            } else {
+                int hh = 0, mm = 0;
+                if (std::sscanf(due_text.c_str() + 11, "%d:%d", &hh, &mm) == 2) {
+                    minutes = hh * 60 + mm;
+                }
+            }
+        }
+        rows[count].minutes = minutes;
+        rows[count].time_text = is_all_day ? "全天" : FormatTime(due_text.c_str(), false);
+        rows[count].title = title->valuestring;
+        count++;
+    }
+    cJSON_Delete(root);
+
+    std::stable_sort(rows, rows + count, [](const Row& a, const Row& b) {
+        return a.minutes < b.minutes;
+    });
+
+    cJSON* arr = cJSON_CreateArray();
+    for (int i = 0; i < count; i++) {
+        ESP_LOGI(TAG, "待办行: %s %s", rows[i].time_text.c_str(), rows[i].title.c_str());
+        cJSON* item = cJSON_CreateObject();
+        cJSON_AddStringToObject(item, "t", rows[i].time_text.c_str());
+        cJSON_AddStringToObject(item, "c", rows[i].title.c_str());
+        cJSON_AddStringToObject(item, "type", "todo");
+        cJSON_AddItemToArray(arr, item);
+    }
+
+    bool changed = false;
+    char* json = cJSON_PrintUnformatted(arr);
+    if (json != nullptr) {
+        const std::string next(json);
+        cJSON_free(json);
+        std::lock_guard<std::mutex> nvs_lock(nvs_mutex_);
+        Settings read_settings("memo", false);
+        changed = (read_settings.GetString("items", "") != next);
+        if (changed) {
+            Settings write_settings("memo", true);
+            write_settings.SetString("items", next.c_str());
+        }
+    }
+    cJSON_Delete(arr);
+
+    ESP_LOGI(TAG, "Reminder HTTP 拉取当日待办 %d 条（%s）", count, changed ? "有更新" : "无变化");
+    if (changed && on_updated_) {
+        on_updated_();
+    }
+    return true;
+}
 
 bool TodoMcpClient::ApplyMusicStatusPayload(const std::string& payload) {
     if (payload.empty()) return false;

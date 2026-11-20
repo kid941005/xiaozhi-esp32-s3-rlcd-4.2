@@ -48,12 +48,17 @@ private:
     // 一条长连接内的全部拉取，返回时连接已不可用
     void RunSession(const std::string& url);
     bool ApplyPayload(const std::string& payload);
+    bool ApplyReminderApiPayload(const std::string& payload);
     bool ApplyMusicStatusPayload(const std::string& payload);
     static void TaskEntry(void* arg);
+    static void HttpTaskEntry(void* arg);
+    void RunHttp();
+    bool FetchTodosDirect();
 
     EventGroupHandle_t event_group_ = nullptr;
     std::function<void()> on_updated_;
     std::mutex mutex_;
+    std::mutex nvs_mutex_;
     std::string msg_reply_;
     std::string music_title_;
     std::string music_artist_;
