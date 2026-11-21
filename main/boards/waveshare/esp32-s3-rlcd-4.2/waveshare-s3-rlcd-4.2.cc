@@ -3,6 +3,7 @@
 #include <driver/spi_common.h>
 #include <esp_log.h>
 #include <esp_system.h>
+#include <esp_heap_caps.h>
 #include <esp_netif.h>
 #include <string>
 #include <mutex>

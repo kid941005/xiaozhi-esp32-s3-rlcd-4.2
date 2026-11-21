@@ -340,6 +340,26 @@ static esp_err_t MusicStateHandler(httpd_req_t *req) {
     return httpd_resp_send(req, out, n);
 }
 
+// 调试端点：/wake?text=你好小智 → 模拟语音唤醒，验证异步建连/首次连接告警清理
+static esp_err_t WakeHandler(httpd_req_t *req) {
+    if (!CheckAuth(req)) {
+        return ESP_OK;
+    }
+    char query[128] = {0};
+    char text[96] = {0};
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK &&
+        httpd_query_key_value(query, "text", text, sizeof(text)) == ESP_OK) {
+        UrlDecodeInPlace(text);
+    }
+    const char *wake_word = (text[0] != '\0') ? text : "你好小智";
+    Application::GetInstance().WakeWordInvoke(std::string(wake_word));
+    char out[160];
+    int n = snprintf(out, sizeof(out), "wake requested: %s\n", wake_word);
+    httpd_resp_set_type(req, "text/plain; charset=utf-8");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, out, n);
+}
+
 static const httpd_uri_t kShotUri = {
     .uri = "/shot.bmp",
     .method = HTTP_GET,
@@ -403,6 +423,13 @@ static const httpd_uri_t kWeatherQueryUri = {
     .user_ctx = nullptr,
 };
 
+static const httpd_uri_t kWakeUri = {
+    .uri = "/wake",
+    .method = HTTP_GET,
+    .handler = WakeHandler,
+    .user_ctx = nullptr,
+};
+
 bool ScreenshotServerStart(CustomLcdDisplay *display) {
     if (s_server != nullptr) {
         return true;
@@ -441,6 +468,7 @@ bool ScreenshotServerStart(CustomLcdDisplay *display) {
     httpd_register_uri_handler(s_server, &kPageUri);
     httpd_register_uri_handler(s_server, &kCountdownUri);
     httpd_register_uri_handler(s_server, &kWeatherQueryUri);
+    httpd_register_uri_handler(s_server, &kWakeUri);
     httpd_register_uri_handler(s_server, &kMusicPlayUri);
     httpd_register_uri_handler(s_server, &kMusicStopUri);
     httpd_register_uri_handler(s_server, &kMusicStateUri);

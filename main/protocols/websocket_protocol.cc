@@ -12,9 +12,25 @@
 
 #define TAG "WS"
 
-WebsocketProtocol::WebsocketProtocol() { event_group_handle_ = xEventGroupCreate(); }
+WebsocketProtocol::WebsocketProtocol() {
+    event_group_handle_ = xEventGroupCreate();
+    esp_timer_create_args_t args = {};
+    args.callback = [](void* arg) { static_cast<WebsocketProtocol*>(arg)->PingTimerCallback(); };
+    args.arg = this;
+    args.name = "ws_ping";
+    if (esp_timer_create(&args, &ping_timer_) != ESP_OK) {
+        ping_timer_ = nullptr;
+    }
+}
 
-WebsocketProtocol::~WebsocketProtocol() { vEventGroupDelete(event_group_handle_); }
+WebsocketProtocol::~WebsocketProtocol() {
+    if (ping_timer_ != nullptr) {
+        esp_timer_stop(ping_timer_);
+        esp_timer_delete(ping_timer_);
+        ping_timer_ = nullptr;
+    }
+    vEventGroupDelete(event_group_handle_);
+}
 
 bool WebsocketProtocol::Start() {
     // Only connect to server when audio channel is needed
@@ -73,6 +89,9 @@ bool WebsocketProtocol::IsAudioChannelOpened() const {
 
 void WebsocketProtocol::CloseAudioChannel(bool send_goodbye) {
     (void)send_goodbye;  // Websocket doesn't need to send goodbye message
+    if (ping_timer_ != nullptr) {
+        esp_timer_stop(ping_timer_);
+    }
     websocket_.reset();
 }
 
@@ -169,8 +188,16 @@ bool WebsocketProtocol::OpenAudioChannel() {
         });
     });
 
+    websocket_->OnPong([this](const char*, size_t) {
+        // 收到 Pong 说明链路仍然活跃，刷新超时基准。
+        last_incoming_time_ = std::chrono::steady_clock::now();
+    });
+
     websocket_->OnDisconnected([this]() {
         ESP_LOGI(TAG, "Websocket disconnected");
+        if (ping_timer_ != nullptr) {
+            esp_timer_stop(ping_timer_);
+        }
         if (on_audio_channel_closed_ != nullptr) {
             on_audio_channel_closed_();
         }
@@ -227,7 +254,21 @@ bool WebsocketProtocol::OpenAudioChannel() {
         on_audio_channel_opened_();
     }
 
+    // 主动心跳：20 秒一次 Ping，避免服务端/中间设备把长时间无上行数据的
+    // WebSocket 当作空闲连接断开。Pong 会刷新 last_incoming_time_。
+    last_incoming_time_ = std::chrono::steady_clock::now();
+    if (ping_timer_ != nullptr) {
+        esp_timer_stop(ping_timer_);
+        esp_timer_start_periodic(ping_timer_, 20 * 1000 * 1000);
+    }
+
     return true;
+}
+
+void WebsocketProtocol::PingTimerCallback() {
+    if (websocket_ != nullptr && websocket_->IsConnected()) {
+        websocket_->Ping();
+    }
 }
 
 std::string WebsocketProtocol::GetHelloMessage() {

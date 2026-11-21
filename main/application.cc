@@ -159,6 +159,7 @@ void Application::Initialize() {
     // 开机默认静音：只关硬件输出，不覆盖用户音量设置；用户调音量或调用 MCP 工具即可解除
     if (codec != nullptr) {
         codec->SetMute(true);
+        startup_muted_ = true;
     }
     ESP_LOGI(TAG, "After board/audio init (startup muted)");
     SystemInfo::PrintHeapStats();
@@ -438,13 +439,16 @@ void Application::HandleNetworkConnectedEvent() {
 }
 
 void Application::HandleNetworkDisconnectedEvent() {
-    // Close current conversation when network disconnected
+    // Close current conversation when network disconnected. While the audio
+    // channel is being opened on a worker task, do not touch protocol_ here:
+    // the worker owns it until OpenAudioChannel() returns.
     auto state = GetDeviceState();
     if (state == kDeviceStateNotifying) {
         StopNotification();
     }
-    if (state == kDeviceStateConnecting || state == kDeviceStateListening ||
-        state == kDeviceStateSpeaking) {
+    if (!audio_channel_opening_.load() &&
+        (state == kDeviceStateConnecting || state == kDeviceStateListening ||
+         state == kDeviceStateSpeaking)) {
         ESP_LOGI(TAG, "Closing audio channel due to network disconnection");
         protocol_->CloseAudioChannel();
     }
@@ -682,11 +686,16 @@ void Application::InitializeProtocol() {
         protocol_ = std::make_unique<MqttProtocol>();
     }
 
-    protocol_->OnConnected([this]() { DismissAlert(); });
+    // 回调可能来自网络接收任务/独立建连任务，统一投递到主任务，避免跨任务修改 UI/状态。
+    protocol_->OnConnected([this]() {
+        Schedule([this]() { DismissAlert(); });
+    });
 
     protocol_->OnNetworkError([this](const std::string& message) {
-        last_error_message_ = message;
-        xEventGroupSetBits(event_group_, MAIN_EVENT_ERROR);
+        Schedule([this, message]() {
+            last_error_message_ = message;
+            xEventGroupSetBits(event_group_, MAIN_EVENT_ERROR);
+        });
     });
 
     protocol_->OnIncomingAudio([this](std::unique_ptr<AudioStreamPacket> packet) {
@@ -696,22 +705,25 @@ void Application::InitializeProtocol() {
     });
 
     protocol_->OnAudioChannelOpened([this, codec, &board]() {
-        board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
-        if (protocol_->server_sample_rate() != codec->output_sample_rate()) {
-            ESP_LOGW(TAG,
-                     "Server sample rate %d does not match device output sample rate %d, "
-                     "resampling may cause distortion",
-                     protocol_->server_sample_rate(), codec->output_sample_rate());
-        }
+        Schedule([this, codec, &board]() {
+            board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
+            if (protocol_ && codec &&
+                protocol_->server_sample_rate() != codec->output_sample_rate()) {
+                ESP_LOGW(TAG,
+                         "Server sample rate %d does not match device output sample rate %d, "
+                         "resampling may cause distortion",
+                         protocol_->server_sample_rate(), codec->output_sample_rate());
+            }
+        });
     });
 
     protocol_->OnAudioChannelClosed([this, &board]() {
-        // 如果正在播放音乐（HTTP 流），不要切回省电模式，
-        // 否则会覆盖 PlayMusicFromUrl 里设的高性能模式导致卡顿
-        if (!music_playing_.load()) {
-            board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
-        }
-        Schedule([this]() {
+        Schedule([this, &board]() {
+            // 如果正在播放音乐（HTTP 流），不要切回省电模式，
+            // 否则会覆盖 PlayMusicFromUrl 里设的高性能模式导致卡顿
+            if (!music_playing_.load()) {
+                board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
+            }
             auto display = Board::GetInstance().GetDisplay();
             display->SetChatMessage("system", "");
             SetDeviceState(kDeviceStateIdle);
@@ -974,14 +986,12 @@ void Application::ContinueOpenAudioChannel(ListeningMode mode) {
     // Switch to performance mode before connecting to reduce latency
     auto& board = Board::GetInstance();
     board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
+    UnmuteForVoice();
 
     if (!protocol_->IsAudioChannelOpened()) {
-        if (!protocol_->OpenAudioChannel()) {
-            // Return to idle so the device is not stuck in the connecting
-            // state (not every failure path reports a network error)
-            SetDeviceState(kDeviceStateIdle);
-            return;
-        }
+        // TLS/TCP 首次握手可能等待 10 秒，放到独立任务执行，主事件循环继续响应按键/状态。
+        StartAudioChannelOpen(mode, "", false);
+        return;
     }
 
     SetListeningMode(mode);
@@ -1118,15 +1128,20 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
     // Switch to performance mode before connecting to reduce latency
     auto& board = Board::GetInstance();
     board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
+    UnmuteForVoice();
 
     if (!protocol_->IsAudioChannelOpened()) {
-        if (!protocol_->OpenAudioChannel()) {
-            // Return to idle so the device is not stuck in the connecting
-            // state (not every failure path reports a network error), and
-            // wake word detection is re-enabled by the idle state handler.
-            SetDeviceState(kDeviceStateIdle);
-            return;
-        }
+        // 建连放到独立任务，避免 10 秒 TLS 握手阻塞主事件循环。
+        StartAudioChannelOpen(GetDefaultListeningMode(), wake_word, true);
+        return;
+    }
+
+    FinishWakeWordInvoke(wake_word);
+}
+
+void Application::FinishWakeWordInvoke(const std::string& wake_word) {
+    if (GetDeviceState() != kDeviceStateConnecting) {
+        return;
     }
 
     ESP_LOGI(TAG, "Wake word detected: %s", wake_word.c_str());
@@ -1144,6 +1159,96 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
     play_popup_on_listening_ = true;
     SetListeningMode(aec_mode_ == kAecOff ? kListeningModeAutoStop : kListeningModeRealtime);
 #endif
+}
+
+struct AudioChannelTaskArgs {
+    Application* app = nullptr;
+    ListeningMode mode = kListeningModeAutoStop;
+    std::string wake_word;
+    bool wake_word_invoke = false;
+};
+
+void Application::AudioChannelTaskEntry(void* arg) {
+    auto* args = static_cast<AudioChannelTaskArgs*>(arg);
+    if (args != nullptr && args->app != nullptr) {
+        args->app->AudioChannelTask(args->mode, std::move(args->wake_word), args->wake_word_invoke);
+    }
+    delete args;
+    vTaskDelete(nullptr);
+}
+
+void Application::StartAudioChannelOpen(ListeningMode mode, const std::string& wake_word,
+                                        bool wake_word_invoke) {
+    if (audio_channel_opening_.exchange(true)) {
+        ESP_LOGW(TAG, "Audio channel open already in progress");
+        return;
+    }
+
+    auto* args = new AudioChannelTaskArgs{this, mode, wake_word, wake_word_invoke};
+    if (args == nullptr) {
+        audio_channel_opening_ = false;
+        return;
+    }
+
+    BaseType_t ret = xTaskCreate(
+        AudioChannelTaskEntry, "audio_open", 8192, args, 5, nullptr);
+    if (ret != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create audio open task");
+        delete args;
+        audio_channel_opening_ = false;
+        Schedule([this]() {
+            if (GetDeviceState() == kDeviceStateConnecting) {
+                SetDeviceState(kDeviceStateIdle);
+            }
+        });
+    }
+}
+
+void Application::AudioChannelTask(ListeningMode mode, std::string wake_word,
+                                   bool wake_word_invoke) {
+    bool opened = protocol_ != nullptr && protocol_->IsAudioChannelOpened();
+    if (!opened && protocol_ != nullptr) {
+        opened = protocol_->OpenAudioChannel();
+    }
+
+    // A reset was deferred because protocol_ was in use by this task.
+    if (protocol_reset_pending_.exchange(false)) {
+        Schedule([this]() {
+            audio_channel_opening_ = false;
+            if (protocol_ && protocol_->IsAudioChannelOpened()) {
+                protocol_->CloseAudioChannel();
+            }
+            protocol_.reset();
+            if (GetDeviceState() == kDeviceStateConnecting) {
+                SetDeviceState(kDeviceStateIdle);
+            }
+        });
+        return;
+    }
+
+    if (!opened) {
+        Schedule([this]() {
+            audio_channel_opening_ = false;
+            if (GetDeviceState() == kDeviceStateConnecting) {
+                SetDeviceState(kDeviceStateIdle);
+            }
+        });
+        return;
+    }
+
+    if (wake_word_invoke) {
+        Schedule([this, wake_word = std::move(wake_word)]() mutable {
+            audio_channel_opening_ = false;
+            FinishWakeWordInvoke(wake_word);
+        });
+    } else {
+        Schedule([this, mode]() {
+            audio_channel_opening_ = false;
+            if (GetDeviceState() == kDeviceStateConnecting) {
+                SetListeningMode(mode);
+            }
+        });
+    }
 }
 
 void Application::HandleStateChangedEvent() {
@@ -1623,13 +1728,30 @@ void Application::SetAecMode(AecMode mode) {
     });
 }
 
-void Application::PlaySound(const std::string_view& sound) { audio_service_.PlaySound(sound); }
+void Application::UnmuteForVoice() {
+    if (!startup_muted_) {
+        return;
+    }
+    auto codec = Board::GetInstance().GetAudioCodec();
+    if (codec != nullptr) {
+        codec->SetMute(false);
+        ESP_LOGI(TAG, "首次语音/音乐输出，解除开机静音");
+    }
+    startup_muted_ = false;
+}
+
+void Application::PlaySound(const std::string_view& sound) {
+    UnmuteForVoice();
+    audio_service_.PlaySound(sound);
+}
 
 bool Application::PlayMusicFromUrl(const std::string& url, const std::string& title, const std::string& artist,
                                    const std::string& lyric, const std::string& lyric_url) {
     if (url.empty()) {
         return false;
     }
+
+    UnmuteForVoice();
 
     // 防重播保护：同一 URL 在播放结束后 15 秒内不允许重复启动
     // 防止大模型"播放结束 -> 回答用户 -> 又调一次 play_url"的死循环
@@ -2296,6 +2418,12 @@ void Application::UpdateMusicLyric(const std::string& lyric) {
 }
 
 void Application::ResetProtocol() {
+    // Never destroy protocol_ under an in-flight OpenAudioChannel(). Defer the
+    // reset to the worker that owns it and returns there.
+    if (audio_channel_opening_.load()) {
+        protocol_reset_pending_ = true;
+        return;
+    }
     StopMusicPlayback();
 
     Schedule([this]() {

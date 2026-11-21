@@ -5,6 +5,7 @@
 #include "protocol.h"
 
 #include <web_socket.h>
+#include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/event_groups.h>
 
@@ -24,7 +25,10 @@ public:
 private:
     EventGroupHandle_t event_group_handle_;
     std::shared_ptr<WebSocket> websocket_;
+    esp_timer_handle_t ping_timer_ = nullptr;
     int version_ = 1;
+
+    void PingTimerCallback();
 
     void ParseServerHello(const cJSON* root);
     bool SendText(const std::string& text) override;

@@ -48,11 +48,15 @@ void AudioCodec::Start() {
 }
 
 void AudioCodec::SetOutputVolume(int volume) {
+    const bool changed = (output_volume_ != volume);
     output_volume_ = volume;
     ESP_LOGI(TAG, "Set output volume to %d (muted=%d)", output_volume_, muted_);
 
-    Settings settings("audio", true);
-    settings.SetInt("output_volume", output_volume_);
+    // 只有音量真正变化才写 NVS，避免按键连续微调造成不必要的 Flash 擦写。
+    if (changed) {
+        Settings settings("audio", true);
+        settings.SetInt("output_volume", output_volume_);
+    }
     ApplyOutputVolume(muted_ ? 0 : output_volume_);
 }
 

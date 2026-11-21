@@ -185,6 +185,11 @@ private:
     int clock_ticks_ = 0;
     TaskHandle_t activation_task_handle_ = nullptr;
 
+    // 音频通道建连放到独立任务，避免 TLS/TCP 首次握手阻塞主事件循环。
+    // audio_channel_opening_ 防止重复建连。
+    std::atomic<bool> audio_channel_opening_{false};
+    std::atomic<bool> protocol_reset_pending_{false};
+    bool startup_muted_ = false;
 
     // Event handlers
     void HandleStateChangedEvent();
@@ -199,6 +204,11 @@ private:
     void ContinueOpenAudioChannel(ListeningMode mode);
     void BeginWakeWordInvoke(const std::string& wake_word);
     void ContinueWakeWordInvoke(const std::string& wake_word);
+    void FinishWakeWordInvoke(const std::string& wake_word);
+    void StartAudioChannelOpen(ListeningMode mode, const std::string& wake_word, bool wake_word_invoke);
+    static void AudioChannelTaskEntry(void* arg);
+    void AudioChannelTask(ListeningMode mode, std::string wake_word, bool wake_word_invoke);
+    void UnmuteForVoice();
     void StartListeningAudio();
     void ConfigureWakeWordForListening();
     void ShowStartupWakeWordHint();
