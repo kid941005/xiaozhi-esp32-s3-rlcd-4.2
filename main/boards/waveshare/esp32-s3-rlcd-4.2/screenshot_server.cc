@@ -300,10 +300,21 @@ static esp_err_t MusicPlayHandler(httpd_req_t *req) {
     if (!CheckAuth(req)) {
         return ESP_OK;
     }
-    char query[512] = {0};
-    char url[384] = {0};
-    char title[64] = {0};
-    char artist[64] = {0};
+    static char query[1024];
+    static char url[512];
+    static char title[64];
+    static char artist[64];
+    static char lyric[256];
+    static char lyric_url[512];
+    static char durbuf[16];
+    memset(query, 0, sizeof(query));
+    memset(url, 0, sizeof(url));
+    memset(title, 0, sizeof(title));
+    memset(artist, 0, sizeof(artist));
+    memset(lyric, 0, sizeof(lyric));
+    memset(lyric_url, 0, sizeof(lyric_url));
+    memset(durbuf, 0, sizeof(durbuf));
+    int duration_s = 0;
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
         httpd_query_key_value(query, "url", url, sizeof(url)) != ESP_OK) {
         httpd_resp_set_type(req, "text/plain; charset=utf-8");
@@ -311,10 +322,18 @@ static esp_err_t MusicPlayHandler(httpd_req_t *req) {
     }
     httpd_query_key_value(query, "title", title, sizeof(title));
     httpd_query_key_value(query, "artist", artist, sizeof(artist));
+    httpd_query_key_value(query, "lyric", lyric, sizeof(lyric));
+    httpd_query_key_value(query, "lyric_url", lyric_url, sizeof(lyric_url));
+    if (httpd_query_key_value(query, "duration", durbuf, sizeof(durbuf)) == ESP_OK) {
+        duration_s = atoi(durbuf);
+        if (duration_s < 0) duration_s = 0;
+    }
     UrlDecodeInPlace(url);
     UrlDecodeInPlace(title);
     UrlDecodeInPlace(artist);
-    Application::GetInstance().PlayMusicFromUrl(url, title, artist, "");
+    UrlDecodeInPlace(lyric);
+    UrlDecodeInPlace(lyric_url);
+    Application::GetInstance().PlayMusicFromUrl(url, title, artist, lyric, lyric_url, duration_s);
     httpd_resp_set_type(req, "text/plain; charset=utf-8");
     return httpd_resp_send(req, "music play requested\n", HTTPD_RESP_USE_STRLEN);
 }

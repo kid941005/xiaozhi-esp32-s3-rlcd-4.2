@@ -24,6 +24,7 @@
 #include <freertos/idf_additions.h>
 #include <cJSON.h>
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <memory>
@@ -1746,10 +1747,12 @@ void Application::PlaySound(const std::string_view& sound) {
 }
 
 bool Application::PlayMusicFromUrl(const std::string& url, const std::string& title, const std::string& artist,
-                                   const std::string& lyric, const std::string& lyric_url) {
+                                   const std::string& lyric, const std::string& lyric_url, int duration_s) {
     if (url.empty()) {
         return false;
     }
+    const uint32_t requested_total_ms =
+        duration_s > 0 ? static_cast<uint32_t>(duration_s) * 1000u : 0u;
 
     UnmuteForVoice();
 
@@ -1790,21 +1793,21 @@ bool Application::PlayMusicFromUrl(const std::string& url, const std::string& ti
         stop_music_playback_.store(false);
         music_playing_.store(true);
         music_progress_ms_.store(0);
-        music_total_ms_.store(0);
+        music_total_ms_.store(requested_total_ms);
         current_music_title_ = title;
         current_music_url_ = url;
     }
 
     auto display_title = title.empty() ? "未知歌曲" : title;
     auto display_artist = artist.empty() ? "未知歌手" : artist;
-    Schedule([display_title, display_artist]() {
+    Schedule([display_title, display_artist, requested_total_ms]() {
         auto display = Board::GetInstance().GetDisplay();
         // 触发音乐播放时，优先切到音乐页，避免歌词继续显示在首页 AI 卡片
         display->SwitchToMusicPage();
         display->SetStatus("音乐播放");
         display->SetChatMessage("system", "音乐播放中~");
         display->SetMusicInfo(display_title.c_str(), display_artist.c_str());
-        display->SetMusicProgress(0, 1);
+        display->SetMusicProgress(0, requested_total_ms > 0 ? requested_total_ms : 1);
         display->SetMusicLyric("");
     });
     if (!lyric.empty()) {
@@ -1863,10 +1866,11 @@ void Application::MusicPlaybackTask(std::string url, std::string title, std::str
 
     // 歌词改为后台任务拉取：先启动音频，避免 LRCLIB/TLS 握手阻塞起播。
     // 任务栈放 PSRAM，避免 10KB 内部 SRAM 占用在显示 DMA 时加剧碎片。
-    if (!lyric_url.empty()) {
+    // 封装为 lambda，等音乐 HTTP 响应头到达后再决定用显式 lyric_url 还是 X-Lyric-Url。
+    auto start_lyric_task = [&](const std::string& fetch_url) {
         lyric_share = std::make_shared<MusicLyricShare>();
         auto* lyric_args = new MusicLyricTaskArgs();
-        lyric_args->lyric_url = std::move(lyric_url);
+        lyric_args->lyric_url = fetch_url;
         lyric_args->share = lyric_share;
         BaseType_t lyric_created = xTaskCreateWithCaps([](void* arg) {
             std::unique_ptr<MusicLyricTaskArgs> args(static_cast<MusicLyricTaskArgs*>(arg));
@@ -2011,7 +2015,7 @@ void Application::MusicPlaybackTask(std::string url, std::string title, std::str
             lyric_share.reset();
             ESP_LOGW(TAG, "创建歌词拉取任务失败，跳过歌词");
         }
-    }
+    };
 
     constexpr int kReadBufSize = 2048;
     int out_buf_size = 8192;
@@ -2063,6 +2067,23 @@ void Application::MusicPlaybackTask(std::string url, std::string title, std::str
             });
             notify_failed = true;
             break;
+        }
+
+        // 网关 /play 响应会带音乐总时长和歌词直链，优先用响应头，避免依赖模型参数。
+        auto dur_header = http->GetResponseHeader("X-Audio-Duration-Ms");
+        if (!dur_header.empty()) {
+            long dur_ms = strtol(dur_header.c_str(), nullptr, 10);
+            if (dur_ms > 0) {
+                music_total_ms_.store(static_cast<uint32_t>(dur_ms));
+                display->SetMusicProgress(0, static_cast<uint32_t>(dur_ms));
+                ESP_LOGI(TAG, "音乐总时长（响应头）: %ld ms", dur_ms);
+            }
+        }
+        std::string lyric_from_header = http->GetResponseHeader("X-Lyric-Url");
+        const std::string& effective_lyric_url =
+            !lyric_from_header.empty() ? lyric_from_header : lyric_url;
+        if (!effective_lyric_url.empty()) {
+            start_lyric_task(effective_lyric_url);
         }
 
         // 音乐流缓冲放在 PSRAM，避免挤占内部 SRAM（内部 SRAM 在音乐解码+重采样时最紧张）。
@@ -2296,13 +2317,15 @@ void Application::MusicPlaybackTask(std::string url, std::string title, std::str
 
                         // 同步更新原子变量，供 MCP 工具查询当前进度
                         music_progress_ms_.store(current_ms);
-                        if (lyric_total_ms > 0) {
-                            music_total_ms_.store(lyric_total_ms);
+                        uint32_t total_ms = music_total_ms_.load();
+                        if (total_ms == 0 && lyric_total_ms > 0) {
+                            total_ms = lyric_total_ms;
+                            music_total_ms_.store(total_ms);
                         }
 
                         // 更新进度条（无论有没有歌词都要更新）
-                        // 没有歌词时 lyric_total_ms=0，用 0 让 SetMusicProgress 只显示播放时间
-                        display->SetMusicProgress(current_ms, lyric_total_ms);
+                        // 总时长未知时传 0，让 SetMusicProgress 只显示播放时间
+                        display->SetMusicProgress(current_ms, total_ms);
 
                         // 有歌词时同步歌词显示
                         if (!lyrics.empty()) {

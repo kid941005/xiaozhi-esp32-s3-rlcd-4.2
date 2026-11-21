@@ -78,14 +78,16 @@ void McpServer::AddCommonTools() {
                           Property("title", kPropertyTypeString, std::string("unknown")),
                           Property("artist", kPropertyTypeString, std::string("unknown")),
                           Property("lyric", kPropertyTypeString, std::string("")),
-                          Property("lyric_url", kPropertyTypeString, std::string(""))}),
+                          Property("lyric_url", kPropertyTypeString, std::string("")),
+                          Property("duration", kPropertyTypeInteger, 0)}),
             [](const PropertyList& properties) -> ReturnValue {
                 auto& app = Application::GetInstance();
                 std::string url = properties["url"].value<std::string>();
                 bool ok = app.PlayMusicFromUrl(url, properties["title"].value<std::string>(),
                                                properties["artist"].value<std::string>(),
                                                properties["lyric"].value<std::string>(),
-                                               properties["lyric_url"].value<std::string>());
+                                               properties["lyric_url"].value<std::string>(),
+                                               properties["duration"].value<int>());
                 if (!ok) {
                     ESP_LOGE(TAG, "Music playback failed");
                     return std::string("music playback failed: check URL or network");

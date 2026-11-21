@@ -122,7 +122,8 @@ public:
     AecMode GetAecMode() const { return aec_mode_; }
     void PlaySound(const std::string_view& sound);
     bool PlayMusicFromUrl(const std::string& url, const std::string& title, const std::string& artist,
-                          const std::string& lyric, const std::string& lyric_url = "");
+                          const std::string& lyric, const std::string& lyric_url = "",
+                          int duration_s = 0);
     void StopMusicPlayback(bool clear_lyric = true);
     bool IsMusicPlaying() const { return music_playing_.load(); }
     uint32_t GetMusicProgressMs() const { return music_progress_ms_.load(); }
