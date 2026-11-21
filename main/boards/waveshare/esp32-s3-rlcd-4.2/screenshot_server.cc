@@ -211,9 +211,10 @@ static esp_err_t PageHandler(httpd_req_t *req) {
             }
         }
     }
-    const char *page = s_display->IsMusicMode()    ? "music"
-                       : s_display->IsDetailMode() ? "detail"
-                                                   : "weather";
+    const char *page = s_display->IsCountdownMode() ? "countdown"
+                       : s_display->IsMusicMode()     ? "music"
+                       : s_display->IsDetailMode()    ? "detail"
+                                                      : "weather";
     char out[64];
     int n = snprintf(out, sizeof(out), "page=%s\n", page);
     httpd_resp_set_type(req, "text/plain; charset=utf-8");

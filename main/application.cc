@@ -2065,6 +2065,34 @@ void Application::MusicPlaybackTask(std::string url, std::string title, std::str
             break;
         }
 
+        // 音乐流缓冲放在 PSRAM，避免挤占内部 SRAM（内部 SRAM 在音乐解码+重采样时最紧张）。
+        in_buf = static_cast<uint8_t*>(heap_caps_malloc(kReadBufSize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        out_buf = static_cast<uint8_t*>(heap_caps_malloc(out_buf_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        if (in_buf == nullptr || out_buf == nullptr) {
+            ESP_LOGE(TAG, "内存不足，无法播放音乐");
+            playback_failed = true;
+            break;
+        }
+
+        // 先读首个数据块，按容器魔数选择解码器。此前固定按 MP3 解码，
+        // 遇到 WAV/RIFF 会被 MP3 解析器当成畸形帧，导致解码输出尺寸异常并破坏堆。
+        auto first_read = http->Read(reinterpret_cast<char*>(in_buf), kReadBufSize);
+        if (!first_read.has_value()) {
+            ESP_LOGE(TAG, "读取音乐流失败");
+            playback_failed = true;
+            break;
+        }
+        int first_read_bytes = first_read.value();
+        if (first_read_bytes <= 0) {
+            ESP_LOGE(TAG, "音乐流为空");
+            playback_failed = true;
+            break;
+        }
+        const bool is_wav = first_read_bytes >= 12 &&
+                            memcmp(in_buf, "RIFF", 4) == 0 &&
+                            memcmp(in_buf + 8, "WAVE", 4) == 0;
+        ESP_LOGI(TAG, "音乐流格式: %s", is_wav ? "WAV" : "MP3");
+
         ret = esp_audio_dec_register_default();
         if (ret != ESP_AUDIO_ERR_OK) {
             ESP_LOGE(TAG, "注册默认解码器失败: %d", ret);
@@ -2080,14 +2108,14 @@ void Application::MusicPlaybackTask(std::string url, std::string title, std::str
         decoder_registered = true;
 
         esp_audio_simple_dec_cfg_t dec_cfg = {
-            .dec_type = ESP_AUDIO_SIMPLE_DEC_TYPE_MP3,
+            .dec_type = is_wav ? ESP_AUDIO_SIMPLE_DEC_TYPE_WAV : ESP_AUDIO_SIMPLE_DEC_TYPE_MP3,
             .dec_cfg = nullptr,
             .cfg_size = 0,
             .use_frame_dec = false,
         };
         ret = esp_audio_simple_dec_open(&dec_cfg, &decoder);
         if (ret != ESP_AUDIO_ERR_OK || decoder == nullptr) {
-            ESP_LOGE(TAG, "打开 MP3 解码器失败: %d", ret);
+            ESP_LOGE(TAG, "打开音频解码器失败: %d", ret);
             playback_failed = true;
             break;
         }
@@ -2096,22 +2124,21 @@ void Application::MusicPlaybackTask(std::string url, std::string title, std::str
             codec->EnableOutput(true);
         }
 
-        in_buf = static_cast<uint8_t*>(heap_caps_malloc(kReadBufSize, MALLOC_CAP_8BIT));
-        out_buf = static_cast<uint8_t*>(heap_caps_malloc(out_buf_size, MALLOC_CAP_8BIT));
-        if (in_buf == nullptr || out_buf == nullptr) {
-            ESP_LOGE(TAG, "内存不足，无法播放音乐");
-            playback_failed = true;
-            break;
-        }
-
+        bool first_chunk = true;
         while (!stop_music_playback_.load()) {
-            auto read_result = http->Read(reinterpret_cast<char*>(in_buf), kReadBufSize);
-            if (!read_result.has_value()) {
-                ESP_LOGE(TAG, "读取音乐流失败");
-                playback_failed = true;
-                break;
+            int read_bytes = 0;
+            if (first_chunk) {
+                read_bytes = first_read_bytes;
+                first_chunk = false;
+            } else {
+                auto read_result = http->Read(reinterpret_cast<char*>(in_buf), kReadBufSize);
+                if (!read_result.has_value()) {
+                    ESP_LOGE(TAG, "读取音乐流失败");
+                    playback_failed = true;
+                    break;
+                }
+                read_bytes = read_result.value();
             }
-            int read_bytes = read_result.value();
             if (read_bytes == 0) {
                 // Content-Length 已知且已读完时立即结束，避免 EOF 后固定 30 次空读延迟。
                 size_t body_length = http->GetBodyLength();
@@ -2149,7 +2176,7 @@ void Application::MusicPlaybackTask(std::string url, std::string title, std::str
                 };
                 ret = esp_audio_simple_dec_process(decoder, &raw, &out);
                 if (ret == ESP_AUDIO_ERR_BUFF_NOT_ENOUGH) {
-                    auto* new_buf = static_cast<uint8_t*>(heap_caps_realloc(out_buf, out.needed_size, MALLOC_CAP_8BIT));
+                    auto* new_buf = static_cast<uint8_t*>(heap_caps_realloc(out_buf, out.needed_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
                     if (new_buf == nullptr) {
                         ESP_LOGE(TAG, "扩容解码输出缓冲区失败");
                         playback_failed = true;
@@ -2160,7 +2187,14 @@ void Application::MusicPlaybackTask(std::string url, std::string title, std::str
                     continue;
                 }
                 if (ret != ESP_AUDIO_ERR_OK) {
-                    ESP_LOGW(TAG, "MP3 解码失败，ret=%d", ret);
+                    ESP_LOGW(TAG, "音频解码失败，ret=%d", ret);
+                    playback_failed = true;
+                    break;
+                }
+                // 解码器输入畸形时可能报告超过输出缓冲的尺寸；直接判失败，
+                // 避免后续 vector 按错误尺寸分配并破坏堆。
+                if (out.decoded_size > out.len || (out.decoded_size % sizeof(int16_t)) != 0) {
+                    ESP_LOGE(TAG, "音频解码输出尺寸异常: decoded=%u len=%u", out.decoded_size, out.len);
                     playback_failed = true;
                     break;
                 }
@@ -2216,6 +2250,12 @@ void Application::MusicPlaybackTask(std::string url, std::string title, std::str
                         uint32_t in_samples = static_cast<uint32_t>(pcm.size() / codec->output_channels());
                         uint32_t out_samples = 0;
                         esp_ae_rate_cvt_get_max_out_sample_num(music_resampler, in_samples, &out_samples);
+                        // 上限保护：单帧 PCM 不可能超过 1M 样本，异常尺寸说明解码流已损坏。
+                        if (in_samples == 0 || in_samples > (1u << 20) || out_samples == 0 || out_samples > (1u << 20)) {
+                            ESP_LOGE(TAG, "重采样尺寸异常: in=%u out=%u", in_samples, out_samples);
+                            playback_failed = true;
+                            break;
+                        }
                         std::vector<int16_t> resampled(out_samples * codec->output_channels());
                         uint32_t actual_out = out_samples;
                         esp_ae_rate_cvt_process(
@@ -2224,6 +2264,9 @@ void Application::MusicPlaybackTask(std::string url, std::string title, std::str
                             in_samples,
                             reinterpret_cast<esp_ae_sample_t>(resampled.data()),
                             &actual_out);
+                        if (actual_out > out_samples) {
+                            actual_out = out_samples;
+                        }
                         resampled.resize(actual_out * codec->output_channels());
                         pcm = std::move(resampled);
                     }

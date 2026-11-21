@@ -296,9 +296,11 @@ void TodoMcpClient::Run() {
         if (!url.empty()) {
             RunSession(url);
         }
-        // 会话结束（断线/未配置），等一会儿或等网络事件再重连
+        // 会话结束（断线/未配置），等一会儿或等网络事件再重连。
+        // 若服务端明确表示 list_todos 工具不存在且 REST 直连可用，则降为 5 分钟探测一次。
+        const int retry_ms = mcp_tool_missing_ ? (5 * 60 * 1000) : kRetryMs;
         xEventGroupClearBits(event_group_, kRefreshBit);
-        xEventGroupWaitBits(event_group_, kRefreshBit, pdTRUE, pdFALSE, pdMS_TO_TICKS(kRetryMs));
+        xEventGroupWaitBits(event_group_, kRefreshBit, pdTRUE, pdFALSE, pdMS_TO_TICKS(retry_ms));
     }
 }
 
@@ -412,6 +414,7 @@ void TodoMcpClient::RunSession(const std::string& url) {
                 }
                 if (ApplyPayload(payload)) {
                     list_ok = true;
+                    mcp_tool_missing_ = false;
                     consec_fail = 0;
                     break;
                 }
@@ -428,7 +431,12 @@ void TodoMcpClient::RunSession(const std::string& url) {
             if (last_list_error_code_ == -32601) {
                 // 网关重启/路由表未就绪时会先返回工具不存在；同一会话继续重试也可能命中旧路由，
                 // 直接断开重连，让网关重新选择后端 MCP 服务。
-                ESP_LOGW(TAG, "list_todos 未注册或路由异常，立即重建会话");
+                if (std::strlen(REMINDER_API_URL) > 0 && std::strlen(REMINDER_API_KEY) > 0) {
+                    mcp_tool_missing_ = true;
+                    ESP_LOGW(TAG, "外部 MCP 未提供 list_todos，待办改由 Reminder REST 直连提供，5 分钟后重试 MCP");
+                } else {
+                    ESP_LOGW(TAG, "list_todos 未注册或路由异常，立即重建会话");
+                }
                 break;
             }
         }

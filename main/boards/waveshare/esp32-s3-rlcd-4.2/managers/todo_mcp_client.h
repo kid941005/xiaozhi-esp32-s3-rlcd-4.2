@@ -65,6 +65,9 @@ private:
     bool music_updated_ = false;
     int pending_id_ = 0;
     int last_list_error_code_ = 0;
+    // 外部 MCP 明确返回 -32601（工具不存在）且 REST 直连可用时进入长退避，
+    // 避免每 5 秒重连一个永远不会成功的接入点。
+    bool mcp_tool_missing_ = false;
     volatile bool broken_ = false;
 };
 
