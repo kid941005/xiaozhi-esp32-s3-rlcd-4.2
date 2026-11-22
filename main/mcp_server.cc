@@ -204,14 +204,11 @@ void McpServer::AddUserOnlyTools() {
             ESP_LOGI(TAG, "User requested firmware upgrade from URL: %s", url.c_str());
 
             auto& app = Application::GetInstance();
-            app.Schedule([url, &app]() {
-                bool success = app.UpgradeFirmware(url);
-                if (!success) {
-                    ESP_LOGE(TAG, "Firmware upgrade failed");
-                }
-            });
-
-            return true;
+            bool started = app.UpgradeFirmwareAsync(url);
+            if (!started) {
+                ESP_LOGE(TAG, "Firmware upgrade could not be started");
+            }
+            return started;
         });
 
     // Display control

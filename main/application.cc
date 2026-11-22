@@ -49,6 +49,12 @@ struct MusicPlaybackTaskArgs {
     std::string lyric_url;
 };
 
+struct FirmwareUpgradeTaskArgs {
+    Application* app = nullptr;
+    std::string url;
+    std::string version_info;
+};
+
 struct MusicLyricLine {
     uint32_t time_ms;
     std::string text;
@@ -1642,6 +1648,99 @@ bool Application::UpgradeFirmware(const std::string& url, const std::string& ver
     }
 }
 
+bool Application::UpgradeFirmwareAsync(const std::string& url, const std::string& version) {
+    if (url.empty()) {
+        ESP_LOGE(TAG, "Firmware upgrade URL is empty");
+        return false;
+    }
+    if (firmware_upgrade_in_progress_.exchange(true)) {
+        ESP_LOGW(TAG, "Firmware upgrade already in progress");
+        return false;
+    }
+
+    auto& board = Board::GetInstance();
+    auto display = board.GetDisplay();
+    std::string version_info = version.empty() ? "(Manual upgrade)" : version;
+
+    if (GetDeviceState() == kDeviceStateNotifying) {
+        StopNotification();
+    }
+    if (protocol_ && protocol_->IsAudioChannelOpened()) {
+        ESP_LOGI(TAG, "Closing audio channel before firmware upgrade");
+        protocol_->CloseAudioChannel();
+    }
+    ESP_LOGI(TAG, "Starting async firmware upgrade from URL: %s", url.c_str());
+
+    Alert(Lang::Strings::OTA_UPGRADE, Lang::Strings::UPGRADING, "download",
+          Lang::Sounds::OGG_UPGRADE);
+    SetDeviceState(kDeviceStateUpgrading);
+
+    std::string message = std::string(Lang::Strings::NEW_VERSION) + version_info;
+    display->SetChatMessage("system", message.c_str());
+    board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
+
+    auto* args = new FirmwareUpgradeTaskArgs{this, url, version_info};
+    BaseType_t ret = xTaskCreate(FirmwareUpgradeTaskEntry, "fw_upgrade", 8192, args, 5, nullptr);
+    if (ret != pdPASS) {
+        delete args;
+        firmware_upgrade_in_progress_.store(false);
+        ESP_LOGE(TAG, "Failed to create firmware upgrade task");
+        board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
+        SetDeviceState(kDeviceStateIdle);
+        Alert(Lang::Strings::ERROR, Lang::Strings::UPGRADE_FAILED, "cancel",
+              Lang::Sounds::OGG_EXCLAMATION);
+        return false;
+    }
+    return true;
+}
+
+void Application::FirmwareUpgradeTaskEntry(void* arg) {
+    auto* args = static_cast<FirmwareUpgradeTaskArgs*>(arg);
+    args->app->FirmwareUpgradeTask(args->url, args->version_info);
+    delete args;
+    vTaskDelete(nullptr);
+}
+
+void Application::FirmwareUpgradeTask(std::string url, std::string version_info) {
+    auto& board = Board::GetInstance();
+    auto display = board.GetDisplay();
+
+    ESP_LOGI(TAG, "Firmware upgrade task started, version: %s", version_info.c_str());
+    // 给提示音留出播放时间，不阻塞主事件循环。
+    vTaskDelay(pdMS_TO_TICKS(3000));
+    audio_service_.Stop();
+    vTaskDelay(pdMS_TO_TICKS(1000));
+
+    bool upgrade_success = Ota::Upgrade(url, [this, display](int progress, size_t speed) {
+        char buffer[32];
+        snprintf(buffer, sizeof(buffer), "%d%% %uKB/s", progress, speed / 1024);
+        Schedule([display, message = std::string(buffer)]() {
+            display->SetChatMessage("system", message.c_str());
+        });
+    });
+
+    if (!upgrade_success) {
+        ESP_LOGE(TAG, "Firmware upgrade failed, restoring audio service and idle state");
+        Schedule([this, display]() {
+            audio_service_.Start();
+            Board::GetInstance().SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
+            Alert(Lang::Strings::ERROR, Lang::Strings::UPGRADE_FAILED, "cancel",
+                  Lang::Sounds::OGG_EXCLAMATION);
+            firmware_upgrade_in_progress_.store(false);
+            SetDeviceState(kDeviceStateIdle);
+        });
+        vTaskDelay(pdMS_TO_TICKS(3000));
+        return;
+    }
+
+    ESP_LOGI(TAG, "Firmware upgrade successful, rebooting...");
+    Schedule([display]() {
+        display->SetChatMessage("system", "Upgrade successful, rebooting...");
+    });
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    Schedule([this]() { Reboot(); });
+}
+
 void Application::WakeWordInvoke(const std::string& wake_word) {
     if (!protocol_) {
         return;
@@ -1777,7 +1876,10 @@ bool Application::PlayMusicFromUrl(const std::string& url, const std::string& ti
     }
 
     // 先停止旧播放，避免多个任务同时争用音频输出。
-    StopMusicPlayback(false);
+    if (!StopMusicPlayback(false)) {
+        ESP_LOGE(TAG, "上一首音乐播放任务未能在超时内退出，拒绝启动新播放");
+        return false;
+    }
 
     // 音乐播放前先退出当前语音会话，避免服务端音频与本地音乐混播。
     if (GetDeviceState() == kDeviceStateSpeaking) {
@@ -2442,7 +2544,7 @@ void Application::MusicPlaybackTask(std::string url, std::string title, std::str
     }
 }
 
-void Application::StopMusicPlayback(bool clear_lyric) {
+bool Application::StopMusicPlayback(bool clear_lyric) {
     TaskHandle_t handle = nullptr;
     {
         std::lock_guard<std::mutex> lock(music_playback_mutex_);
@@ -2456,7 +2558,14 @@ void Application::StopMusicPlayback(bool clear_lyric) {
     }
 
     // 等待播放任务主动退出，避免直接删任务导致解码器/HTTP 资源泄漏。
+    // HTTP 读取可能长时间阻塞，这里设置上限，避免主事件循环被永久挂住。
+    constexpr TickType_t kStopWaitTicks = pdMS_TO_TICKS(3000);
+    const TickType_t wait_start = xTaskGetTickCount();
     while (handle != nullptr) {
+        if ((xTaskGetTickCount() - wait_start) >= kStopWaitTicks) {
+            ESP_LOGE(TAG, "音乐播放任务在 %d ms 内未退出，停止等待", 3000);
+            return false;
+        }
         vTaskDelay(pdMS_TO_TICKS(20));
         std::lock_guard<std::mutex> lock(music_playback_mutex_);
         handle = music_playback_task_handle_;
@@ -2475,6 +2584,7 @@ void Application::StopMusicPlayback(bool clear_lyric) {
             }
         });
     }
+    return true;
 }
 
 void Application::UpdateMusicLyric(const std::string& lyric) {

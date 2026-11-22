@@ -443,9 +443,9 @@ void AudioService::OpusCodecTask() {
             task.playback_id = packet->playback_id;
             task.media_position_ms = packet->media_position_ms;
 
-            SetDecodeSampleRate(packet->sample_rate, packet->frame_duration);
+            bool decoder_ready = SetDecodeSampleRate(packet->sample_rate, packet->frame_duration);
             bool decoded = false;
-            if (opus_decoder_ != nullptr) {
+            if (decoder_ready && opus_decoder_ != nullptr) {
                 task.pcm.resize(decoder_frame_size_);
                 esp_audio_dec_in_raw_t raw = {
                     .buffer = (uint8_t*)(packet->payload.data()),
@@ -566,22 +566,28 @@ void AudioService::OpusCodecTask() {
     ESP_LOGW(TAG, "Opus codec task stopped");
 }
 
-void AudioService::SetDecodeSampleRate(int sample_rate, int frame_duration) {
-    if (decoder_sample_rate_ == sample_rate && decoder_duration_ms_ == frame_duration) {
-        return;
-    }
+bool AudioService::SetDecodeSampleRate(int sample_rate, int frame_duration) {
     std::unique_lock<std::mutex> decoder_lock(decoder_mutex_);
+    if (decoder_sample_rate_ == sample_rate && decoder_duration_ms_ == frame_duration &&
+        opus_decoder_ != nullptr) {
+        return true;
+    }
+
+    // 先打开新解码器，成功后再替换旧解码器；失败时保留旧解码器，
+    // 并把采样率置 0 以强制下一个数据包重试，避免一次失败后永久静音。
+    esp_opus_dec_cfg_t opus_dec_cfg = OPUS_DEC_CFG(sample_rate, frame_duration);
+    void* new_decoder = nullptr;
+    auto ret = esp_opus_dec_open(&opus_dec_cfg, sizeof(esp_opus_dec_cfg_t), &new_decoder);
+    if (new_decoder == nullptr) {
+        ESP_LOGE(TAG, "Failed to create audio decoder, error code: %d (keep previous decoder)", ret);
+        decoder_sample_rate_ = 0;
+        return false;
+    }
+
     if (opus_decoder_ != nullptr) {
         esp_opus_dec_close(opus_decoder_);
-        opus_decoder_ = nullptr;
     }
-    decoder_lock.unlock();
-    esp_opus_dec_cfg_t opus_dec_cfg = OPUS_DEC_CFG(sample_rate, frame_duration);
-    auto ret = esp_opus_dec_open(&opus_dec_cfg, sizeof(esp_opus_dec_cfg_t), &opus_decoder_);
-    if (opus_decoder_ == nullptr) {
-        ESP_LOGE(TAG, "Failed to create audio decoder, error code: %d", ret);
-        return;
-    }
+    opus_decoder_ = new_decoder;
     decoder_sample_rate_ = sample_rate;
     decoder_duration_ms_ = frame_duration;
     decoder_frame_size_ = decoder_sample_rate_ / 1000 * frame_duration;
@@ -600,7 +606,11 @@ void AudioService::SetDecodeSampleRate(int sample_rate, int frame_duration) {
         if (output_resampler_ == nullptr) {
             ESP_LOGE(TAG, "Failed to create output resampler, error code: %d", resampler_ret);
         }
+    } else if (output_resampler_ != nullptr) {
+        esp_ae_rate_cvt_close(output_resampler_);
+        output_resampler_ = nullptr;
     }
+    return true;
 }
 
 void AudioService::PushTaskToEncodeQueue(AudioTaskType type, std::vector<int16_t>&& pcm) {

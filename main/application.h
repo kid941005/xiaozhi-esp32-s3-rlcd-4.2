@@ -115,6 +115,8 @@ public:
     void Reboot();
     void WakeWordInvoke(const std::string& wake_word);
     bool UpgradeFirmware(const std::string& url, const std::string& version = "");
+    // 异步升级：只负责启动后台升级任务，立即返回，避免阻塞主事件循环。
+    bool UpgradeFirmwareAsync(const std::string& url, const std::string& version = "");
     bool CanEnterSleepMode();
     void SendMcpMessage(const std::string& payload);
     void RegisterMcpBroadcastCallback(std::function<void(const std::string&)> callback);
@@ -124,7 +126,7 @@ public:
     bool PlayMusicFromUrl(const std::string& url, const std::string& title, const std::string& artist,
                           const std::string& lyric, const std::string& lyric_url = "",
                           int duration_s = 0);
-    void StopMusicPlayback(bool clear_lyric = true);
+    bool StopMusicPlayback(bool clear_lyric = true);
     bool IsMusicPlaying() const { return music_playing_.load(); }
     uint32_t GetMusicProgressMs() const { return music_progress_ms_.load(); }
     uint32_t GetMusicTotalMs() const { return music_total_ms_.load(); }
@@ -185,6 +187,8 @@ private:
     bool pending_listening_start_ = false;  // Waiting for playback to drain before starting listening (auto mode)
     int clock_ticks_ = 0;
     TaskHandle_t activation_task_handle_ = nullptr;
+    // 固件异步升级进行中标志，防止重复触发。
+    std::atomic<bool> firmware_upgrade_in_progress_{false};
 
     // 音频通道建连放到独立任务，避免 TLS/TCP 首次握手阻塞主事件循环。
     // audio_channel_opening_ 防止重复建连。
@@ -229,6 +233,8 @@ private:
     void SetListeningMode(ListeningMode mode);
     ListeningMode GetDefaultListeningMode() const;
     void MusicPlaybackTask(std::string url, std::string title, std::string artist, std::string lyric_url = "");
+    static void FirmwareUpgradeTaskEntry(void* arg);
+    void FirmwareUpgradeTask(std::string url, std::string version_info);
     
     // State change handler called by state machine
     void OnStateChanged(DeviceState old_state, DeviceState new_state);
