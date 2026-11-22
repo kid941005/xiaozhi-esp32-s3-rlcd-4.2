@@ -30,56 +30,48 @@ jobs:
       - id: list
         name: Get all variant list
         run: |
-          echo "all_variants=$(python scripts/release.py --list-boards --json)" >> $GITHUB_OUTPUT
+          python scripts/build.py --list-boards --json > "$RUNNER_TEMP/all-variants.json"
 
       - id: select
         name: Select variants based on changes
         env:
-          ALL_VARIANTS: ${{ steps.list.outputs.all_variants }}
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          EVENT_NAME="${{ github.event_name }}"
+          # Keep the raw variant matrix out of environment variables:
+          # it exceeds GitHub Actions per-variable size limit.
+          ALL_VARIANTS=$(jq -c '[.[] | {board, name}]' "$RUNNER_TEMP/all-variants.json")
 
-          # push 到 main 分支，编译全部变体
-          if [[ "$EVENT_NAME" == "push" ]]; then
-            echo "variants=$ALL_VARIANTS" >> $GITHUB_OUTPUT
-            exit 0
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            BASE_SHA="$PR_BASE_SHA"
+            HEAD_SHA="$PR_HEAD_SHA"
+          elif [[ "$EVENT_NAME" == "push" ]]; then
+            if [[ -n "$BEFORE_SHA" && ! "$BEFORE_SHA" =~ ^0+$ ]] && git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
+              BASE_SHA="$BEFORE_SHA"
+              HEAD_SHA="HEAD"
+            else
+              BASE_SHA=""
+              HEAD_SHA=""
+            fi
+          else
+            BASE_SHA=""
+            HEAD_SHA=""
           fi
 
-          # pull_request 场景
-          BASE_SHA="${{ github.event.pull_request.base.sha }}"
-          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
-          echo "Base: $BASE_SHA, Head: $HEAD_SHA"
-
-          CHANGED=$(git diff --name-only $BASE_SHA $HEAD_SHA || true)
+          if [[ -n "$BASE_SHA" ]]; then
+            CHANGED=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" || true)
+          else
+            # No usable baseline: treat every file as changed.
+            CHANGED=$(git ls-files)
+          fi
           echo -e "Changed files:\n$CHANGED"
 
-          NEED_ALL=0
-          declare -A AFFECTED
-          while IFS= read -r file; do
-            if [[ "$file" == main/* && "$file" != main/boards/* ]]; then
-              NEED_ALL=1
-            fi
-
-            if [[ "$file" == main/boards/common/* ]]; then
-              NEED_ALL=1
-            fi
-
-            if [[ "$file" == main/boards/* ]]; then
-              board=$(echo "$file" | cut -d '/' -f3)
-              AFFECTED[$board]=1
-            fi
-          done <<< "$CHANGED"
-
-          if [[ "$NEED_ALL" -eq 1 ]]; then
-            echo "variants=$ALL_VARIANTS" >> $GITHUB_OUTPUT
+          if [[ -z "$CHANGED" ]] || ! grep -q '^main/' <<< "$CHANGED"; then
+            echo "variants=[]" >> $GITHUB_OUTPUT
           else
-            if [[ ${#AFFECTED[@]} -eq 0 ]]; then
-              echo "variants=[]" >> $GITHUB_OUTPUT
-            else
-              BOARDS_JSON=$(printf '%s\n' "${!AFFECTED[@]}" | sort -u | jq -R -s -c 'split("\n")[:-1]')
-              FILTERED=$(echo "$ALL_VARIANTS" | jq -c --argjson boards "$BOARDS_JSON" 'map(select(.board as $b | $boards | index($b)))')
-              echo "variants=$FILTERED" >> $GITHUB_OUTPUT
-            fi
+            echo "variants=$ALL_VARIANTS" >> $GITHUB_OUTPUT
           fi
 
   build:
