@@ -36,8 +36,10 @@
 namespace {
 // 设备端本地 VAD 打断：人声需持续一段时间才确认，避免环境噪声误触发；
 // TTS 起播后的一段热身期内不响应，避免功放起播杂音/残余回声造成自打断。
-constexpr int64_t kLocalVadBargeInHoldUs = 300 * 1000;
-constexpr int64_t kLocalVadBargeInWarmupUs = 800 * 1000;
+// 本地 VAD 打断总开关：false = 播报期间忽略本地 VAD 人声，避免旁人说话/残余回声误触发打断。
+constexpr bool kLocalVadBargeInEnabled = false;
+constexpr int64_t kLocalVadBargeInHoldUs = 800 * 1000;
+constexpr int64_t kLocalVadBargeInWarmupUs = 2000 * 1000;
 
 struct MusicPlaybackTaskArgs {
     Application* app = nullptr;
@@ -369,7 +371,8 @@ void Application::Run() {
             if (GetDeviceState() == kDeviceStateListening) {
                 auto led = Board::GetInstance().GetLed();
                 led->OnStateChanged();
-            } else if (GetDeviceState() == kDeviceStateSpeaking &&
+            } else if (kLocalVadBargeInEnabled &&
+                       GetDeviceState() == kDeviceStateSpeaking &&
                        listening_mode_ == kListeningModeRealtime) {
                 // 全双工模式（设备端 AEC）下，TTS 播放期间持续监听人声。
                 // 只有人声保持超过 hold 时间才真正打断，短暂噪声会被静音回调取消。
@@ -1525,6 +1528,9 @@ void Application::AbortSpeaking(AbortReason reason) {
 }
 
 void Application::TryLocalVadBargeIn() {
+    if (!kLocalVadBargeInEnabled) {
+        return;
+    }
     // esp_timer 回调运行在定时器任务，切回主任务再访问状态机/协议/UI。
     Schedule([this]() {
         if (GetDeviceState() != kDeviceStateSpeaking ||
