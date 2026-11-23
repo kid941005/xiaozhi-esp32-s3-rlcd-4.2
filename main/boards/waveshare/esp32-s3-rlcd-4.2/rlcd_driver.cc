@@ -130,15 +130,24 @@ void RlcdDriver::Set_ResetIOLevel(uint8_t level) {
 }
 
 void RlcdDriver::RLCD_SendCommand(uint8_t Reg) {
-    ESP_ERROR_CHECK(esp_lcd_panel_io_tx_param(io_handle_, Reg, NULL, 0));
+    esp_err_t err = esp_lcd_panel_io_tx_param(io_handle_, Reg, NULL, 0);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "RLCD_SendCommand 失败: %s", esp_err_to_name(err));
+    }
 }
 
 void RlcdDriver::RLCD_SendData(uint8_t Data) {
-    ESP_ERROR_CHECK(esp_lcd_panel_io_tx_param(io_handle_, -1, &Data, 1));
+    esp_err_t err = esp_lcd_panel_io_tx_param(io_handle_, -1, &Data, 1);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "RLCD_SendData 失败: %s", esp_err_to_name(err));
+    }
 }
 
 void RlcdDriver::RLCD_Sendbuffera(uint8_t *Data, int len) {
-    ESP_ERROR_CHECK(esp_lcd_panel_io_tx_color(io_handle_, -1, Data, len));
+    esp_err_t err = esp_lcd_panel_io_tx_color(io_handle_, -1, Data, len);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "RLCD_Sendbuffera 失败: %s", esp_err_to_name(err));
+    }
 }
 
 void RlcdDriver::RLCD_Reset() {

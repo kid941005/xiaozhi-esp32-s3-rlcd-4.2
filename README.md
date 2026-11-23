@@ -119,7 +119,7 @@ idf.py -p COM7 flash monitor
 
 - 实体 USER 按键循环：天气 → 天气详情 → 音乐 → 天气。
 - MCP：`self.disp.switch`，参数 `mode=weather|detail|music`。
-- HTTP：`GET /page?p=weather|detail|music|toggle`。
+- HTTP：`POST /page?p=weather|detail|music|toggle`。
 - 自动切页优先级：倒计时 > 音乐播放 > 天气查询；进行中手动切页会被忽略，结束后回天气主页。
 - 天气查询：`self.weather.query` 播报当日天气并切详情页，播报结束后自动返回主页。
 
@@ -199,23 +199,24 @@ NVS weather/city（手动 self.weather.set_city）
 
 ## HTTP 调试端点
 
-设备联网后启动只读 HTTP 服务（端口 8080）：
+设备联网后启动 HTTP 调试服务（端口 8080）。首次启动会自动生成访问 token 并保存到 NVS，串口日志打印 `截图服务 token: ...`；所有端点要求请求头 `X-Auth-Token: <token>` 或 URL 参数 `?token=<token>`，否则返回 401。
 
 | 端点 | 用途 |
 | --- | --- |
 | `GET /shot.bmp` | 400×300 单色 BMP，直读显存 |
 | `GET /dbg` | 关键控件文本/位置/尺寸、dither 参数 |
-| `GET /page?p=weather\|detail\|music\|toggle` | 远程切页 |
-| `GET /dither?mode=0..4&thr=16..240` | 在线调整二值化参数 |
-| `GET /countdown?action=start\|pause\|resume\|cancel\|status&sec=300` | 触发/查询倒计时（无语音环境调试） |
-| `GET /weather_query?ms=15000` | 模拟天气查询，切详情页并在 ms 后自动返回 |
-| `GET /music_play?url=...&title=...&artist=...` | 用指定直链模拟播放，验证自动切页 |
-| `GET /music_stop` / `GET /music_state` | 停止播放 / 查询播放状态与当前页 |
+| `POST /page?p=weather\|detail\|music\|toggle` | 远程切页 |
+| `POST /dither?mode=0..4&thr=16..240` | 在线调整二值化参数 |
+| `POST /countdown?action=start\|pause\|resume\|cancel\|status&sec=300` | 触发/查询倒计时（无语音环境调试） |
+| `POST /weather_query?ms=15000` | 模拟天气查询，切详情页并在 ms 后自动返回 |
+| `POST /music_play?url=...&title=...&artist=...` | 用指定直链模拟播放，验证自动切页 |
+| `POST /music_stop` / `GET /music_state` | 停止播放 / 查询播放状态与当前页 |
 
 主机截图：
 
 ```bash
-python shot_fetch.py 192.168.137.104 out.png
+python shot_fetch.py 192.168.137.104 out.png 8080 "<串口日志中的 token>"
+# 或设置 SHOT_TOKEN 环境变量后省略第 4 个参数
 # 输出 400x300 原始尺寸 PNG，不做放大
 ```
 

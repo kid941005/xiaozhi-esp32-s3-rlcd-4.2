@@ -460,7 +460,9 @@ void Application::HandleNetworkDisconnectedEvent() {
         (state == kDeviceStateConnecting || state == kDeviceStateListening ||
          state == kDeviceStateSpeaking)) {
         ESP_LOGI(TAG, "Closing audio channel due to network disconnection");
-        protocol_->CloseAudioChannel();
+        if (protocol_) {
+            protocol_->CloseAudioChannel();
+        }
     }
 
     // Update the status bar immediately to show the network state
@@ -859,8 +861,15 @@ void Application::InitializeProtocol() {
             auto message = cJSON_GetObjectItem(root, "message");
             auto emotion = cJSON_GetObjectItem(root, "emotion");
             if (cJSON_IsString(status) && cJSON_IsString(message) && cJSON_IsString(emotion)) {
-                Alert(status->valuestring, message->valuestring, emotion->valuestring,
-                      Lang::Sounds::OGG_VIBRATION);
+                // 该回调运行在网络接收任务，Alert 内含 LVGL 与音频操作，必须切到主任务；
+                // 字符串在 cJSON 删除后会失效，先拷贝成本地 std::string。
+                std::string alert_status = status->valuestring;
+                std::string alert_message = message->valuestring;
+                std::string alert_emotion = emotion->valuestring;
+                Schedule([this, alert_status, alert_message, alert_emotion]() {
+                    Alert(alert_status.c_str(), alert_message.c_str(), alert_emotion.c_str(),
+                          Lang::Sounds::OGG_VIBRATION);
+                });
             } else {
                 ESP_LOGW(TAG, "Alert command requires status, message and emotion");
             }
@@ -1942,18 +1951,26 @@ bool Application::PlayMusicFromUrl(const std::string& url, const std::string& ti
     args->lyric_url = lyric.empty() ? effective_lyric_url : "";
 
     // 播放任务栈同样放 PSRAM：12KB 内部栈长期占用会压缩显示 DMA 的余量。
-    BaseType_t created = xTaskCreateWithCaps([](void* arg) {
-        std::unique_ptr<MusicPlaybackTaskArgs> task_args(static_cast<MusicPlaybackTaskArgs*>(arg));
-        task_args->app->MusicPlaybackTask(std::move(task_args->url), std::move(task_args->title),
-                                          std::move(task_args->artist), std::move(task_args->lyric_url));
-        vTaskDeleteWithCaps(nullptr);
-    }, "music_playback", 12288, args, 3, &music_playback_task_handle_, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    // 句柄必须在 music_playback_mutex_ 内发布：播放任务结束时也会拿同一把锁
+    // 把 handle 置空，若先创建后加锁，短任务可能先清空、主任务再写回 stale handle。
+    BaseType_t created = pdFAIL;
+    {
+        std::lock_guard<std::mutex> lock(music_playback_mutex_);
+        created = xTaskCreateWithCaps([](void* arg) {
+            std::unique_ptr<MusicPlaybackTaskArgs> task_args(static_cast<MusicPlaybackTaskArgs*>(arg));
+            task_args->app->MusicPlaybackTask(std::move(task_args->url), std::move(task_args->title),
+                                              std::move(task_args->artist), std::move(task_args->lyric_url));
+            vTaskDeleteWithCaps(nullptr);
+        }, "music_playback", 12288, args, 3, &music_playback_task_handle_, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (created != pdPASS) {
+            music_playback_task_handle_ = nullptr;
+        }
+    }
 
     if (created != pdPASS) {
         delete args;
         std::lock_guard<std::mutex> lock(music_playback_mutex_);
         music_playing_.store(false);
-        music_playback_task_handle_ = nullptr;
         current_music_title_.clear();
         return false;
     }
@@ -2186,7 +2203,12 @@ void Application::MusicPlaybackTask(std::string url, std::string title, std::str
             long dur_ms = strtol(dur_header.c_str(), nullptr, 10);
             if (dur_ms > 0) {
                 music_total_ms_.store(static_cast<uint32_t>(dur_ms));
-                display->SetMusicProgress(0, static_cast<uint32_t>(dur_ms));
+                // LVGL 只能在主任务访问，音乐任务里必须 Schedule
+                Schedule([display, dur_ms]() {
+                    if (display != nullptr) {
+                        display->SetMusicProgress(0, static_cast<uint32_t>(dur_ms));
+                    }
+                });
                 ESP_LOGI(TAG, "音乐总时长（响应头）: %ld ms", dur_ms);
             }
         }
@@ -2436,8 +2458,18 @@ void Application::MusicPlaybackTask(std::string url, std::string title, std::str
 
                         // 连续流的进度按“当前单曲”由 music_status 驱动，不能拿整条流累计位置去套单曲总时长。
                         if (!music_playlist_mode_.load()) {
-                            // 总时长未知时传 0，让 SetMusicProgress 只显示播放时间
-                            display->SetMusicProgress(current_ms, total_ms);
+                            // LVGL 只能在主任务访问；限流到约 1 秒一次，避免每个解码块都投递任务。
+                            static uint32_t last_ui_progress_ms = 0;
+                            if (current_ms < last_ui_progress_ms ||
+                                current_ms - last_ui_progress_ms >= 1000) {
+                                last_ui_progress_ms = current_ms;
+                                // 总时长未知时传 0，让 SetMusicProgress 只显示播放时间
+                                Schedule([display, current_ms, total_ms]() {
+                                    if (display != nullptr) {
+                                        display->SetMusicProgress(current_ms, total_ms);
+                                    }
+                                });
+                            }
                         }
 
                         // 有歌词时同步歌词显示

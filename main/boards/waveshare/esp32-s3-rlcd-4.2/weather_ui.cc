@@ -468,7 +468,7 @@ void CustomLcdDisplay::SetupWeatherUI() {
     lv_obj_set_style_text_font(low_battery_label_, font_static, 0);
     lv_obj_set_style_text_color(low_battery_label_, lv_color_black(), 0);
     lv_obj_set_style_text_align(low_battery_label_, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_width(low_battery_label_, UI_SCR_W - 40);
+    lv_obj_set_width(low_battery_label_, LV_PCT(100));
     lv_obj_center(low_battery_label_);
     lv_label_set_text(low_battery_label_, "电量低，请尽快充电");
 

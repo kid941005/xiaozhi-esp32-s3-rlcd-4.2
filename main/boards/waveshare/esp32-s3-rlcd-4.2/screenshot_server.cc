@@ -17,10 +17,11 @@
 #include <esp_heap_caps.h>
 #include <esp_http_server.h>
 #include <esp_log.h>
+#include <esp_random.h>
 
 #include "custom_lcd_display.h"
 #include "application.h"
-#include <settings.h>   // P2 #14：从 NVS 读取可选鉴权 token
+#include <settings.h>   // 从 NVS 读写截图服务访问 token
 
 static const char *TAG = "Screenshot";
 
@@ -54,27 +55,41 @@ static uint8_t *s_bmp = nullptr;
 static size_t s_bmp_cap = 0;
 static const int kShotPort = 8080;
 
-// ---- P2 #14：可选访问鉴权 ----
-// 默认不配置 token → 保持原有调试行为（本地截图脚本无需改动）；
-// 配置 token（NVS 键 screenshot/token，或编译期 -DSCREENSHOT_TOKEN="..."）后，
-// 所有端点要求 URL 带 ?token=xxx 才放行。
+// ---- P1：强制访问鉴权 ----
+// token 优先从 NVS（screenshot/token）读取；首次启动没有 token 时自动生成并保存，
+// 串口日志会打印 token。所有端点要求 X-Auth-Token 头或 ?token=xxx 才放行，
+// 避免局域网内任意网页通过 <img>/链接触发 /wake、/music_play、/page 等控制端点。
 static std::string s_token;
+
+static void GenerateScreenshotToken() {
+    uint32_t words[4];
+    for (auto &word : words) {
+        word = esp_random();
+    }
+    char buf[33];
+    snprintf(buf, sizeof(buf), "%08x%08x%08x%08x",
+             (unsigned)words[0], (unsigned)words[1], (unsigned)words[2], (unsigned)words[3]);
+    s_token = buf;
+    Settings settings("screenshot", true);
+    settings.SetString("token", s_token);
+    ESP_LOGW(TAG, "截图服务未配置 token，已生成并保存: %s", s_token.c_str());
+}
 
 static void LoadScreenshotToken() {
     s_token.clear();
-    // 1) NVS 优先（设备上可写，无需重编译）
-    Settings settings("screenshot", false);
-    std::string t = settings.GetString("token", "");
-    if (!t.empty()) {
-        s_token = t;
-        return;
+    {
+        Settings settings("screenshot", false);
+        s_token = settings.GetString("token", "");
     }
-    // 2) 编译期 token
 #ifdef SCREENSHOT_TOKEN
-    if (strlen(SCREENSHOT_TOKEN) > 0) {
+    if (s_token.empty() && strlen(SCREENSHOT_TOKEN) > 0) {
         s_token = SCREENSHOT_TOKEN;
     }
 #endif
+    if (s_token.empty()) {
+        GenerateScreenshotToken();
+    }
+    ESP_LOGI(TAG, "截图服务 token: %s（请求头 X-Auth-Token 或 ?token=）", s_token.c_str());
 }
 
 static bool TokenEquals(const std::string &expected, const char *got) {
@@ -92,24 +107,29 @@ static bool TokenEquals(const std::string &expected, const char *got) {
     return diff == 0;
 }
 
-// 返回 true 表示放行；false 时已发送 401
-static bool CheckAuth(httpd_req_t *req) {
-    if (s_token.empty()) {
-        return true;   // 未配置 token → 调试开放（原有行为）
+static bool ExtractAuthToken(httpd_req_t *req, char *value, size_t value_size) {
+    if (httpd_req_get_hdr_value_str(req, "X-Auth-Token", value, value_size) == ESP_OK) {
+        return true;
     }
     char query[256] = {0};
+    return httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK &&
+           httpd_query_key_value(query, "token", value, value_size) == ESP_OK;
+}
+
+// 返回 true 表示放行；false 时已发送 401/500
+static bool CheckAuth(httpd_req_t *req) {
+    if (s_token.empty()) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "auth token unavailable");
+        return false;
+    }
     char value[128] = {0};
-    bool ok = false;
-    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK &&
-        httpd_query_key_value(query, "token", value, sizeof(value)) == ESP_OK) {
-        ok = TokenEquals(s_token, value);
+    if (ExtractAuthToken(req, value, sizeof(value)) && TokenEquals(s_token, value)) {
+        return true;
     }
-    if (!ok) {
-        httpd_resp_set_status(req, "401 Unauthorized");
-        httpd_resp_set_type(req, "text/plain; charset=utf-8");
-        httpd_resp_send(req, "unauthorized: ?token= required\n", HTTPD_RESP_USE_STRLEN);
-    }
-    return ok;
+    httpd_resp_set_status(req, "401 Unauthorized");
+    httpd_resp_set_type(req, "text/plain; charset=utf-8");
+    httpd_resp_send(req, "unauthorized: X-Auth-Token header or ?token= required\n", HTTPD_RESP_USE_STRLEN);
+    return false;
 }
 
 static esp_err_t ShotBmpHandler(httpd_req_t *req) {
@@ -396,28 +416,28 @@ static const httpd_uri_t kDbgUri = {
 
 static const httpd_uri_t kPageUri = {
     .uri = "/page",
-    .method = HTTP_GET,
+    .method = HTTP_POST,
     .handler = PageHandler,
     .user_ctx = nullptr,
 };
 
 static const httpd_uri_t kDitherUri = {
     .uri = "/dither",
-    .method = HTTP_GET,
+    .method = HTTP_POST,
     .handler = DitherHandler,
     .user_ctx = nullptr,
 };
 
 static const httpd_uri_t kMusicPlayUri = {
     .uri = "/music_play",
-    .method = HTTP_GET,
+    .method = HTTP_POST,
     .handler = MusicPlayHandler,
     .user_ctx = nullptr,
 };
 
 static const httpd_uri_t kMusicStopUri = {
     .uri = "/music_stop",
-    .method = HTTP_GET,
+    .method = HTTP_POST,
     .handler = MusicStopHandler,
     .user_ctx = nullptr,
 };
@@ -431,21 +451,21 @@ static const httpd_uri_t kMusicStateUri = {
 
 static const httpd_uri_t kCountdownUri = {
     .uri = "/countdown",
-    .method = HTTP_GET,
+    .method = HTTP_POST,
     .handler = CountdownHandler,
     .user_ctx = nullptr,
 };
 
 static const httpd_uri_t kWeatherQueryUri = {
     .uri = "/weather_query",
-    .method = HTTP_GET,
+    .method = HTTP_POST,
     .handler = WeatherQueryHandler,
     .user_ctx = nullptr,
 };
 
 static const httpd_uri_t kWakeUri = {
     .uri = "/wake",
-    .method = HTTP_GET,
+    .method = HTTP_POST,
     .handler = WakeHandler,
     .user_ctx = nullptr,
 };
@@ -458,7 +478,7 @@ bool ScreenshotServerStart(CustomLcdDisplay *display) {
         return false;
     }
     LoadScreenshotToken();
-    ESP_LOGI(TAG, "截图服务鉴权: %s", s_token.empty() ? "关闭(调试开放)" : "已启用(?token=)");
+    ESP_LOGI(TAG, "截图服务鉴权: 已启用（X-Auth-Token 或 ?token=）");
     RlcdDriver *drv = display->rlcd();
     const int w = (drv != nullptr) ? drv->width() : 400;
     const int h = (drv != nullptr) ? drv->height() : 300;
@@ -492,6 +512,6 @@ bool ScreenshotServerStart(CustomLcdDisplay *display) {
     httpd_register_uri_handler(s_server, &kMusicPlayUri);
     httpd_register_uri_handler(s_server, &kMusicStopUri);
     httpd_register_uri_handler(s_server, &kMusicStateUri);
-    ESP_LOGI(TAG, "截图服务已启动: http://<设备IP>:%d/shot.bmp", kShotPort);
+    ESP_LOGI(TAG, "截图服务已启动: http://<设备IP>:%d/shot.bmp（需 X-Auth-Token）", kShotPort);
     return true;
 }

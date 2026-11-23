@@ -39,11 +39,19 @@ void SensorManager::init(i2c_master_bus_handle_t bus_handle) {
     dev_cfg.dev_addr_length = I2C_ADDR_BIT_LEN_7;
     dev_cfg.device_address = SHTC3_ADDR;
     dev_cfg.scl_speed_hz = 100000;
-    ESP_ERROR_CHECK(i2c_master_bus_add_device(bus_handle_, &dev_cfg, &shtc3_handle_));
+    shtc3_handle_ = nullptr;
+    if (i2c_master_bus_add_device(bus_handle_, &dev_cfg, &shtc3_handle_) != ESP_OK) {
+        ESP_LOGE(TAG, "SHTC3 添加到 I2C 总线失败，温湿度功能不可用");
+        shtc3_handle_ = nullptr;
+    }
 
     // 添加 PCF85063 RTC 时钟到 I2C 总线
     dev_cfg.device_address = PCF85063_ADDR;
-    ESP_ERROR_CHECK(i2c_master_bus_add_device(bus_handle_, &dev_cfg, &pcf85063_handle_));
+    pcf85063_handle_ = nullptr;
+    if (i2c_master_bus_add_device(bus_handle_, &dev_cfg, &pcf85063_handle_) != ESP_OK) {
+        ESP_LOGE(TAG, "PCF85063 添加到 I2C 总线失败，RTC 功能不可用");
+        pcf85063_handle_ = nullptr;
+    }
 
     initSHTC3();
     initRTC();
@@ -72,6 +80,7 @@ void SensorManager::init(i2c_master_bus_handle_t bus_handle) {
 }
 
 void SensorManager::initSHTC3() {
+    if (shtc3_handle_ == nullptr) return;
     // 0x3517 是 SHTC3 的 Wake-up 命令（软复位是 0x805D）；初始化后先唤醒再测量
     uint8_t cmd[] = {0x35, 0x17};
     i2c_master_transmit(shtc3_handle_, cmd, sizeof(cmd), pdMS_TO_TICKS(100));
@@ -90,6 +99,7 @@ static uint8_t shtc3_crc8(const uint8_t *data, size_t len) {
 }
 
 void SensorManager::initRTC() {
+    if (pcf85063_handle_ == nullptr) return;
     // PCF85063 控制寄存器初始化
     uint8_t cmd[] = {0x00, 0x00}; 
     i2c_master_transmit(pcf85063_handle_, cmd, sizeof(cmd), pdMS_TO_TICKS(100));
@@ -141,6 +151,14 @@ SensorData SensorManager::getTempHumidity() {
     SensorData data = {0, 0, false};
     if (!shtc3_handle_) return data;
     
+    // SHTC3 每次测量后自动进入 sleep，测量前必须先发唤醒命令，否则会一直 NACK
+    uint8_t wake_cmd[] = {0x35, 0x17};
+    if (i2c_master_transmit(shtc3_handle_, wake_cmd, sizeof(wake_cmd), pdMS_TO_TICKS(100)) != ESP_OK) {
+        ESP_LOGW(TAG, "SHTC3 唤醒失败");
+        return data;
+    }
+    vTaskDelay(pdMS_TO_TICKS(1));
+
     // 发送读取命令（正常模式，温度优先）
     uint8_t cmd[] = {0x7C, 0xA2};
     if (i2c_master_transmit(shtc3_handle_, cmd, sizeof(cmd), pdMS_TO_TICKS(100)) == ESP_OK) {
@@ -171,6 +189,11 @@ bool SensorManager::getRtcTime(struct tm *timeinfo) {
     uint8_t buf[7];
     uint8_t reg = 0x04;
     if (i2c_master_transmit_receive(pcf85063_handle_, &reg, 1, buf, 7, pdMS_TO_TICKS(100)) == ESP_OK) {
+        // OS(bit7)=1 表示振荡器曾停止，时间不可信，直接判失败让上层重新对时
+        if (buf[0] & 0x80) {
+            ESP_LOGW(TAG, "PCF85063 时钟停止标志置位，时间无效");
+            return false;
+        }
         timeinfo->tm_sec  = bcd2dec(buf[0] & 0x7F);
         timeinfo->tm_min  = bcd2dec(buf[1] & 0x7F);
         timeinfo->tm_hour = bcd2dec(buf[2] & 0x3F);

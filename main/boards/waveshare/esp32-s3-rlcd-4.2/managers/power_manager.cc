@@ -72,6 +72,8 @@ void PowerManager::SetLevel(Level level) {
     if (level_ == level) {
         return;
     }
+    const Level old_level = level_;
+    const int old_max_freq = max_freq_mhz_;
     level_ = level;
 
     int target = max_freq_mhz_;
@@ -93,7 +95,12 @@ void PowerManager::SetLevel(Level level) {
     }
     max_freq_mhz_ = target;
     if (enabled_) {
-        Apply();
+        if (Apply() != ESP_OK) {
+            // 应用失败要回滚到上一档，否则软件档位与硬件频率不一致。
+            level_ = old_level;
+            max_freq_mhz_ = old_max_freq;
+            Apply();
+        }
     }
 }
 

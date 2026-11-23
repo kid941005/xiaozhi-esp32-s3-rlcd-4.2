@@ -1,6 +1,7 @@
 #pragma once
 #include <string>
 #include <mutex>
+#include <chrono>
 #include "esp_http_client.h"
 
 // 单日预报（和风天气 3 天预报的每一天）
@@ -57,6 +58,12 @@ public:
     // 即使网络断开，也能返回上次成功获取的数据
     WeatherData getLatestData() {
         std::lock_guard<std::mutex> lock(mutex_);
+        // 缓存超过 30 分钟视为过期：断网后不再把旧天气当实时数据展示/播报。
+        if (latest_data_.valid && latest_time_ != std::chrono::steady_clock::time_point{}) {
+            if (std::chrono::steady_clock::now() - latest_time_ > std::chrono::minutes(30)) {
+                latest_data_.valid = false;
+            }
+        }
         return latest_data_;
     }
 
@@ -71,16 +78,17 @@ public:
     void loadConfigFromNvs();
 
     // 当前查询城市（IP 定位 > NVS 手动配置 > config.h WEATHER_CITY）
-    const std::string& city() const { return city_; }
+    // 返回拷贝并加锁：城市字符串会被天气任务改写，跨任务读 const& 是数据竞争
+    std::string city() const { std::lock_guard<std::mutex> lock(loc_mutex_); return city_; }
 
     // 手动指定城市（MCP self.weather.set_city 用）：清定位缓存并跳过后续 IP 定位
     // adm：可选上级行政区划（省/市），用于同名城市消歧（参考 DuDuClock 的做法）
     void SetCity(const std::string& city, const std::string& adm = "");
 
     // 当前城市来源（手动配置 / 上次定位缓存 / IP 定位 / 默认）——诊断用
-    const std::string& citySource() const { return city_source_; }
+    std::string citySource() const { std::lock_guard<std::mutex> lock(loc_mutex_); return city_source_; }
     // 当前解析到的和风 LocationID——诊断用
-    const std::string& locationId() const { return loc_id_; }
+    std::string locationId() const { std::lock_guard<std::mutex> lock(loc_mutex_); return loc_id_; }
 
     // 通过外部工具（如 MCP）直接写入天气数据
     // 适用于不走板载 HTTP 天气接口，而由 AI 侧先查好天气再下发到设备
@@ -92,7 +100,9 @@ public:
 private:
     WeatherManager();
     mutable std::mutex mutex_;   // 保护 latest_data_：多任务并发读写 std::string 会 UB
+    mutable std::mutex loc_mutex_;  // 保护 city_/loc_id_/loc_name_/adm_/city_source_ 等定位字符串
     WeatherData latest_data_;
+    std::chrono::steady_clock::time_point latest_time_{};  // 最近一次成功写入时间，用于缓存过期
 
     // API 配置
     std::string api_key_;

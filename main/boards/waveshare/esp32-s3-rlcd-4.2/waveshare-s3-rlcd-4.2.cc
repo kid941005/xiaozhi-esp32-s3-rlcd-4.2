@@ -26,6 +26,7 @@
 #include "ui_assets.h"
 #include "managers/weather_manager.h"
 #include "managers/todo_mcp_client.h"
+#include "managers/memo_store.h"
 #include "screenshot_server.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -94,14 +95,14 @@ private:
         return (hh >= 0 && hh <= 23 && mm >= 0 && mm <= 59);
     }
 
-    // ===== 备忘录 NVS 读写辅助（P2 #11）=====
-    // 读 NVS "memo"/"items" 并解析为 cJSON 数组；非数组或解析失败返回 nullptr。
+    // ===== 备忘录 NVS 读写辅助（P2 #11，P2 架构债：手动/待办分 key）=====
+    // 读 NVS "memo"/"manual" 并解析为 cJSON 数组；非数组或解析失败返回 nullptr。
     // 调用方负责 cJSON_Delete。
     cJSON* LoadMemoArray() {
         std::string json_str;
         {
-            Settings settings("memo", false);
-            json_str = settings.GetString("items", "[]");
+            Settings settings(kMemoNvsNamespace, false);
+            json_str = settings.GetString(kMemoManualKey, "[]");
         }
         cJSON *arr = cJSON_Parse(json_str.c_str());
         if (arr && !cJSON_IsArray(arr)) {
@@ -111,16 +112,89 @@ private:
         return arr;
     }
 
-    // 将 cJSON 数组写回 NVS "memo"/"items"；arr 为空时不写入。
+    // 将 cJSON 数组写回 NVS "memo"/"manual"。
     void SaveMemoArray(cJSON* arr) {
         if (!arr) return;
         char *new_json = cJSON_PrintUnformatted(arr);
         if (!new_json) return;
         {
-            Settings settings("memo", true);
-            settings.SetString("items", new_json);
+            Settings settings(kMemoNvsNamespace, true);
+            settings.SetString(kMemoManualKey, new_json);
         }
         cJSON_free(new_json);
+    }
+
+    // 旧版本把手动备忘和待办混存在 memo/items。启动时一次性迁移到
+    // memo/manual 与 memo/todos，避免升级后旧数据“消失”。
+    void MigrateLegacyMemoStorage() {
+        std::lock_guard<std::mutex> memo_lock(MemoStoreMutex());
+        Settings read_settings(kMemoNvsNamespace, false);
+        const std::string legacy = read_settings.GetString(kMemoLegacyKey, "");
+        if (legacy.empty()) return;
+
+        const std::string existing_manual = read_settings.GetString(kMemoManualKey, "");
+        const std::string existing_todos = read_settings.GetString(kMemoTodoKey, "");
+
+        cJSON* src = cJSON_Parse(legacy.c_str());
+        if (!cJSON_IsArray(src)) {
+            if (src) cJSON_Delete(src);
+            return;
+        }
+        cJSON* manual = cJSON_CreateArray();
+        cJSON* todos = cJSON_CreateArray();
+        cJSON* it = nullptr;
+        cJSON_ArrayForEach(it, src) {
+            cJSON* type = cJSON_GetObjectItem(it, "type");
+            const bool is_todo = type && cJSON_IsString(type) && type->valuestring &&
+                                 strcmp(type->valuestring, "todo") == 0;
+            cJSON_AddItemToArray(is_todo ? todos : manual, cJSON_Duplicate(it, 1));
+        }
+        cJSON_Delete(src);
+
+        Settings write_settings(kMemoNvsNamespace, true);
+        if (existing_manual.empty()) {
+            char* out = cJSON_PrintUnformatted(manual);
+            if (out) { write_settings.SetString(kMemoManualKey, out); cJSON_free(out); }
+        }
+        if (existing_todos.empty()) {
+            char* out = cJSON_PrintUnformatted(todos);
+            if (out) { write_settings.SetString(kMemoTodoKey, out); cJSON_free(out); }
+        }
+        write_settings.EraseKey(kMemoLegacyKey);
+        cJSON_Delete(manual);
+        cJSON_Delete(todos);
+        ESP_LOGI(TAG, "memo 存储已迁移到 manual/todos 分 key");
+    }
+
+    // 待办列表现在独立存 memo/todos，保留此谓词用于旧数据兼容与过滤。
+    bool IsTodoMemoItem(cJSON* item) {
+        cJSON* type = cJSON_GetObjectItem(item, "type");
+        return type && cJSON_IsString(type) && type->valuestring &&
+               strcmp(type->valuestring, "todo") == 0;
+    }
+
+    int CountManualMemos(cJSON* arr) {
+        if (!arr) return 0;
+        int n = 0;
+        cJSON* it = nullptr;
+        cJSON_ArrayForEach(it, arr) {
+            if (!IsTodoMemoItem(it)) n++;
+        }
+        return n;
+    }
+
+    // 待办独立写 memo/todos；手动备忘在 memo/manual，互不覆盖。
+    void SaveTodoArrayPreservingMemos(cJSON* todos) {
+        std::lock_guard<std::mutex> memo_lock(MemoStoreMutex());
+        cJSON* out = todos ? cJSON_Duplicate(todos, 1) : cJSON_CreateArray();
+        if (!out) return;
+        char* new_json = cJSON_PrintUnformatted(out);
+        if (new_json) {
+            Settings settings(kMemoNvsNamespace, true);
+            settings.SetString(kMemoTodoKey, new_json);
+            cJSON_free(new_json);
+        }
+        cJSON_Delete(out);
     }
 
     // 采集并格式化系统信息（P2 #5）：ShowSystemInfo 与 self.system.info 共用。
@@ -464,7 +538,9 @@ private:
             PropertyList(),
             [this](const PropertyList&) -> ReturnValue {
                 auto& wm = WeatherManager::getInstance();
-                WeatherData data = wm.getLatestData();
+                // 放静态区：WeatherData 含 27 个 std::string，MCP 回调任务栈较小，按值放栈有溢出风险。
+                static WeatherData data;
+                data = wm.getLatestData();
                 char buf[256];
                 snprintf(buf, sizeof(buf),
                          "天气城市：%s（来源：%s，LocationID：%s），最新显示：%s %s %s°C",
@@ -668,12 +744,13 @@ private:
                     return std::string("时间格式无效：请使用 HH:MM（24小时制），例如 07:30、15:00；不要传“5分钟后”这类自然语言");
                 }
 
-                // 读取现有列表
+                // 读取现有列表（与待办同步共用同一把锁，避免读改写互相覆盖）
+                std::lock_guard<std::mutex> memo_lock(MemoStoreMutex());
                 cJSON *arr = LoadMemoArray();
                 if (!arr) arr = cJSON_CreateArray();
 
-                // 限制最多 10 条
-                if (cJSON_GetArraySize(arr) >= 10) {
+                // 限制最多 10 条（只统计手动备忘，不把待办算进来）
+                if (CountManualMemos(arr) >= 10) {
                     cJSON_Delete(arr);
                     return std::string("备忘已满（最多10条），请先完成或清除一些");
                 }
@@ -710,11 +787,14 @@ private:
 
                 std::string result = "当前备忘列表:\n";
                 int count = cJSON_GetArraySize(arr);
+                int shown = 0;
                 for (int i = 0; i < count; i++) {
                     cJSON *item = cJSON_GetArrayItem(arr, i);
+                    // 待办由待办卡展示，这里只列手动备忘，序号也与 done 的索引一致
+                    if (IsTodoMemoItem(item)) continue;
                     cJSON *t = cJSON_GetObjectItem(item, "t");
                     cJSON *c = cJSON_GetObjectItem(item, "c");
-                    result += std::to_string(i + 1) + ". ";
+                    result += std::to_string(++shown) + ". ";
                     if (t && cJSON_IsString(t) && strlen(t->valuestring) > 0) {
                         result += "[";
                         result += t->valuestring;
@@ -739,21 +819,35 @@ private:
             [this](const PropertyList& properties) -> ReturnValue {
                 int idx = properties["index"].value<int>();
 
+                std::lock_guard<std::mutex> memo_lock(MemoStoreMutex());
                 cJSON *arr = LoadMemoArray();
                 if (!arr) return std::string("备忘列表为空");
 
-                int count = cJSON_GetArraySize(arr);
-                if (idx < 1 || idx > count) {
+                const int manual_count = CountManualMemos(arr);
+                if (idx < 1 || idx > manual_count) {
                     cJSON_Delete(arr);
-                    return std::string("序号无效，当前共") + std::to_string(count) + "条备忘";
+                    return std::string("序号无效，当前共") + std::to_string(manual_count) + "条备忘";
+                }
+
+                // index 是手动备忘的 1-based 序号，映射回数组真实下标，避免误删待办
+                int actual_index = -1;
+                int seen = 0;
+                const int total = cJSON_GetArraySize(arr);
+                for (int i = 0; i < total; i++) {
+                    if (IsTodoMemoItem(cJSON_GetArrayItem(arr, i))) continue;
+                    if (++seen == idx) { actual_index = i; break; }
+                }
+                if (actual_index < 0) {
+                    cJSON_Delete(arr);
+                    return std::string("序号无效，请先查看备忘列表");
                 }
 
                 // 获取被删除条目的内容用于反馈
-                cJSON *removed = cJSON_GetArrayItem(arr, idx - 1);
+                cJSON *removed = cJSON_GetArrayItem(arr, actual_index);
                 cJSON *c = cJSON_GetObjectItem(removed, "c");
                 std::string removed_text = (c && c->valuestring) ? c->valuestring : "";
 
-                cJSON_DeleteItemFromArray(arr, idx - 1);
+                cJSON_DeleteItemFromArray(arr, actual_index);
 
                 // 写回 NVS
                 SaveMemoArray(arr);
@@ -772,8 +866,11 @@ private:
             PropertyList(),
             [this](const PropertyList&) -> ReturnValue {
                 {
-                    Settings settings("memo", true);
-                    settings.EraseKey("items");
+                    std::lock_guard<std::mutex> memo_lock(MemoStoreMutex());
+                    Settings settings(kMemoNvsNamespace, true);
+                    settings.EraseKey(kMemoManualKey);
+                    settings.EraseKey(kMemoTodoKey);
+                    settings.EraseKey(kMemoLegacyKey);
                 }
                 if (display_) display_->RefreshMemoDisplay();
                 ESP_LOGI(TAG, "所有备忘已清除");
@@ -816,12 +913,14 @@ private:
                     cJSON *item = cJSON_CreateObject();
                     cJSON_AddStringToObject(item, "t", "");
                     cJSON_AddStringToObject(item, "c", text);
+                    cJSON_AddStringToObject(item, "type", "todo");
                     cJSON_AddItemToArray(arr, item);
                     count++;
                 }
                 cJSON_Delete(src);
 
-                SaveMemoArray(arr);
+                // 只替换待办部分，保留手动备忘
+                SaveTodoArrayPreservingMemos(arr);
                 cJSON_Delete(arr);
 
                 if (display_) display_->RefreshMemoDisplay();
@@ -863,6 +962,7 @@ private:
     }
 
     void InitializeLcdDisplay() {
+        MigrateLegacyMemoStorage();
         spi_display_config_t spi_config = {};
         spi_config.mosi = RLCD_MOSI_PIN;
         spi_config.scl = RLCD_SCK_PIN;
@@ -880,7 +980,7 @@ private:
         WeatherManager::getInstance().loadConfigFromNvs();
 
         // 启动天气网络拉取任务（独立任务，避免 HTTP 阻塞 LVGL 刷新）
-        xTaskCreate(WeatherFetchTask, "weather_fetch", 8192, nullptr, 2, nullptr);
+        xTaskCreate(WeatherFetchTask, "weather_fetch", 12288, nullptr, 2, nullptr);
 
         // 启动待办 MCP 拉取任务：周期性调用外部 MCP 接入点的 list_todos，
         // 把当日待办写到右侧待办卡（独立任务 + 独立 websocket 连接）
@@ -947,9 +1047,14 @@ private:
             } else {
                 ESP_LOGE(TAG, "电池 ADC 初始化失败: unit=%s chan=%s cali=%s",
                          esp_err_to_name(e_unit), esp_err_to_name(e_chan), esp_err_to_name(e_cali));
-                if (e_unit != ESP_OK && adc_handle) {
+                // 任一环节失败都要释放已创建的句柄，否则每 10 秒重试会持续泄漏
+                if (adc_handle) {
                     adc_oneshot_del_unit(adc_handle);
                     adc_handle = nullptr;
+                }
+                if (cali_handle) {
+                    adc_cali_delete_scheme_curve_fitting(cali_handle);
+                    cali_handle = NULL;
                 }
             }
         }
@@ -1172,6 +1277,8 @@ public:
         charging = st.charging;
         discharging = st.discharging;
         // 诊断日志：状态变化或电量每跨 5% 打印一次（不算高频）
+        static std::mutex battery_log_mutex;
+        std::lock_guard<std::mutex> log_lock(battery_log_mutex);
         static int last_logged_pct = -1;
         static int last_logged_chg = -1;
         int pct_delta = (last_logged_pct < 0) ? 100 : (st.percent > last_logged_pct ? st.percent - last_logged_pct : last_logged_pct - st.percent);

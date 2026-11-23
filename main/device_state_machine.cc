@@ -112,21 +112,29 @@ bool DeviceStateMachine::CanTransitionTo(DeviceState target) const {
 
 bool DeviceStateMachine::TransitionTo(DeviceState new_state) {
     DeviceState old_state = current_state_.load();
-    
-    // No-op if already in the target state
-    if (old_state == new_state) {
-        return true;
+
+    // CAS 循环：校验与写入必须基于同一个旧状态，避免并发下检查通过后
+    // 被另一任务改走、又强行覆盖成非法状态。
+    while (true) {
+        // No-op if already in the target state
+        if (old_state == new_state) {
+            return true;
+        }
+
+        // Validate transition
+        if (!IsValidTransition(old_state, new_state)) {
+            ESP_LOGW(TAG, "Invalid state transition: %s -> %s",
+                     GetStateName(old_state), GetStateName(new_state));
+            return false;
+        }
+
+        // 仅当状态仍为 old_state 时原子写入 new_state；失败时 old_state
+        // 会被更新为最新值，循环重新校验。
+        if (current_state_.compare_exchange_weak(old_state, new_state)) {
+            break;
+        }
     }
 
-    // Validate transition
-    if (!IsValidTransition(old_state, new_state)) {
-        ESP_LOGW(TAG, "Invalid state transition: %s -> %s",
-                 GetStateName(old_state), GetStateName(new_state));
-        return false;
-    }
-
-    // Perform transition
-    current_state_.store(new_state);
     ESP_LOGI(TAG, "State: %s -> %s",
              GetStateName(old_state), GetStateName(new_state));
 

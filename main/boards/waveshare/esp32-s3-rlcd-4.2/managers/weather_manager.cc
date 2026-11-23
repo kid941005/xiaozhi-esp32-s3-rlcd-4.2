@@ -15,20 +15,27 @@
 #include <cctype>
 #include <cstdlib>
 #include <cstdio>
+#include <vector>
 
 static const char *TAG = "WeatherManager";
 
 // HTTP 响应上下文：按需增长，不再受固定 8KB 缓冲限制（避免大响应被静默截断）
 struct HttpCtx {
     std::string data;
+    bool overflow = false;   // 超过上限时置位，避免异常大响应把堆吃满
 };
 
 esp_err_t WeatherManager::http_event_handler(esp_http_client_event_t *evt) {
     switch(evt->event_id) {
         case HTTP_EVENT_ON_DATA:
             if (evt->user_data != nullptr && evt->data != nullptr && evt->data_len > 0) {
-                static_cast<HttpCtx*>(evt->user_data)->data.append(
-                    static_cast<const char*>(evt->data), evt->data_len);
+                static constexpr size_t kMaxHttpResponseBytes = 512 * 1024;
+                auto* ctx = static_cast<HttpCtx*>(evt->user_data);
+                if (ctx->data.size() + evt->data_len > kMaxHttpResponseBytes) {
+                    ctx->overflow = true;
+                    break;
+                }
+                ctx->data.append(static_cast<const char*>(evt->data), evt->data_len);
             }
             break;
         default:
@@ -82,6 +89,7 @@ bool WeatherManager::updateFromExternal(const std::string& city,
     {
         std::lock_guard<std::mutex> lk(mutex_);
         latest_data_ = d;
+        latest_time_ = std::chrono::steady_clock::now();
     }
     return true;
 }
@@ -94,14 +102,16 @@ static bool gunzip_to_string(const std::string& in, std::string& out) {
     strm.next_in = (Bytef*)in.data();
     strm.avail_in = (uInt)in.size();
     if (inflateInit2(&strm, 15 + 16) != Z_OK) return false;
-    static char buf[2048];   // 静态缓冲：避免 2KB 栈帧触发 -Werror=frame-larger-than
+    // 堆上分块缓冲：避免 static 缓冲被并发解压共享，也避免 2KB 栈帧触发
+    // -Werror=frame-larger-than。
+    std::vector<char> buf(2048);
     int ret = Z_OK;
     do {
-        strm.next_out = (Bytef*)buf;
-        strm.avail_out = sizeof(buf);
+        strm.next_out = (Bytef*)buf.data();
+        strm.avail_out = (uInt)buf.size();
         ret = inflate(&strm, Z_NO_FLUSH);
         if (ret != Z_OK && ret != Z_STREAM_END) { inflateEnd(&strm); return false; }
-        out.append(buf, sizeof(buf) - strm.avail_out);
+        out.append(buf.data(), buf.size() - strm.avail_out);
     } while (ret == Z_OK);   // 必须一直解到 Z_STREAM_END：压缩流可能先耗尽 avail_in 但仍有输出待取
     inflateEnd(&strm);
     return ret == Z_STREAM_END;
@@ -113,7 +123,9 @@ static bool is_valid_display_city(const char* city) {
         return false;
     }
     std::string normalized(city);
-    normalized.erase(std::remove_if(normalized.begin(), normalized.end(), ::isspace), normalized.end());
+    normalized.erase(std::remove_if(normalized.begin(), normalized.end(),
+                                    [](unsigned char c) { return std::isspace(c) != 0; }),
+                     normalized.end());
     std::transform(normalized.begin(), normalized.end(), normalized.begin(),
                    [](unsigned char c) { return (char)std::tolower(c); });
     return normalized != "ip" && normalized != "auto_ip" && normalized != "unknown";
@@ -154,7 +166,7 @@ bool WeatherManager::httpGetRaw(const std::string& url, int timeout_ms, bool ver
     int status = esp_http_client_get_status_code(client);
     esp_http_client_cleanup(client);
 
-    if (err != ESP_OK || status != 200 || ctx.data.empty()) {
+    if (err != ESP_OK || status != 200 || ctx.data.empty() || ctx.overflow) {
         ESP_LOGW(TAG, "HTTP 请求失败 (err=%d, status=%d, len=%d) url=%.110s",
                  err, status, (int)ctx.data.size(), url.c_str());
         return false;
@@ -373,17 +385,20 @@ bool WeatherManager::LocateFromBackend() {
         cJSON_Delete(root);
         return false;
     }
-    city_ = city;
-    adm_ = adm;
-    loc_id_ = id;
-    loc_name_ = city;
-    has_ip_coord_ = false;   // 后端已给出 LocationID，禁止再用出口 IP 经纬度反查
-    city_source_ = "后端服务";
+    {
+        std::lock_guard<std::mutex> lock(loc_mutex_);
+        city_ = city;
+        adm_ = adm;
+        loc_id_ = id;
+        loc_name_ = city;
+        has_ip_coord_ = false;   // 后端已给出 LocationID，禁止再用出口 IP 经纬度反查
+        city_source_ = "后端服务";
+    }
     Settings wr("weather", true);
-    wr.SetString("backend_city", city_);
-    wr.SetString("backend_adm", adm_);
-    wr.SetString("backend_loc_id", loc_id_);
-    ESP_LOGI(TAG, "后端天气地址: %s %s (%s)", adm_.c_str(), city_.c_str(), loc_id_.c_str());
+    wr.SetString("backend_city", city);
+    wr.SetString("backend_adm", adm);
+    wr.SetString("backend_loc_id", id);
+    ESP_LOGI(TAG, "后端天气地址: %s %s (%s)", adm.c_str(), city.c_str(), id.c_str());
     cJSON_Delete(root);
     return true;
 }
@@ -391,9 +406,12 @@ bool WeatherManager::LocateFromBackend() {
 // IP 定位：依次尝试 ip-api → ipapi.co → ipinfo.io（都是免密钥公开接口）。
 // 仅在没有手动配置城市时使用；全部失败则回退上次定位缓存，再不行沿用当前城市。
 bool WeatherManager::LocateByIp() {
-    if (manual_city_) {
-        ESP_LOGI(TAG, "城市为手动配置(%s)，跳过 IP 定位", city_.c_str());
-        return true;
+    {
+        std::lock_guard<std::mutex> lock(loc_mutex_);
+        if (manual_city_) {
+            ESP_LOGI(TAG, "城市为手动配置(%s)，跳过 IP 定位", city_.c_str());
+            return true;
+        }
     }
     const char* urls[3] = {WEATHER_IP_GEO_URL, WEATHER_IP_GEO_URL_ALT1, WEATHER_IP_GEO_URL_ALT2};
     const char* names[3] = {"ip-api", "ipapi.co", "ipinfo.io"};
@@ -411,6 +429,7 @@ bool WeatherManager::LocateByIp() {
         ok = parse_ip_geo(body, names[i], city, region, lat, lon);
     }
     if (!ok) {
+        std::lock_guard<std::mutex> lock(loc_mutex_);
         if (!ip_cache_city_.empty()) {
             city_ = ip_cache_city_;
             city_source_ = "上次定位缓存";
@@ -421,24 +440,27 @@ bool WeatherManager::LocateByIp() {
         return false;
     }
 
-    city_ = city;
-    if (!region.empty()) {
-        adm_ = region;   // 仅作 geo 消歧提示（英文省份会被自动忽略）
+    {
+        std::lock_guard<std::mutex> lock(loc_mutex_);
+        city_ = city;
+        if (!region.empty()) {
+            adm_ = region;   // 仅作 geo 消歧提示（英文省份会被自动忽略）
+        }
+        if (lat != 0.0f || lon != 0.0f) {
+            ip_lat_ = lat;
+            ip_lon_ = lon;
+            has_ip_coord_ = true;
+        }
+        // 城市变了，之前缓存的 LocationID 必须作废
+        loc_id_.clear();
+        loc_name_.clear();
+        city_source_ = "IP 定位";
     }
-    if (lat != 0.0f || lon != 0.0f) {
-        ip_lat_ = lat;
-        ip_lon_ = lon;
-        has_ip_coord_ = true;
-    }
-    // 城市变了，之前缓存的 LocationID 必须作废
-    loc_id_.clear();
-    loc_name_.clear();
-    city_source_ = "IP 定位";
     Settings wr("weather", true);
-    wr.SetString("ip_city", city_);
-    wr.SetString("ip_region", adm_);
+    wr.SetString("ip_city", city);
+    wr.SetString("ip_region", region);
     char coord[40];
-    snprintf(coord, sizeof(coord), "%.4f,%.4f", (double)ip_lon_, (double)ip_lat_);
+    snprintf(coord, sizeof(coord), "%.4f,%.4f", (double)lon, (double)lat);
     wr.SetString("ip_coord", coord);
     return true;
 }
@@ -448,26 +470,43 @@ void WeatherManager::SetCity(const std::string& city, const std::string& adm) {
     if (city.empty()) {
         return;
     }
-    city_ = city;
-    adm_ = adm;
-    loc_id_.clear();
-    loc_name_.clear();
-    has_ip_coord_ = false;   // 手动城市优先，禁止用 IP 经纬度反查，避免被出口 IP 带偏
-    manual_city_ = true;
-    city_source_ = "手动配置";
+    {
+        std::lock_guard<std::mutex> lock(loc_mutex_);
+        city_ = city;
+        adm_ = adm;
+        loc_id_.clear();
+        loc_name_.clear();
+        has_ip_coord_ = false;   // 手动城市优先，禁止用 IP 经纬度反查，避免被出口 IP 带偏
+        manual_city_ = true;
+        city_source_ = "手动配置";
+    }
     Settings wr("weather", true);
-    wr.SetString("city", city_);
-    wr.SetString("adm", adm_);
+    wr.SetString("city", city);
+    wr.SetString("adm", adm);
     wr.SetString("loc_id", "");
     wr.SetString("loc_name", "");
-    ESP_LOGI(TAG, "天气城市已手动设置为 %s(上级=%s)", city_.c_str(), adm_.empty() ? "-" : adm_.c_str());
+    ESP_LOGI(TAG, "天气城市已手动设置为 %s(上级=%s)", city.c_str(), adm.empty() ? "-" : adm.c_str());
 }
 
 // 和风 LocationID：NVS 缓存 > 经纬度反查 > 城市名(+上级行政区划) > 城市代码兜底
 std::string WeatherManager::ResolveLocationId() {
-    if (!loc_id_.empty()) {
-        return loc_id_;
+    std::string loc_id_snapshot, city_snapshot, adm_snapshot, city_source_snapshot;
+    bool has_coord = false;
+    float lat = 0.0f, lon = 0.0f;
+    {
+        std::lock_guard<std::mutex> lock(loc_mutex_);
+        loc_id_snapshot = loc_id_;
+        city_snapshot = city_;
+        adm_snapshot = adm_;
+        city_source_snapshot = city_source_;
+        has_coord = has_ip_coord_;
+        lat = ip_lat_;
+        lon = ip_lon_;
     }
+    if (!loc_id_snapshot.empty()) {
+        return loc_id_snapshot;
+    }
+    std::string resolved_id;
     auto lookup = [&](const std::string& location_param, const std::string& adm_param) -> bool {
         std::string body;
         // std::string 拼接避免固定缓冲截断（中文 percent-encode 后长度不可控）
@@ -496,21 +535,24 @@ std::string WeatherManager::ResolveLocationId() {
                     if (display.size() > 3 && display.compare(display.size() - 3, 3, "市") == 0) {
                         display.erase(display.size() - 3);   // 「南京市」→「南京」
                     }
-                    loc_id_ = id->valuestring;
-                    loc_name_ = display;
-                    cJSON* adm1 = cJSON_GetObjectItem(first, "adm1");
-                    if (adm1 && cJSON_IsString(adm1) && adm1->valuestring[0] != 0) {
-                        adm_ = adm1->valuestring;
-                    }
-                    // IP 定位源（如 ipinfo）可能返回英文城市名，用和风解析出的中文地名回填，保证显示/播报一致
-                    if (city_source_ == "IP 定位" && !display.empty()) {
-                        city_ = display;
+                    resolved_id = id->valuestring;
+                    {
+                        std::lock_guard<std::mutex> lock(loc_mutex_);
+                        loc_id_ = resolved_id;
+                        loc_name_ = display;
+                        cJSON* adm1 = cJSON_GetObjectItem(first, "adm1");
+                        if (adm1 && cJSON_IsString(adm1) && adm1->valuestring[0] != 0) {
+                            adm_ = adm1->valuestring;
+                        }
+                        // IP 定位源（如 ipinfo）可能返回英文城市名，用和风解析出的中文地名回填，保证显示/播报一致
+                        if (city_source_ == "IP 定位" && !display.empty()) {
+                            city_ = display;
+                        }
                     }
                     Settings wr("weather", true);
-                    wr.SetString("loc_id", loc_id_);
-                    wr.SetString("loc_name", loc_name_);
-                    ESP_LOGI(TAG, "和风 geo 定位成功: %s (%s, 上级=%s)",
-                             loc_name_.c_str(), loc_id_.c_str(), adm_.c_str());
+                    wr.SetString("loc_id", resolved_id);
+                    wr.SetString("loc_name", display);
+                    ESP_LOGI(TAG, "和风 geo 定位成功: %s (%s)", display.c_str(), resolved_id.c_str());
                     ok = true;
                 }
             }
@@ -520,29 +562,36 @@ std::string WeatherManager::ResolveLocationId() {
     };
 
     // 1) 经纬度优先：和风按坐标反查最接近真实位置，比 IP 库给的城市名更可靠
-    if (has_ip_coord_) {
+    if (has_coord) {
         char coord[40];
-        snprintf(coord, sizeof(coord), "%.4f,%.4f", (double)ip_lon_, (double)ip_lat_);
+        snprintf(coord, sizeof(coord), "%.4f,%.4f", (double)lon, (double)lat);
         if (lookup(coord, "")) {
-            return loc_id_;
+            return resolved_id;
         }
     }
     // 2) 城市名；有中文上级行政区划时带上 adm 消歧（同名城市，如「朝阳」）
-    if (!city_.empty()) {
+    if (!city_snapshot.empty()) {
         bool adm_is_chinese = false;
-        for (size_t i = 0; i < adm_.size(); i++) {
-            if ((unsigned char)adm_[i] >= 0x80) { adm_is_chinese = true; break; }
+        for (size_t i = 0; i < adm_snapshot.size(); i++) {
+            if ((unsigned char)adm_snapshot[i] >= 0x80) { adm_is_chinese = true; break; }
         }
-        if (adm_is_chinese && lookup(url_encode(city_), url_encode(adm_))) {
-            return loc_id_;
+        if (adm_is_chinese && lookup(url_encode(city_snapshot), url_encode(adm_snapshot))) {
+            return resolved_id;
         }
-        if (lookup(url_encode(city_), "")) {
-            return loc_id_;
+        if (lookup(url_encode(city_snapshot), "")) {
+            return resolved_id;
         }
     }
-    loc_id_ = WEATHER_CITY_CODE;
-    ESP_LOGW(TAG, "geo 定位失败，直接用城市代码 %s", loc_id_.c_str());
-    return loc_id_;
+    // 只有默认城市才回退到固定城市代码；用户手动设了别的城市时不要偷偷查常州，
+    // 返回空让上层回退免密钥天气源（按其自身城市参数查询）。
+    std::lock_guard<std::mutex> lock(loc_mutex_);
+    if (city_snapshot == WEATHER_CITY) {
+        loc_id_ = WEATHER_CITY_CODE;
+        ESP_LOGW(TAG, "geo 定位失败，默认城市回退城市代码 %s", loc_id_.c_str());
+        return loc_id_;
+    }
+    ESP_LOGW(TAG, "geo 定位失败，城市 %s 不回退默认城市代码", city_snapshot.c_str());
+    return std::string();
 }
 
 // 和风天气：实时 + 空气质量 + 3 天预报 + 预警
@@ -703,6 +752,7 @@ bool WeatherManager::updateQWeather() {
     {
         std::lock_guard<std::mutex> lk(mutex_);
         latest_data_ = d;
+        latest_time_ = std::chrono::steady_clock::now();
     }
     return true;
 }
@@ -713,27 +763,38 @@ bool WeatherManager::update() {
         // 每次开机只解析一次地址：后端优先，失败回退后端缓存 / 配置默认城市 / IP 定位
         if (!ip_located_) {
             ip_located_ = true;
-            if (!manual_city_ && !LocateFromBackend()) {
+            bool manual = false;
+            {
+                std::lock_guard<std::mutex> lock(loc_mutex_);
+                manual = manual_city_;
+            }
+            if (!manual && !LocateFromBackend()) {
                 if (!backend_cache_city_.empty()) {
-                    city_ = backend_cache_city_;
-                    adm_ = backend_cache_adm_;
-                    loc_id_.clear();
-                    loc_name_.clear();
-                    if (!backend_cache_loc_id_.empty()) {
-                        loc_id_ = backend_cache_loc_id_;
-                        loc_name_ = backend_cache_city_;
+                    {
+                        std::lock_guard<std::mutex> lock(loc_mutex_);
+                        city_ = backend_cache_city_;
+                        adm_ = backend_cache_adm_;
+                        loc_id_.clear();
+                        loc_name_.clear();
+                        if (!backend_cache_loc_id_.empty()) {
+                            loc_id_ = backend_cache_loc_id_;
+                            loc_name_ = backend_cache_city_;
+                        }
+                        has_ip_coord_ = false;
+                        city_source_ = "后端缓存";
                     }
-                    has_ip_coord_ = false;
-                    city_source_ = "后端缓存";
-                    ESP_LOGW(TAG, "后端地址不可用，沿用后端缓存城市 %s", city_.c_str());
+                    ESP_LOGW(TAG, "后端地址不可用，沿用后端缓存城市 %s", backend_cache_city_.c_str());
                 } else if (WEATHER_CITY[0] != '\0') {
                     // 后端不可用时用编译期配置的城市兜底，绝不回退到出口 IP（IP 常被判到邻市）
-                    city_ = WEATHER_CITY;
-                    loc_id_.clear();      // 必须清掉旧城市的 LocationID，否则仍按南京查天气
-                    loc_name_.clear();
-                    has_ip_coord_ = false;
-                    city_source_ = "配置默认";
-                    ESP_LOGW(TAG, "后端地址不可用，使用配置默认城市 %s", city_.c_str());
+                    {
+                        std::lock_guard<std::mutex> lock(loc_mutex_);
+                        city_ = WEATHER_CITY;
+                        loc_id_.clear();      // 必须清掉旧城市的 LocationID，否则仍按南京查天气
+                        loc_name_.clear();
+                        has_ip_coord_ = false;
+                        city_source_ = "配置默认";
+                    }
+                    ESP_LOGW(TAG, "后端地址不可用，使用配置默认城市 %s", WEATHER_CITY);
                 } else {
                     LocateByIp();
                 }
@@ -790,6 +851,12 @@ bool WeatherManager::updateItboy() {
     if (!httpGetRaw(url, 8000, false, body)) {
         return false;
     }
+    // httpGetRaw 统一带 Accept-Encoding: gzip；中国天气网是纯 HTTP，若对端返回
+    // gzip 就必须在这里解压，否则 cJSON 解析的是压缩字节。
+    std::string decoded;
+    if (gunzip_to_string(body, decoded)) {
+        body.swap(decoded);
+    }
 
     cJSON* root = cJSON_Parse(body.c_str());
     if (root == nullptr) {
@@ -814,8 +881,10 @@ bool WeatherManager::updateItboy() {
     cJSON* city_name = city_info ? cJSON_GetObjectItem(city_info, "city") : nullptr;
     if (city_name && cJSON_IsString(city_name) && city_name->valuestring[0] != 0) {
         city = city_name->valuestring;
-        // "成都市" -> "成都"，避免卡片文案过长
-        if (city.size() > 6) {
+        // "成都市" -> "成都"，避免卡片文案过长。
+        // UTF-8 一个汉字 3 字节，不能用 6 字节当长度阈值（3 字中文=9 字节会被误判），
+        // 这里只拦截异常长字符串，再单独去掉末尾的“市”。
+        if (city.size() > 24) {
             city = WEATHER_CITY;
         } else if (city.size() >= 3 &&
                    city.compare(city.size() - 3, 3, "市") == 0) {
@@ -883,6 +952,7 @@ bool WeatherManager::updateItboy() {
     {
         std::lock_guard<std::mutex> lk(mutex_);
         latest_data_ = d;
+        latest_time_ = std::chrono::steady_clock::now();
     }
     return true;
 }
@@ -941,6 +1011,7 @@ bool WeatherManager::updateOpenMeteo() {
     {
         std::lock_guard<std::mutex> lk(mutex_);
         latest_data_ = d;
+        latest_time_ = std::chrono::steady_clock::now();
     }
     return true;
 }

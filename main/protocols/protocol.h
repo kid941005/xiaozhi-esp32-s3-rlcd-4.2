@@ -2,7 +2,9 @@
 #define PROTOCOL_H
 
 #include <cJSON.h>
+#include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <functional>
 #include <string>
 #include <vector>
@@ -85,7 +87,16 @@ protected:
     int server_frame_duration_ = 60;
     bool error_occurred_ = false;
     std::string session_id_;
-    std::chrono::time_point<std::chrono::steady_clock> last_incoming_time_;
+    // 接收任务写、主任务/音频任务读，必须原子，避免 32 位平台上 64 位
+    // time_point 撕裂导致偶发误判超时。
+    std::atomic<int64_t> last_incoming_time_ms_{0};
+
+    void MarkIncomingTime() {
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now().time_since_epoch())
+                            .count();
+        last_incoming_time_ms_.store(ms, std::memory_order_relaxed);
+    }
 
     virtual bool SendText(const std::string& text) = 0;
     virtual void SetError(const std::string& message);

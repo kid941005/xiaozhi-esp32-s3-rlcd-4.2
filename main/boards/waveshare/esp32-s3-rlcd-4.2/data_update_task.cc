@@ -10,6 +10,7 @@
 // - 备忘闹钟检查
 
 #include "custom_lcd_display.h"
+#include "managers/memo_store.h"
 
 #include <cmath>
 #include <cstring>
@@ -342,8 +343,9 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
         if (timeinfo.tm_min != last_memo_min) {
             last_memo_min = timeinfo.tm_min;
             if (time_synced) {
-                Settings memo_rd("memo", false);
-                std::string memo_json = memo_rd.GetString("items", "");
+                std::lock_guard<std::mutex> memo_lock(MemoStoreMutex());
+                Settings memo_rd(kMemoNvsNamespace, false);
+                std::string memo_json = memo_rd.GetString(kMemoManualKey, "");
 
                 // 🔍 调试：打印当前时间和备忘录 JSON
                 char time_buf[16];
@@ -399,8 +401,8 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                         if (memo_changed) {
                             char *new_json = cJSON_PrintUnformatted(memo_arr);
                             {
-                                Settings memo_wr("memo", true);
-                                memo_wr.SetString("items", new_json);
+                                Settings memo_wr(kMemoNvsNamespace, true);
+                                memo_wr.SetString(kMemoManualKey, new_json);
                             }
                             cJSON_free(new_json);
                             self->RefreshMemoDisplay();  // 这个函数会自动获取锁

@@ -199,7 +199,7 @@ bool WebsocketProtocol::OpenAudioChannel() {
             }
             cJSON_Delete(root);
         }
-        last_incoming_time_ = std::chrono::steady_clock::now();
+        MarkIncomingTime();
     });
 
     // Callbacks run on the transport's receive task, which on 4G modems is the
@@ -215,7 +215,7 @@ bool WebsocketProtocol::OpenAudioChannel() {
 
     websocket_->OnPong([this](const char*, size_t) {
         // 收到 Pong 说明链路仍然活跃，刷新超时基准。
-        last_incoming_time_ = std::chrono::steady_clock::now();
+        MarkIncomingTime();
     });
 
     websocket_->OnDisconnected([this]() {
@@ -256,6 +256,7 @@ bool WebsocketProtocol::OpenAudioChannel() {
     // Send hello message to describe the client
     auto message = GetHelloMessage();
     if (!SendText(message)) {
+        CloseAudioChannel(false);
         return false;
     }
 
@@ -266,6 +267,8 @@ bool WebsocketProtocol::OpenAudioChannel() {
     if (!(bits & WEBSOCKET_PROTOCOL_SERVER_HELLO_EVENT)) {
         ESP_LOGE(TAG, "Failed to receive server hello");
         SetError(Lang::Strings::SERVER_TIMEOUT);
+        // 连接已建立但协议握手失败，必须关闭底层 websocket，避免泄漏连接/接收任务。
+        CloseAudioChannel(false);
         return false;
     }
 
@@ -281,7 +284,7 @@ bool WebsocketProtocol::OpenAudioChannel() {
 
     // 主动心跳：20 秒一次 Ping，避免服务端/中间设备把长时间无上行数据的
     // WebSocket 当作空闲连接断开。Pong 会刷新 last_incoming_time_。
-    last_incoming_time_ = std::chrono::steady_clock::now();
+    MarkIncomingTime();
     if (ping_timer_ != nullptr) {
         esp_timer_stop(ping_timer_);
         esp_timer_start_periodic(ping_timer_, 20 * 1000 * 1000);
@@ -337,11 +340,21 @@ void WebsocketProtocol::ParseServerHello(const cJSON* root) {
     if (cJSON_IsObject(audio_params)) {
         auto sample_rate = cJSON_GetObjectItem(audio_params, "sample_rate");
         if (cJSON_IsNumber(sample_rate)) {
-            server_sample_rate_ = sample_rate->valueint;
+            const int rate = sample_rate->valueint;
+            if (rate == 8000 || rate == 16000 || rate == 24000 || rate == 48000) {
+                server_sample_rate_ = rate;
+            } else {
+                ESP_LOGW(TAG, "Unsupported server sample_rate: %d, keep %d", rate, server_sample_rate_);
+            }
         }
         auto frame_duration = cJSON_GetObjectItem(audio_params, "frame_duration");
         if (cJSON_IsNumber(frame_duration)) {
-            server_frame_duration_ = frame_duration->valueint;
+            const int duration = frame_duration->valueint;
+            if (duration == 10 || duration == 20 || duration == 40 || duration == 60) {
+                server_frame_duration_ = duration;
+            } else {
+                ESP_LOGW(TAG, "Unsupported server frame_duration: %d, keep %d", duration, server_frame_duration_);
+            }
         }
     }
 

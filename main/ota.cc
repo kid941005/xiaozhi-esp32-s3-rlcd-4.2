@@ -342,10 +342,10 @@ bool Ota::Upgrade(const std::string& firmware_url, std::function<void(int progre
         return false;
     }
 
+    // Content-Length 可能为 0（chunked 传输）；此时按读到的字节数持续写入，直到 EOF。
     size_t content_length = http->GetBodyLength();
     if (content_length == 0) {
-        ESP_LOGE(TAG, "Failed to get content length");
-        return false;
+        ESP_LOGW(TAG, "HTTP content length unknown (chunked); reading until EOF");
     }
 
     constexpr size_t PAGE_SIZE = 4096;
@@ -372,8 +372,12 @@ bool Ota::Upgrade(const std::string& firmware_url, std::function<void(int progre
         total_read += n;
         buffer_offset += n;
         if (esp_timer_get_time() - last_calc_time >= 1000000 || n == 0) {
-            size_t progress = total_read * 100 / content_length;
-            ESP_LOGI(TAG, "Progress: %u%% (%u/%u), Speed: %uB/s", progress, total_read, content_length, recent_read);
+            size_t progress = content_length > 0 ? total_read * 100 / content_length : 0;
+            if (content_length > 0) {
+                ESP_LOGI(TAG, "Progress: %u%% (%u/%u), Speed: %uB/s", progress, total_read, content_length, recent_read);
+            } else {
+                ESP_LOGI(TAG, "Progress: %u bytes, Speed: %uB/s", total_read, recent_read);
+            }
             if (callback) {
                 callback(progress, recent_read);
             }
@@ -388,7 +392,7 @@ bool Ota::Upgrade(const std::string& firmware_url, std::function<void(int progre
                 memcpy(&new_app_info, image_header.data() + sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t), sizeof(esp_app_desc_t));
 
                 if (esp_ota_begin(update_partition, OTA_WITH_SEQUENTIAL_WRITES, &update_handle)) {
-                    esp_ota_abort(update_handle);
+                    // begin 失败时 update_handle 未初始化，不能 abort，否则行为未定义
                     ESP_LOGE(TAG, "Failed to begin OTA");
                     heap_caps_free(buffer);
                     return false;
@@ -532,7 +536,8 @@ std::string Ota::GetActivationPayload() {
     cJSON_free(json_str);
     cJSON_Delete(payload);
 
-    ESP_LOGI(TAG, "Activation payload: %s", json.c_str());
+    // payload 含 serial/challenge/hmac，不打印内容，只记录长度
+    ESP_LOGD(TAG, "Activation payload prepared (%u bytes)", (unsigned)json.size());
     return json;
 }
 

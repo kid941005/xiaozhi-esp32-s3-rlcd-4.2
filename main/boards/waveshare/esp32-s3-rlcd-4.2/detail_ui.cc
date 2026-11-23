@@ -99,6 +99,7 @@ void MakeDivider(lv_obj_t* parent, int x, int y, int w) {
 }  // namespace
 
 void CustomLcdDisplay::SetupWeatherDetailUI() {
+    DisplayLockGuard lock(this);
     const int W = UI_SCR_W;
     const int H = UI_SCR_H;
     const int content_w = W - kPad * 2;
@@ -113,6 +114,7 @@ void CustomLcdDisplay::SetupWeatherDetailUI() {
     lv_obj_set_style_pad_all(detail_page_, 0, 0);
     lv_obj_set_style_radius(detail_page_, 0, 0);
     lv_obj_remove_flag(detail_page_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(detail_page_, LV_OBJ_FLAG_HIDDEN);   // 构造期先隐藏，避免启动瞬间闪黑帧
 
     // ===== 标题行：定位图标 + 「天气」+ 城市 + 更新时间 =====
     MakeIcon(detail_page_, MATERIAL_SYMBOLS_LOCATION_ON, lv_color_white(), kPad, kTitleY + 1);

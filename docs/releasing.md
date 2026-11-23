@@ -1,60 +1,78 @@
 # Publishing firmware releases
 
-The **Release Firmware** workflow (`.github/workflows/release.yml`) is started
-manually. It builds every release variant supported by ESP-IDF 6.1 using
-`scripts/build.py <board> --name <variant> --zip`. It does not use the incremental
-CI selection or include CI-only option variants.
+This repository is a board-specific fork of `78/xiaozhi-esp32`. It does **not**
+use the upstream release workflow (`.github/workflows/release.yml`) or
+`scripts/publish_firmware.py`; those files are not present here and are not
+required for this board. Releases are produced manually with the two merged
+images used by previous versions.
 
-The workflow uses `scripts/publish_firmware.py prepare` to generate the release
-manifest and `scripts/publish_firmware.py publish` to verify packages and upload
-the GitHub Release. The legacy `scripts/release.py` entry point forwards board
-build commands to `scripts/build.py` and prints a deprecation warning to stderr.
+## Version
 
 The release version comes from `PROJECT_VER` in the root `CMakeLists.txt`.
-Update that value before publishing another version. The workflow fixes every
-checkout to the triggering commit and records the commit, SDK, board directories,
-and full variant list in `release-manifest.json`.
+Update it before building a new release. Do not reuse a tag or version that has
+already been published.
 
-## Running the workflow
+## Build the two images
 
-Merge the workflow into the default branch first so GitHub exposes its manual
-trigger. In **Actions → Release Firmware → Run workflow**, select the default
-branch and leave **Publish as the latest release** enabled to publish publicly.
-Disable it to build and upload an unpublished draft instead.
+The board direction is selected at compile time by `RLCD_PORTRAIT` in
+`main/boards/waveshare/esp32-s3-rlcd-4.2/config.h`:
 
-The equivalent commands are:
+- `0` = landscape 400x300 (default)
+- `1` = portrait 300x400 (re-layout, not rotation)
+
+Build landscape:
 
 ```sh
-# Build all variants, upload all packages, and publish the latest release.
-gh workflow run release.yml --repo 78/xiaozhi-esp32 --ref main -f publish=true
-
-# Build all variants and leave the resulting release as a draft.
-gh workflow run release.yml --repo 78/xiaozhi-esp32 --ref main -f publish=false
+# config.h: #define RLCD_PORTRAIT 0
+python scripts/build.py waveshare/esp32-s3-rlcd-4.2 --language zh-CN
+cp build/merged-binary.bin dist/merged-binary-landscape.bin
 ```
 
-Public releases require the default branch. The workflow uses only its built-in
-`GITHUB_TOKEN`; no personal access token or local ESP-IDF installation is needed.
-It publishes a GitHub Release, without modifying the OTA service or OSS storage.
+Build portrait:
 
-## What is uploaded
+```sh
+# config.h: #define RLCD_PORTRAIT 1
+# Ninja may keep the old mtime after an in-place edit; touch the header.
+touch main/boards/waveshare/esp32-s3-rlcd-4.2/config.h
+python scripts/build.py waveshare/esp32-s3-rlcd-4.2 --language zh-CN
+cp build/merged-binary.bin dist/merged-binary-portrait.bin
+# restore config.h to RLCD_PORTRAIT 0 before committing
+```
 
-Each variant produces `v<version>_<full_name>.zip`, containing one
-`merged-binary.bin`, matching the format used by v2.5.0. Two additional release
-attachments provide the complete variant manifest and `SHA256SUMS` for all ZIPs.
-Release notes combine the build information with GitHub-generated changes since
-the previous latest release.
+`scripts/build.py` runs `idf.py merge-bin` and writes the complete image to
+`build/merged-binary.bin`. Both release assets are the same size and contain
+the full flash layout starting at offset 0.
 
-All matrix builds must succeed before the upload job runs. The upload job rejects
-missing or unexpected packages, unreadable ZIPs, unexpected archive members,
-wrong embedded application versions, wrong chip targets, and mismatched SDK
-versions. It verifies the uploaded attachment names, sizes, and available GitHub
-SHA-256 digests before marking the release public.
+## Verify before publishing
 
-A failed build leaves its successful artifacts available in the workflow run.
-Use **Re-run failed jobs** to continue. A failed upload leaves an unpublished draft;
-retrying can replace matching attachments only when the draft and tag refer to
-the same source commit. Published releases and tags pointing at other commits
-are rejected. Concurrent release runs are serialized.
+- Build log ends with `Project build complete`.
+- `build/project_description.json` has the intended `project_version`.
+- Flash the merged image to the board and smoke-test boot, Wi-Fi, display,
+  audio, and the changed feature.
+- Record SHA-256 for both images.
 
-Successful compilation and package checks do not replace physical hardware
-validation. Test the relevant hardware before recommending a release for use.
+## Tag, push, and publish
+
+```sh
+git add dist/merged-binary-landscape.bin dist/merged-binary-portrait.bin
+git commit -m "chore(release): rebuild merged images for <version>"
+git tag v<version>
+git push newrepo main
+git push newrepo v<version>
+
+gh release create v<version> \
+  -R kid941005/xiaozhi-esp32-s3-rlcd-4.2 \
+  --verify-tag \
+  --title "v<version> — <summary>" \
+  --notes-file release-notes.md \
+  dist/merged-binary-landscape.bin \
+  dist/merged-binary-portrait.bin
+```
+
+The two asset names must stay `merged-binary-landscape.bin` and
+`merged-binary-portrait.bin` so existing download/OTA instructions keep
+working. After publishing, verify the uploaded asset SHA-256 values match the
+local `dist/` files.
+
+Successful compilation is not hardware validation. Test the relevant hardware
+before recommending a release for use.

@@ -12,6 +12,8 @@
 #include <esp_log.h>
 #include <esp_mac.h>
 #include <utility>
+#include <cstdio>
+#include <string>
 
 #include <material_symbols.h>
 #include <wifi_manager.h>
@@ -25,6 +27,33 @@ static const char *TAG = "WifiBoard";
 
 // Connection timeout in seconds
 static constexpr int CONNECT_TIMEOUT_SEC = 30;
+
+// 把任意字符串转义成可安全嵌入 JSON 字符串字面量的内容。
+static std::string EscapeJsonString(const std::string& input) {
+    std::string out;
+    out.reserve(input.size() + 8);
+    for (unsigned char c : input) {
+        switch (c) {
+            case '"': out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\b': out += "\\b"; break;
+            case '\f': out += "\\f"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if (c < 0x20) {
+                    char buf[7];
+                    std::snprintf(buf, sizeof(buf), "\\u%04x", c);
+                    out += buf;
+                } else {
+                    out += static_cast<char>(c);
+                }
+                break;
+        }
+    }
+    return out;
+}
 
 WifiBoard::WifiBoard() {
     // Create connection timeout timer
@@ -163,8 +192,11 @@ void WifiBoard::OnWifiConnectTimeout(void* arg) {
     auto* board = static_cast<WifiBoard*>(arg);
     ESP_LOGW(TAG, "WiFi connection timeout, entering config mode");
 
-    WifiManager::GetInstance().StopStation();
-    board->StartWifiConfigMode();
+    // esp_timer 任务里不能直接做状态切换和 UI 操作，统一投递到主任务
+    Application::GetInstance().Schedule([board]() {
+        WifiManager::GetInstance().StopStation();
+        board->StartWifiConfigMode();
+    });
 }
 
 void WifiBoard::StartWifiConfigMode() {
@@ -194,7 +226,9 @@ void WifiBoard::StartWifiConfigMode() {
 
 void WifiBoard::EnterWifiConfigMode() {
     ESP_LOGI(TAG, "EnterWifiConfigMode called");
-    GetDisplay()->ShowNotification(Lang::Strings::ENTERING_WIFI_CONFIG_MODE);
+    if (auto display = GetDisplay()) {
+        display->ShowNotification(Lang::Strings::ENTERING_WIFI_CONFIG_MODE);
+    }
 
     auto& app = Application::GetInstance();
     auto state = app.GetDeviceState();
@@ -204,7 +238,7 @@ void WifiBoard::EnterWifiConfigMode() {
         // Reset protocol (close audio channel, reset protocol)
         Application::GetInstance().ResetProtocol();
 
-        xTaskCreate([](void* arg) {
+        BaseType_t create_ret = xTaskCreate([](void* arg) {
             auto* board = static_cast<WifiBoard*>(arg);
 
             // Wait for 1 second to allow speaking to finish gracefully
@@ -212,13 +246,17 @@ void WifiBoard::EnterWifiConfigMode() {
 
             // Stop any ongoing connection attempt
             esp_timer_stop(board->connect_timer_);
-            WifiManager::GetInstance().StopStation();
-
-            // Enter config mode
-            board->StartWifiConfigMode();
+            // 状态切换与 UI 操作必须回主任务执行
+            Application::GetInstance().Schedule([board]() {
+                WifiManager::GetInstance().StopStation();
+                board->StartWifiConfigMode();
+            });
 
             vTaskDelete(NULL);
         }, "wifi_cfg_delay", 4096, this, 2, NULL);
+        if (create_ret != pdPASS) {
+            ESP_LOGE(TAG, "创建 wifi_cfg_delay 任务失败: %d", (int)create_ret);
+        }
         return;
     }
 
@@ -264,18 +302,18 @@ const char* WifiBoard::GetNetworkStateIcon() {
 
 std::string WifiBoard::GetBoardJson() {
     auto& wifi = WifiManager::GetInstance();
-    std::string json = R"({"type":")" + std::string(BOARD_TYPE) + R"(",)";
-    json += R"("name":")" + std::string(BOARD_NAME) + R"(",)";
-    json += R"("manufacturer":")" + std::string(BOARD_MANUFACTURER) + R"(",)";
+    std::string json = R"({"type":")" + EscapeJsonString(BOARD_TYPE) + R"(",)";
+    json += R"("name":")" + EscapeJsonString(BOARD_NAME) + R"(",)";
+    json += R"("manufacturer":")" + EscapeJsonString(BOARD_MANUFACTURER) + R"(",)";
 
     if (!wifi.IsConfigMode()) {
-        json += R"("ssid":")" + wifi.GetSsid() + R"(",)";
+        json += R"("ssid":")" + EscapeJsonString(wifi.GetSsid()) + R"(",)";
         json += R"("rssi":)" + std::to_string(wifi.GetRssi()) + R"(,)";
         json += R"("channel":)" + std::to_string(wifi.GetChannel()) + R"(,)";
-        json += R"("ip":")" + wifi.GetIpAddress() + R"(",)";
+        json += R"("ip":")" + EscapeJsonString(wifi.GetIpAddress()) + R"(",)";
     }
 
-    json += R"("mac":")" + SystemInfo::GetMacAddress() + R"("})";
+    json += R"("mac":")" + EscapeJsonString(SystemInfo::GetMacAddress()) + R"("})";
     return json;
 }
 

@@ -6,6 +6,7 @@
 #include <driver/i2s_std.h>
 #include <esp_idf_version.h>
 
+#include <atomic>
 #include <vector>
 #include <string>
 #include <functional>
@@ -59,8 +60,8 @@ protected:
 
     bool duplex_ = false;
     bool input_reference_ = false;
-    bool input_enabled_ = false;
-    bool output_enabled_ = false;
+    std::atomic<bool> input_enabled_{false};
+    std::atomic<bool> output_enabled_{false};
     int input_sample_rate_ = 0;
     int output_sample_rate_ = 0;
     int input_channels_ = 1;

@@ -27,6 +27,7 @@
 #include "lcd_display.h"
 #include "esp_lvgl_port.h"
 #include "settings.h"
+#include "managers/memo_store.h"
 #include "config.h"
 #include "board.h"
 #include "application.h"
@@ -322,7 +323,17 @@ CustomLcdDisplay::CustomLcdDisplay(esp_lcd_panel_io_handle_t panel_io,
     lv_display_set_user_data(display_, this);
     size_t lvgl_buffer_size = LV_COLOR_FORMAT_GET_SIZE(LV_COLOR_FORMAT_RGB565) * transfer;
     uint8_t *lvgl_buffer1 = (uint8_t *)heap_caps_malloc(lvgl_buffer_size, MALLOC_CAP_SPIRAM);
-    assert(lvgl_buffer1);
+    if (lvgl_buffer1 == nullptr) {
+        // PSRAM 不足时降级到内部 SRAM 的小缓冲，避免 assert panic 造成重启循环
+        lvgl_buffer_size = 64 * 1024;
+        lvgl_buffer1 = (uint8_t *)heap_caps_malloc(lvgl_buffer_size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        ESP_LOGW(TAG, "LVGL 主缓冲分配失败，降级为 %u 字节内部 SRAM 缓冲", (unsigned)lvgl_buffer_size);
+    }
+    if (lvgl_buffer1 == nullptr) {
+        ESP_LOGE(TAG, "LVGL 显示缓冲分配失败，显示功能不可用");
+        lvgl_port_unlock();
+        return;
+    }
     lv_display_set_buffers(display_, lvgl_buffer1, NULL, lvgl_buffer_size, LV_DISPLAY_RENDER_MODE_PARTIAL);
 
     // 3. 初始化 RLCD 屏幕
@@ -347,7 +358,10 @@ CustomLcdDisplay::CustomLcdDisplay(esp_lcd_panel_io_handle_t panel_io,
     // 告诉显示框架：当前自定义 UI 已经初始化完成
     // 否则基类的 SetStatus/ShowNotification 会一直误判为“UI 未准备好”
     setup_ui_called_ = true;
-    ApplyDisplayMode();
+    {
+        DisplayLockGuard lock(this);
+        ApplyDisplayMode();
+    }
 
     // 5. 启动时从 NVS 加载上次保存的备忘录
     LoadMemoFromNvs();
@@ -375,19 +389,35 @@ void CustomLcdDisplay::RefreshMemoDisplayInternal() {
     // 清空旧行（lv_obj_clean 会一并删除子对象）
     lv_obj_clean(memo_rows_);
 
-    // 从 NVS 读取 JSON 数组
-    Settings settings("memo", false);
-    std::string json_str = settings.GetString("items", "");
+    // 从 NVS 读取手动备忘与 MCP 待办两个独立数组，合并后统一展示
+    Settings settings(kMemoNvsNamespace, false);
+    const std::string manual_json = settings.GetString(kMemoManualKey, "");
+    const std::string todo_json = settings.GetString(kMemoTodoKey, "");
 
-    cJSON *arr = json_str.empty() ? nullptr : cJSON_Parse(json_str.c_str());
-    const int count = (arr && cJSON_IsArray(arr)) ? cJSON_GetArraySize(arr) : 0;
+    cJSON *manual_arr = manual_json.empty() ? nullptr : cJSON_Parse(manual_json.c_str());
+    cJSON *todo_arr = todo_json.empty() ? nullptr : cJSON_Parse(todo_json.c_str());
+    cJSON *arr = cJSON_CreateArray();
+    auto append_all = [arr](cJSON *src) {
+        if (src == nullptr || !cJSON_IsArray(src)) return;
+        const int n = cJSON_GetArraySize(src);
+        for (int i = 0; i < n; ++i) {
+            cJSON *dup = cJSON_Duplicate(cJSON_GetArrayItem(src, i), 1);
+            if (dup != nullptr) cJSON_AddItemToArray(arr, dup);
+        }
+    };
+    append_all(manual_arr);
+    append_all(todo_arr);
+    if (manual_arr) cJSON_Delete(manual_arr);
+    if (todo_arr) cJSON_Delete(todo_arr);
+
+    const int count = cJSON_GetArraySize(arr);
 
     if (count == 0) {
         lv_obj_t *empty = lv_label_create(memo_rows_);
         lv_obj_set_style_text_font(empty, &font_puhui_16_1, 0);
         lv_obj_set_style_text_color(empty, lv_color_black(), 0);
         lv_label_set_text(empty, "暂无待办");
-        if (arr) cJSON_Delete(arr);
+        cJSON_Delete(arr);
         return;
     }
 
@@ -583,6 +613,9 @@ void CustomLcdDisplay::SetChatMessage(const char* role, const char* content) {
 }
 
 bool CustomLcdDisplay::SetEmotion(const char* emotion) {
+    if (emotion == nullptr) {
+        return false;
+    }
     DisplayLockGuard lock(this);
     
     // 1. 更新左侧文字（完整映射小智所有 21 种表情 + 额外状态）
@@ -690,8 +723,12 @@ void CustomLcdDisplay::ApplyDefaultEmotion() {
 
 void CustomLcdDisplay::ClearChatMessages() {
     DisplayLockGuard lock(this);
-    // 空闲态保留「AI 待命」占位文案（与参考界面一致），不要清成空白
-    if (chat_status_label_) lv_label_set_text(chat_status_label_, "AI 待命");
+    // 先停掉上一段文字可能仍在运行的滚动动画，再恢复待命文案并复位位置
+    if (chat_status_label_) {
+        lv_anim_delete(chat_status_label_, nullptr);
+        lv_label_set_text(chat_status_label_, "AI 待命");
+        lv_obj_align(chat_status_label_, LV_ALIGN_LEFT_MID, 0, 0);
+    }
     if (music_chat_status_label_) lv_label_set_text(music_chat_status_label_, "");
     // 表情不清除，保持常驻
 }

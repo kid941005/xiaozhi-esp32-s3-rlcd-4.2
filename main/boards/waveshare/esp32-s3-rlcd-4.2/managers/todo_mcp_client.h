@@ -1,6 +1,7 @@
 #ifndef TODO_MCP_CLIENT_H
 #define TODO_MCP_CLIENT_H
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -72,7 +73,7 @@ private:
     int music_duration_sec_ = 0;
     int64_t music_status_ms_ = 0;
     bool music_updated_ = false;
-    int pending_id_ = 0;
+    std::atomic<int> pending_id_{0};   // 请求 id 跨任务读写，必须是原子量
     int last_list_error_code_ = 0;
     // 外部 MCP 明确返回 -32601（工具不存在）且 REST 直连可用时进入长退避，
     // 避免每 5 秒重连一个永远不会成功的接入点。

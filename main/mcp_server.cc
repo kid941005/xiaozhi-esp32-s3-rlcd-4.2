@@ -94,6 +94,10 @@ void McpServer::AddCommonTools() {
             [](const PropertyList& properties) -> ReturnValue {
                 auto& app = Application::GetInstance();
                 std::string url = properties["url"].value<std::string>();
+                // 只允许 http/https，避免设备被任意协议/本地文件路径利用
+                if (url.rfind("http://", 0) != 0 && url.rfind("https://", 0) != 0) {
+                    return std::string("music playback failed: url must start with http:// or https://");
+                }
                 bool ok = app.PlayMusicFromUrl(url, properties["title"].value<std::string>(),
                                                properties["artist"].value<std::string>(),
                                                properties["lyric"].value<std::string>(),
@@ -761,11 +765,11 @@ void McpServer::DoToolCall(McpRequestContext context, McpTool* tool, const cJSON
                 validation = argument.set_value<bool>(value->valueint == 1);
                 found = true;
             } else if (argument.type() == kPropertyTypeInteger && cJSON_IsNumber(value) &&
-                       (!context.modern ||
-                        (std::isfinite(value->valuedouble) &&
-                         std::trunc(value->valuedouble) == value->valuedouble &&
-                         value->valuedouble >= INT_MIN && value->valuedouble <= INT_MAX))) {
-                validation = argument.set_value<int>(value->valueint);
+                       std::isfinite(value->valuedouble) &&
+                       std::trunc(value->valuedouble) == value->valuedouble &&
+                       value->valuedouble >= INT_MIN && value->valuedouble <= INT_MAX) {
+                // 统一用 double 转 int，避免 cJSON valueint 在大数/非 modern 路径下溢出截断。
+                validation = argument.set_value<int>(static_cast<int>(value->valuedouble));
                 found = true;
             } else if (argument.type() == kPropertyTypeString && cJSON_IsString(value)) {
                 validation = argument.set_value<std::string>(value->valuestring);

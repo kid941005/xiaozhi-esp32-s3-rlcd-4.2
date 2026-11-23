@@ -22,6 +22,7 @@
 
 #include "../config.h"
 #include "../ui_limits.h"   // P2 #26：与显示侧共享待办上限常量
+#include "memo_store.h"     // 与板级共享 memo/items 读改写锁
 
 // 本地私有配置（含 token，已在 .gitignore 中排除），存在时覆盖 config.h 的默认值
 #if __has_include("todo_mcp_secret.h")
@@ -81,6 +82,10 @@ bool IsToday(const char* due_text) {
     time_t now = time(nullptr);
     struct tm tm_now = {};
     localtime_r(&now, &tm_now);
+    // 本地时间尚未同步（RTC/SNTP 未就绪）时 year 会是 1970，不能据此过滤掉全部待办。
+    if (tm_now.tm_year + 1900 < 2024) {
+        return true;
+    }
     return y == (tm_now.tm_year + 1900) && mo == (tm_now.tm_mon + 1) && d == tm_now.tm_mday;
 }
 
@@ -341,7 +346,7 @@ bool TodoMcpClient::OpenSession(std::unique_ptr<WebSocket>& ws, const std::strin
             ESP_LOGE(TAG, "创建 websocket 失败");
             return false;
         }
-        ws->SetReceiveBufferSize(8192);
+        ws->SetReceiveBufferSize(16384);   // 待办列表可能较长，8KB 会截断 JSON
         ws->OnData([this](const char* data, size_t len, bool binary) {
             if (binary || data == nullptr) return;
             cJSON* root = cJSON_ParseWithLength(data, len);
@@ -497,6 +502,15 @@ void TodoMcpClient::RunSession(const std::string& url) {
     ws->Close();
 }
 
+// 待办已独立存 memo/todos；这里只序列化待办数组。
+static std::string SerializeTodoArray(cJSON* todos) {
+    if (!todos) return "[]";
+    char* out = cJSON_PrintUnformatted(todos);
+    std::string result = out ? out : "[]";
+    if (out) cJSON_free(out);
+    return result;
+}
+
 bool TodoMcpClient::ApplyPayload(const std::string& payload) {
     if (payload.empty()) return false;
 
@@ -603,19 +617,16 @@ bool TodoMcpClient::ApplyPayload(const std::string& payload) {
         return false;
     }
 
-    char* json = cJSON_PrintUnformatted(arr);
-    if (json != nullptr) {
-        const std::string next(json);
-        cJSON_free(json);
-
-        // 10 秒轮询下，内容未变化时不要反复写 NVS，避免无谓的 Flash 磨损和重绘。
-        std::lock_guard<std::mutex> nvs_lock(nvs_mutex_);
-        Settings read_settings("memo", false);
-        changed = (read_settings.GetString("items", "") != next);
-        if (changed) {
-            Settings write_settings("memo", true);
-            write_settings.SetString("items", next.c_str());
-        }
+    // 只替换待办部分，保留手动备忘；10 秒轮询下内容未变化时不写 NVS。
+    std::lock_guard<std::mutex> memo_lock(MemoStoreMutex());
+    std::lock_guard<std::mutex> nvs_lock(nvs_mutex_);
+    Settings read_settings(kMemoNvsNamespace, false);
+    const std::string current = read_settings.GetString(kMemoTodoKey, "");
+    const std::string next = SerializeTodoArray(arr);
+    changed = (current != next);
+    if (changed) {
+        Settings write_settings(kMemoNvsNamespace, true);
+        write_settings.SetString(kMemoTodoKey, next.c_str());
     }
     cJSON_Delete(arr);
 
@@ -705,17 +716,16 @@ bool TodoMcpClient::ApplyReminderApiPayload(const std::string& payload) {
     }
 
     bool changed = false;
-    char* json = cJSON_PrintUnformatted(arr);
-    if (json != nullptr) {
-        const std::string next(json);
-        cJSON_free(json);
-        std::lock_guard<std::mutex> nvs_lock(nvs_mutex_);
-        Settings read_settings("memo", false);
-        changed = (read_settings.GetString("items", "") != next);
-        if (changed) {
-            Settings write_settings("memo", true);
-            write_settings.SetString("items", next.c_str());
-        }
+    // 只替换待办部分，保留手动备忘
+    std::lock_guard<std::mutex> memo_lock(MemoStoreMutex());
+    std::lock_guard<std::mutex> nvs_lock(nvs_mutex_);
+    Settings read_settings(kMemoNvsNamespace, false);
+    const std::string current = read_settings.GetString(kMemoTodoKey, "");
+    const std::string next = SerializeTodoArray(arr);
+    changed = (current != next);
+    if (changed) {
+        Settings write_settings(kMemoNvsNamespace, true);
+        write_settings.SetString(kMemoTodoKey, next.c_str());
     }
     cJSON_Delete(arr);
 
