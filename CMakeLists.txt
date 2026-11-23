@@ -9,5 +9,28 @@ include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 # "Trim" the build. Include the minimal set of components, main, and anything it depends on.
 idf_build_set_property(MINIMAL_BUILD ON)
 
-set(PROJECT_VER "2.7.3")
+# Record this firmware repository's revision in project_description.json's
+# git_revision field. ESP-IDF defaults that field to IDF_VER (the ESP-IDF
+# checkout revision), which is not the application revision.
+execute_process(
+    COMMAND git -C "${CMAKE_CURRENT_SOURCE_DIR}" rev-parse --short HEAD
+    OUTPUT_VARIABLE FW_GIT_REV
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+)
+execute_process(
+    COMMAND git -C "${CMAKE_CURRENT_SOURCE_DIR}" status --porcelain --untracked-files=no
+    OUTPUT_VARIABLE FW_GIT_STATUS
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+)
+if(FW_GIT_REV)
+    if(FW_GIT_STATUS)
+        string(APPEND FW_GIT_REV "-dirty")
+    endif()
+    idf_build_set_property(IDF_VER "${FW_GIT_REV}")
+    message(STATUS "Firmware git revision for project description: ${FW_GIT_REV}")
+endif()
+
+set(PROJECT_VER "2.7.4")
 project(xiaozhi)
