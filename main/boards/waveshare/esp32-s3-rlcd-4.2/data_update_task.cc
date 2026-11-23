@@ -18,6 +18,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <esp_log.h>
+#include <esp_timer.h>
 
 #include "application.h"
 #include "board.h"
@@ -223,15 +224,51 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
         if (!self->showing_system_info_) {
             DisplayLockGuard lock(self);
 
-            // 音乐页空闲时，用飞牛 MCP 的 music_status 元数据回填歌名/歌手；
-            // 正在播放时由 PlayMusicFromUrl/歌词任务接管，避免覆盖实时信息。
-            if (self->IsMusicMode() && !Application::GetInstance().IsMusicPlaying() &&
-                TodoMcpClient::GetInstance().ConsumeMusicUpdated()) {
-                if (self->music_title_label_ != nullptr && self->music_artist_label_ != nullptr) {
-                    lv_label_set_text(self->music_title_label_,
-                                      TodoMcpClient::GetInstance().GetLastMusicTitle().c_str());
-                    lv_label_set_text(self->music_artist_label_,
-                                      TodoMcpClient::GetInstance().GetLastMusicArtist().c_str());
+            // 音乐页用飞牛 MCP 的 music_status 元数据回填歌名/歌手/歌词。
+            // 单曲播放时由 PlayMusicFromUrl 设置一次；连续流播放时靠 10 秒轮询跟随当前曲目。
+            if (self->IsMusicMode()) {
+                const bool playing = Application::GetInstance().IsMusicPlaying();
+                const bool playlist = Application::GetInstance().IsMusicPlaylistMode();
+                if (TodoMcpClient::GetInstance().ConsumeMusicUpdated()) {
+                    if (self->music_title_label_ != nullptr && self->music_artist_label_ != nullptr) {
+                        lv_label_set_text(self->music_title_label_,
+                                          TodoMcpClient::GetInstance().GetLastMusicTitle().c_str());
+                        lv_label_set_text(self->music_artist_label_,
+                                          TodoMcpClient::GetInstance().GetLastMusicArtist().c_str());
+                    }
+                    const std::string lyric = TodoMcpClient::GetInstance().GetLastMusicLyric();
+                    if (!lyric.empty() && self->music_lyric_label_ != nullptr) {
+                        if (self->music_lyric_prev_label_ != nullptr) {
+                            lv_label_set_text(self->music_lyric_prev_label_, "");
+                        }
+                        lv_label_set_text(self->music_lyric_label_, lyric.c_str());
+                        if (self->music_lyric_next_label_ != nullptr) {
+                            lv_label_set_text(self->music_lyric_next_label_, "");
+                        }
+                    }
+                }
+                // 连续流的进度按当前单曲刷新，避免拿整条流的累计时间套第一首的总时长。
+                if (playing && playlist) {
+                    const int duration = TodoMcpClient::GetInstance().GetLastMusicDurationSec();
+                    if (duration > 0) {
+                        int elapsed = TodoMcpClient::GetInstance().GetLastMusicElapsedSec();
+                        const int64_t base_ms = TodoMcpClient::GetInstance().GetLastMusicStatusMs();
+                        if (base_ms > 0) {
+                            int64_t delta_ms = esp_timer_get_time() / 1000 - base_ms;
+                            if (delta_ms > 0) elapsed += static_cast<int>(delta_ms / 1000);
+                        }
+                        if (elapsed > duration) elapsed = duration;
+                        if (self->music_progress_bar_ != nullptr) {
+                            lv_bar_set_range(self->music_progress_bar_, 0, duration);
+                            lv_bar_set_value(self->music_progress_bar_, elapsed, LV_ANIM_OFF);
+                        }
+                        if (self->music_progress_label_ != nullptr) {
+                            char buf[32];
+                            snprintf(buf, sizeof(buf), "%02d:%02d / %02d:%02d",
+                                     elapsed / 60, elapsed % 60, duration / 60, duration % 60);
+                            lv_label_set_text(self->music_progress_label_, buf);
+                        }
+                    }
                 }
             }
 

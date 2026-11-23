@@ -128,6 +128,8 @@ public:
                           int duration_s = 0);
     bool StopMusicPlayback(bool clear_lyric = true);
     bool IsMusicPlaying() const { return music_playing_.load(); }
+    // 连续流（/playlist/）播放：屏显元数据由 music_status 轮询刷新，进度也由状态驱动。
+    bool IsMusicPlaylistMode() const { return music_playlist_mode_.load(); }
     uint32_t GetMusicProgressMs() const { return music_progress_ms_.load(); }
     uint32_t GetMusicTotalMs() const { return music_total_ms_.load(); }
     std::string GetCurrentMusicTitle() const { std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(music_playback_mutex_)); return current_music_title_; }
@@ -177,6 +179,7 @@ private:
     std::atomic<bool> stop_music_playback_{false};
     std::atomic<uint32_t> music_progress_ms_{0};  // 当前播放位置（毫秒），供 MCP 查询
     std::atomic<uint32_t> music_total_ms_{0};     // 歌曲总时长（毫秒，来自歌词末尾时间戳）
+    std::atomic<bool> music_playlist_mode_{false}; // true=播放的是网关连续流，屏显按单曲状态刷新
     TaskHandle_t music_playback_task_handle_ = nullptr;
     std::string current_music_title_;
     std::string current_music_url_;             // 当前播放的 URL（供 MCP 查询）

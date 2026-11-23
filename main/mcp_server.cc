@@ -23,6 +23,7 @@
 #include "lvgl_image.h"
 #include "lvgl_theme.h"
 #include "settings.h"
+#include "assets/lang_config.h"
 
 #define TAG "MCP"
 
@@ -67,6 +68,16 @@ void McpServer::AddCommonTools() {
                 codec->SetOutputVolume(volume);
                 // 音量为 0 视为静音；调大音量自动解除开机静音
                 codec->SetMute(volume == 0);
+                if (auto display = board.GetDisplay()) {
+                    if (volume == 0) {
+                        display->ShowNotification(Lang::Strings::MUTED);
+                    } else if (volume >= 100) {
+                        display->ShowNotification(Lang::Strings::MAX_VOLUME);
+                    } else {
+                        display->ShowNotification(std::string(Lang::Strings::VOLUME) +
+                                                  std::to_string(volume));
+                    }
+                }
                 return true;
             });
 

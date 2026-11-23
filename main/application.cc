@@ -1902,6 +1902,7 @@ bool Application::PlayMusicFromUrl(const std::string& url, const std::string& ti
         music_playing_.store(true);
         music_progress_ms_.store(0);
         music_total_ms_.store(requested_total_ms);
+        music_playlist_mode_.store(url.find("/playlist/") != std::string::npos);
         current_music_title_ = title;
         current_music_url_ = url;
     }
@@ -1924,8 +1925,10 @@ bool Application::PlayMusicFromUrl(const std::string& url, const std::string& ti
 
     // 未提供歌词时，用歌名/歌手查 LRCLIB（飞牛 MCP 只给歌名/歌手/直链，不含歌词）
     std::string effective_lyric_url = lyric_url;
+    // 连续流总时长/歌词会随曲目变化，不能按第一首查 LRCLIB 固定下来；
+    // 由设备每 10 秒调用 music_status 回填当前曲目歌词。
     if (lyric.empty() && effective_lyric_url.empty() && !title.empty() && title != "unknown" &&
-        !artist.empty() && artist != "unknown") {
+        !artist.empty() && artist != "unknown" && !IsMusicPlaylistMode()) {
         effective_lyric_url = BuildLrclibUrl(title, artist);
         ESP_LOGI(TAG, "未提供歌词，尝试 LRCLIB: %s", effective_lyric_url.c_str());
     }
@@ -2190,7 +2193,7 @@ void Application::MusicPlaybackTask(std::string url, std::string title, std::str
         std::string lyric_from_header = http->GetResponseHeader("X-Lyric-Url");
         const std::string& effective_lyric_url =
             !lyric_from_header.empty() ? lyric_from_header : lyric_url;
-        if (!effective_lyric_url.empty()) {
+        if (!effective_lyric_url.empty() && !music_playlist_mode_.load()) {
             start_lyric_task(effective_lyric_url);
         }
 
@@ -2431,9 +2434,11 @@ void Application::MusicPlaybackTask(std::string url, std::string title, std::str
                             music_total_ms_.store(total_ms);
                         }
 
-                        // 更新进度条（无论有没有歌词都要更新）
-                        // 总时长未知时传 0，让 SetMusicProgress 只显示播放时间
-                        display->SetMusicProgress(current_ms, total_ms);
+                        // 连续流的进度按“当前单曲”由 music_status 驱动，不能拿整条流累计位置去套单曲总时长。
+                        if (!music_playlist_mode_.load()) {
+                            // 总时长未知时传 0，让 SetMusicProgress 只显示播放时间
+                            display->SetMusicProgress(current_ms, total_ms);
+                        }
 
                         // 有歌词时同步歌词显示
                         if (!lyrics.empty()) {
@@ -2551,6 +2556,7 @@ bool Application::StopMusicPlayback(bool clear_lyric) {
         handle = music_playback_task_handle_;
         if (handle == nullptr) {
             music_playing_.store(false);
+            music_playlist_mode_.store(false);
             current_music_title_.clear();
         } else {
             stop_music_playback_.store(true);

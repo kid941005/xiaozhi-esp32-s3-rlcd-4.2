@@ -437,8 +437,15 @@ void CustomLcdDisplay::SetupWeatherUI() {
     lv_label_set_text(status_label_, "");
     lv_obj_add_flag(status_label_, LV_OBJ_FLAG_HIDDEN);
 
-    notification_label_ = lv_label_create(screen);
+    // 通知标签必须挂在顶层，否则会被音乐页/详情页遮住（音量提示等需要跨页面可见）
+    notification_label_ = lv_label_create(lv_layer_top());
     lv_label_set_text(notification_label_, "");
+    lv_obj_set_style_bg_color(notification_label_, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(notification_label_, LV_OPA_COVER, 0);
+    lv_obj_set_style_text_color(notification_label_, lv_color_white(), 0);
+    lv_obj_set_style_pad_all(notification_label_, 8, 0);
+    lv_obj_set_style_radius(notification_label_, 8, 0);
+    lv_obj_align(notification_label_, LV_ALIGN_CENTER, 0, 0);
     lv_obj_add_flag(notification_label_, LV_OBJ_FLAG_HIDDEN);
 
     mute_label_ = lv_label_create(screen);

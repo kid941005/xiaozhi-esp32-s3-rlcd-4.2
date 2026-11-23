@@ -1,6 +1,7 @@
 #ifndef TODO_MCP_CLIENT_H
 #define TODO_MCP_CLIENT_H
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -34,6 +35,10 @@ public:
     // 最近一次 music_status 的元数据（飞牛音乐 MCP）。音乐页空闲时用于显示上次播放。
     std::string GetLastMusicTitle();
     std::string GetLastMusicArtist();
+    std::string GetLastMusicLyric();
+    int GetLastMusicElapsedSec();
+    int GetLastMusicDurationSec();
+    int64_t GetLastMusicStatusMs();
     bool ConsumeMusicUpdated();
 
 private:
@@ -62,6 +67,10 @@ private:
     std::string msg_reply_;
     std::string music_title_;
     std::string music_artist_;
+    std::string music_lyric_;
+    int music_elapsed_sec_ = 0;
+    int music_duration_sec_ = 0;
+    int64_t music_status_ms_ = 0;
     bool music_updated_ = false;
     int pending_id_ = 0;
     int last_list_error_code_ = 0;

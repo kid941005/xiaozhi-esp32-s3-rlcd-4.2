@@ -17,6 +17,7 @@
 #include "wifi_station.h"
 #include "mcp_server.h"
 #include "settings.h"
+#include "assets/lang_config.h"
 #include <cJSON.h>
 #include "lvgl.h"
 #include "managers/sensor_manager.h"
@@ -266,7 +267,17 @@ private:
         codec->SetOutputVolume(volume);
         // 调大音量自动解除开机静音；调到 0 视为静音
         codec->SetMute(volume == 0);
-        if (display_) display_->NotifyUserActivity();
+        if (display_) {
+            display_->NotifyUserActivity();
+            if (volume == 0) {
+                display_->ShowNotification(Lang::Strings::MUTED);
+            } else if (volume >= 100) {
+                display_->ShowNotification(Lang::Strings::MAX_VOLUME);
+            } else {
+                display_->ShowNotification(std::string(Lang::Strings::VOLUME) +
+                                            std::to_string(volume));
+            }
+        }
         ESP_LOGI(TAG, "音量按钮：%d%%（静音=%d）", volume, codec->muted() ? 1 : 0);
     }
 
@@ -286,7 +297,12 @@ private:
             codec->SetMute(false);
             ESP_LOGI(TAG, "音量按钮：取消静音（%d%%）", restore);
         }
-        if (display_) display_->NotifyUserActivity();
+        if (display_) {
+            display_->NotifyUserActivity();
+            display_->ShowNotification(codec->muted() ? Lang::Strings::MUTED
+                                                      : std::string(Lang::Strings::VOLUME) +
+                                                            std::to_string(codec->output_volume()));
+        }
     }
 
     // USER 按钮功能实现

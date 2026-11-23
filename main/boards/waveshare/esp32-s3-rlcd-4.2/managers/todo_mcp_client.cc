@@ -6,11 +6,14 @@
 #include <esp_http_client.h>
 #include <esp_log.h>
 #include <esp_system.h>
+#include <esp_timer.h>
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <sstream>
 
 #include <board.h>
 #include <network_interface.h>
@@ -204,6 +207,26 @@ std::string TodoMcpClient::GetLastMusicTitle() {
 std::string TodoMcpClient::GetLastMusicArtist() {
     std::lock_guard<std::mutex> lock(mutex_);
     return music_artist_;
+}
+
+std::string TodoMcpClient::GetLastMusicLyric() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return music_lyric_;
+}
+
+int TodoMcpClient::GetLastMusicElapsedSec() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return music_elapsed_sec_;
+}
+
+int TodoMcpClient::GetLastMusicDurationSec() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return music_duration_sec_;
+}
+
+int64_t TodoMcpClient::GetLastMusicStatusMs() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return music_status_ms_;
 }
 
 bool TodoMcpClient::ConsumeMusicUpdated() {
@@ -703,6 +726,31 @@ bool TodoMcpClient::ApplyReminderApiPayload(const std::string& payload) {
     return true;
 }
 
+static bool StartsWith(const std::string& s, const char* prefix) {
+    size_t n = std::strlen(prefix);
+    return s.size() >= n && s.compare(0, n, prefix) == 0;
+}
+
+static std::string LineAfter(const std::string& raw, const char* prefix) {
+    std::istringstream in(raw);
+    std::string line;
+    const size_t n = std::strlen(prefix);
+    while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (StartsWith(line, prefix)) return line.substr(n);
+    }
+    return "";
+}
+
+// 把 "123 秒" 解析成 123；不是数字返回 -1。
+static int ParseSeconds(const std::string& text) {
+    if (text.empty()) return -1;
+    char* end = nullptr;
+    long v = std::strtol(text.c_str(), &end, 10);
+    if (end == text.c_str() || v < 0) return -1;
+    return static_cast<int>(v);
+}
+
 bool TodoMcpClient::ApplyMusicStatusPayload(const std::string& payload) {
     if (payload.empty()) return false;
     cJSON* root = cJSON_Parse(payload.c_str());
@@ -716,29 +764,49 @@ bool TodoMcpClient::ApplyMusicStatusPayload(const std::string& payload) {
     bool changed = false;
     if (text != nullptr && cJSON_IsString(text) && text->valuestring != nullptr) {
         const std::string raw = text->valuestring;
-        const std::string prefix = "上一次播放：";
-        if (raw.rfind(prefix, 0) == 0) {
-            std::string rest = raw.substr(prefix.size());
+        std::string title, artist, lyric;
+        int elapsed = -1, duration = -1;
+
+        if (StartsWith(raw, "正在播放：")) {
+            std::string head = LineAfter(raw, "正在播放：");
+            size_t dash = head.find(" - ");
+            title = (dash == std::string::npos) ? head : head.substr(0, dash);
+            artist = (dash == std::string::npos) ? "" : head.substr(dash + 3);
+            lyric = LineAfter(raw, "歌词：");
+            elapsed = ParseSeconds(LineAfter(raw, "已播放："));
+            duration = ParseSeconds(LineAfter(raw, "时长："));
+        } else if (StartsWith(raw, "上一次播放：")) {
+            std::string rest = raw.substr(std::strlen("上一次播放："));
             size_t cut = rest.find("（");
             if (cut == std::string::npos) cut = rest.find('(');
             if (cut != std::string::npos) rest = rest.substr(0, cut);
             size_t dash = rest.find(" - ");
             if (dash != std::string::npos) {
-                std::string title = rest.substr(0, dash);
-                std::string artist = rest.substr(dash + 3);
-                std::lock_guard<std::mutex> lock(mutex_);
-                if (title != music_title_ || artist != music_artist_) {
-                    music_title_ = title;
-                    music_artist_ = artist;
-                    music_updated_ = true;
-                    changed = true;
-                }
+                title = rest.substr(0, dash);
+                artist = rest.substr(dash + 3);
+            }
+        }
+
+        if (!title.empty()) {
+            const int64_t now_ms = esp_timer_get_time() / 1000;
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (title != music_title_ || artist != music_artist_ || lyric != music_lyric_ ||
+                (duration >= 0 && duration != music_duration_sec_)) {
+                music_title_ = title;
+                music_artist_ = artist;
+                music_lyric_ = lyric;
+                if (elapsed >= 0) music_elapsed_sec_ = elapsed;
+                if (duration >= 0) music_duration_sec_ = duration;
+                music_status_ms_ = now_ms;
+                music_updated_ = true;
+                changed = true;
             }
         }
     }
     cJSON_Delete(root);
     if (changed) {
-        ESP_LOGI(TAG, "音乐元数据: %s - %s", GetLastMusicTitle().c_str(), GetLastMusicArtist().c_str());
+        ESP_LOGI(TAG, "音乐元数据: %s - %s / %s", GetLastMusicTitle().c_str(),
+                 GetLastMusicArtist().c_str(), GetLastMusicLyric().c_str());
     }
     return changed;
 }
