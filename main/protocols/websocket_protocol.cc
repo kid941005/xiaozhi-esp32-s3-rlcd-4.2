@@ -100,8 +100,12 @@ bool WebsocketProtocol::OpenAudioChannel() {
     std::string url = settings.GetString("url");
     std::string token = settings.GetString("token");
     int version = settings.GetInt("version");
-    if (version != 0) {
-        version_ = version;
+    version_ = (version == 1 || version == 2 || version == 3) ? version : 1;
+    // The v1 endpoint uses raw Opus frames; a stale v2/v3 value would make
+    // both uplink encoding and downlink parsing incompatible with the server.
+    if (url.find("/v1/") != std::string::npos && version_ != 1) {
+        ESP_LOGW(TAG, "Server URL is v1; overriding stored protocol version %d with 1", version_);
+        version_ = 1;
     }
 
     error_occurred_ = false;

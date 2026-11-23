@@ -488,12 +488,29 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                         cached_discharging = discharging;
                         battery_cached = true;
                         last_battery_poll_ms = now_ms;
+                    } else {
+                        // 未接电池 / ADC 无效：不沿用上一次的假电量，也不显示满格假象。
+                        battery_cached = false;
+                        last_battery_poll_ms = now_ms;
                     }
                 }
 
                 if (battery_cached) {
                     static int last_icon_mode = -1;       // 0=low,1=medium,2=full,3=charging
                     static int last_battery_level = -1;   // 上次显示的电量百分比
+                    if (self->battery_icon_img_) lv_obj_remove_flag(self->battery_icon_img_, LV_OBJ_FLAG_HIDDEN);
+                    if (self->music_battery_icon_img_) lv_obj_remove_flag(self->music_battery_icon_img_, LV_OBJ_FLAG_HIDDEN);
+                    // 充电时 VBAT 被钳在充电电压（约 4.1~4.2V），仅靠电压算出的百分比并不代表真实电量，
+                    // 因此充电期间只显示充电图标、不显示可能误导的百分比；拔掉电源后再按电压估算显示。
+                    const bool show_pct = !cached_charging;
+                    if (self->battery_pct_label_) {
+                        if (show_pct) lv_obj_remove_flag(self->battery_pct_label_, LV_OBJ_FLAG_HIDDEN);
+                        else lv_obj_add_flag(self->battery_pct_label_, LV_OBJ_FLAG_HIDDEN);
+                    }
+                    if (self->music_battery_pct_label_) {
+                        if (show_pct) lv_obj_remove_flag(self->music_battery_pct_label_, LV_OBJ_FLAG_HIDDEN);
+                        else lv_obj_add_flag(self->music_battery_pct_label_, LV_OBJ_FLAG_HIDDEN);
+                    }
                     int icon_mode = 2;
                     if (cached_charging) {
                         icon_mode = 3;
@@ -542,6 +559,12 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                             low_battery_popup_visible = false;
                         }
                     }
+                } else {
+                    // 电量未知/未接电池：隐藏电池图标和百分比，避免显示成满格 95%。
+                    if (self->battery_icon_img_) lv_obj_add_flag(self->battery_icon_img_, LV_OBJ_FLAG_HIDDEN);
+                    if (self->battery_pct_label_) lv_obj_add_flag(self->battery_pct_label_, LV_OBJ_FLAG_HIDDEN);
+                    if (self->music_battery_icon_img_) lv_obj_add_flag(self->music_battery_icon_img_, LV_OBJ_FLAG_HIDDEN);
+                    if (self->music_battery_pct_label_) lv_obj_add_flag(self->music_battery_pct_label_, LV_OBJ_FLAG_HIDDEN);
                 }
 
                 // 5. WiFi 图标更新（状态变化时才更新）

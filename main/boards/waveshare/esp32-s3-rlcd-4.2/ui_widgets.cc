@@ -32,11 +32,13 @@ lv_obj_t *BuildStatusCapsule(lv_obj_t *parent,
 
     lv_obj_t *batt = lv_image_create(status_bar);
     lv_image_set_src(batt, &ui_img_battery_full);
+    lv_obj_add_flag(batt, LV_OBJ_FLAG_HIDDEN);  // 首次有效采样前不显示，避免默认满格假象
 
     lv_obj_t *pct = lv_label_create(status_bar);
     lv_obj_set_style_text_font(pct, font, 0);
     lv_obj_set_style_text_color(pct, lv_color_black(), 0);
     lv_label_set_text(pct, "---%");
+    lv_obj_add_flag(pct, LV_OBJ_FLAG_HIDDEN);   // 首次有效采样前不显示
 
     if (out_wifi) *out_wifi = wifi;
     if (out_battery) *out_battery = batt;

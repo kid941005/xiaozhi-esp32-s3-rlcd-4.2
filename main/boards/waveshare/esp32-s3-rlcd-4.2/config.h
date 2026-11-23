@@ -67,12 +67,14 @@
 
 // ===== 电池检测 =====
 // 采样：ADC1 通道 3（ESP32-S3 上 ADC1_CH3 = GPIO4），12 dB 衰减、12 bit、硬件曲线拟合校准。
-// 待补充（需原理图/实测确认）：采样引脚、分压比、是否有充电 IC 的 STAT 引脚接到 SoC。
+// 原理图已确认：R21=200K ±1% 接 VBAT，R23=100K ±1% 到 GND，分压比 3.0；充电芯片 STAT 仅接指示灯，不接 SoC。
 // 分压比若与原理图不符，只改 BATTERY_ADC_DIVIDER 即可（电池电压 = ADC 引脚电压 × 该系数）。
-#define BATTERY_ADC_DIVIDER   3.0f    // 分压系数（实测校准：4.2V 电池对应 ADC ≈1.40V）
+#define BATTERY_ADC_DIVIDER   3.0f    // 分压系数（原理图 R21=200K / R23=100K，实测校准：4.2V 电池对应 ADC ≈1.40V）
 #define BATTERY_ADC_SAMPLES   16      // 过采样次数（去最大最小后平均）
+#define BATTERY_ADC_OFFSET_MV 0       // 电压校准偏移（mV）：万用表读数比固件高 X 时填 +X，反之填 -X；默认 0
 #define BATTERY_LOAD_COMP_MV  30.0f   // 放电时的负载压降补偿（mV），充电时不补偿
 #define BATTERY_FULL_MV       4180    // 满电/接 USB 平台电压（持续≥该值视为充电/已充满）
+#define BATTERY_MIN_VALID_MV  2500    // 低于该值视为未接电池/采样无效，不显示电量
 // 待补充（需硬件规格确认）：电池标称容量与整机平均电流。填 0 时界面/接口只显示百分比，
 // 不输出「剩余 xx mAh / 预计可用 xx 小时」，避免用假设值误导。
 #define BATTERY_CAPACITY_MAH  0       // 例如 2000（单节锂电）

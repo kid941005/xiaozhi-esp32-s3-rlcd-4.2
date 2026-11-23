@@ -1,5 +1,6 @@
 #include <esp_lcd_panel_vendor.h>
 #include <driver/i2c_master.h>
+#include <driver/usb_serial_jtag.h>
 #include <driver/spi_common.h>
 #include <esp_log.h>
 #include <esp_system.h>
@@ -59,6 +60,7 @@ struct BatteryStatus {
     bool charging = false;    // 是否外接电源（充电中或已充满）
     bool full = false;        // 是否已充满（充电且到达满电平台）
     bool discharging = false; // 是否纯电池供电（仅 known 时有意义）
+    bool external_power = false; // 是否检测到 USB 主机供电（USB Serial/JTAG 已连接）
     bool has_capacity = false;// 是否已知电池容量（否则不输出 mAh/续航，避免编造）
     int remaining_mah = 0;    // 估算剩余容量
     int runtime_min = 0;      // 估算可续航分钟
@@ -970,7 +972,8 @@ private:
         }
         // 去掉最大、最小各一个，抑制接触抖动/毛刺
         int avg_pin_mv = (cnt > 2) ? (sum_mv - min_mv - max_mv) / (cnt - 2) : sum_mv / cnt;
-        int battery_mv = (int)((float)avg_pin_mv * BATTERY_ADC_DIVIDER + 0.5f);
+        int battery_mv = (int)((float)avg_pin_mv * BATTERY_ADC_DIVIDER + 0.5f) + BATTERY_ADC_OFFSET_MV;
+        if (battery_mv < 0) battery_mv = 0;
         return (uint16_t)battery_mv;
     }
 
@@ -985,8 +988,20 @@ private:
         BatteryStatus st;
         uint16_t mv = BatteryGetVoltage();
         st.voltage_mv = mv;
+        // USB Serial/JTAG 连接主机时，可立即判定为外接供电/充电中；
+        // 这比等电压趋势快，且覆盖“刚插上电脑 USB、电量还很高”的场景。
+        // 注意：接普通充电宝/充电器时没有 SOF，不会误判为充电，仍靠电压趋势。
+        const bool usb_powered = usb_serial_jtag_is_connected();
+        st.external_power = usb_powered;
 
-        // 充电芯片 STAT 未接 SoC：用电压趋势 + 满电平台判定；证据不足时保持「未知」，
+        if (mv < BATTERY_MIN_VALID_MV) {
+            // 未接电池或 ADC 无效：不显示一个假的 0%/满格状态。
+            st.known = false;
+            st.percent = 0;
+            return st;
+        }
+
+        // 充电芯片 STAT 未接 SoC：用 USB 主机检测 + 电压趋势 + 满电平台判定；证据不足时保持「未知」，
         // 不硬猜成放电（否则开机瞬间会误报放电、并可能误触发低电量弹窗）。
         static uint32_t last_sample_ms = 0;
         static uint16_t hist_mv[60] = {0};        // 10 s/格 → 窗口约 10 分钟
@@ -1009,10 +1024,16 @@ private:
                 else if (delta_mv <= -kTrendDownMv) charge_state = 0;
             }
         }
-        // 没有趋势证据时，只有电压停在满电平台（CV 阶段，只有接了充电器才可能）才判充电
-        if (charge_state < 0 && mv + 20 >= BATTERY_FULL_MV) charge_state = 1;
-        // 采满 30 次（约 5 分钟）仍无趋势：纯电池放电时电压下降很慢、短窗口测不出，按放电处理
-        if (charge_state < 0 && hist_count >= 30) charge_state = 0;
+        // USB 主机是强证据：直接判为外接供电/充电中，UI 可立即显示充电图标。
+        if (usb_powered) {
+            charge_state = 1;
+        } else if (charge_state < 0 && mv + 20 >= BATTERY_FULL_MV) {
+            // 没有趋势证据时，只有电压停在满电平台（CV 阶段，只有接了充电器才可能）才判充电
+            charge_state = 1;
+        } else if (charge_state < 0) {
+            // 没有 USB 主机也没有充电平台：按电池供电处理，避免开机后 5 分钟仍显示未知/满格假象。
+            charge_state = 0;
+        }
 
         st.known = (charge_state >= 0);
         st.charging = (charge_state == 1);
@@ -1141,8 +1162,12 @@ public:
     }
 
     virtual bool GetBatteryLevel(int &level, bool& charging, bool& discharging) override {
-        // 本板未把充电芯片 STAT 脚接到 SoC，改用电压趋势 + 满电平台判定（见 GetBatteryStatus）
+        // 本板未把充电芯片 STAT 脚接到 SoC，改用 USB 主机检测 + 电压趋势 + 满电平台判定（见 GetBatteryStatus）
         BatteryStatus st = GetBatteryStatus();
+        if (st.voltage_mv < BATTERY_MIN_VALID_MV || !st.known) {
+            // 没有有效电池读数时不要向 UI/服务端上报假的 0%/满格电量。
+            return false;
+        }
         level = st.percent;
         charging = st.charging;
         discharging = st.discharging;
@@ -1151,8 +1176,8 @@ public:
         static int last_logged_chg = -1;
         int pct_delta = (last_logged_pct < 0) ? 100 : (st.percent > last_logged_pct ? st.percent - last_logged_pct : last_logged_pct - st.percent);
         if ((int)st.charging != last_logged_chg || pct_delta >= 5) {
-            ESP_LOGI(TAG, "电池: %d%% %umV known=%d charging=%d full=%d discharging=%d",
-                     st.percent, (unsigned)st.voltage_mv, (int)st.known, (int)st.charging, (int)st.full, (int)st.discharging);
+            ESP_LOGI(TAG, "电池: %d%% %umV known=%d charging=%d full=%d discharging=%d usb=%d",
+                     st.percent, (unsigned)st.voltage_mv, (int)st.known, (int)st.charging, (int)st.full, (int)st.discharging, (int)st.external_power);
             last_logged_pct = st.percent;
             last_logged_chg = (int)st.charging;
         }

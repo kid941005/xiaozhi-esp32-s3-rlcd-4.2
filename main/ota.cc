@@ -220,6 +220,14 @@ NetworkResult<> Ota::CheckVersion() {
                 }
             }
         }
+        // A missing version means the server contract is protocol v1. Clear a
+        // stale value left by an older OTA response; otherwise raw Opus audio
+        // would be wrapped in v2/v3 frames and the server could not decode it.
+        cJSON *version_item = cJSON_GetObjectItem(websocket, "version");
+        if (version_item == nullptr && settings.GetInt("version") != 1) {
+            settings.SetInt("version", 1);
+            ESP_LOGI(TAG, "Websocket config has no version; using protocol version 1");
+        }
         has_websocket_config_ = true;
     } else {
         ESP_LOGI(TAG, "No websocket section found!");
