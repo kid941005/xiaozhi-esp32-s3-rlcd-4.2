@@ -206,6 +206,14 @@ int CustomLcdDisplay::PollTransientUi(uint32_t now_ms) {
         }
     }
 
+    if (volume_overlay_hide_ms_ != 0 &&
+        static_cast<int32_t>(now_ms - volume_overlay_hide_ms_) >= 0) {
+        volume_overlay_hide_ms_ = 0;
+        if (volume_overlay_ != nullptr) {
+            lv_obj_add_flag(volume_overlay_, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+
     if (detail_return_deadline_ms_ != 0) {
         DeviceState ds = Application::GetInstance().GetDeviceState();
         if (ds == kDeviceStateSpeaking) {

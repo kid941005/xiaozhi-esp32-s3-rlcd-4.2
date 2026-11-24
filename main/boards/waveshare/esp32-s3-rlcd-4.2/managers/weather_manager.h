@@ -2,23 +2,23 @@
 #include <string>
 #include <mutex>
 #include <chrono>
-#include "esp_http_client.h"
 
-// 单日预报（和风天气 3 天预报的每一天）
+// 单日预报（reminder MCP get_weather 返回的 days 数组）
 struct WeatherDaily {
-    std::string date;       // 2026-11-17
+    std::string date;       // 2026-11-24
     std::string week;       // 周二
     std::string text_day;   // 白天天气：晴
     std::string text_night; // 夜间天气：阴
     std::string temp_min;   // 最低温
     std::string temp_max;   // 最高温
-    std::string wind_dir;   // 东北风
+    std::string wind_dir;   // 西北偏北风
     std::string wind_scale; // 1-3
-    std::string sunrise;    // 06:29
-    std::string sunset;     // 17:00
+    std::string sunrise;    // 06:36
+    std::string sunset;     // 16:57
 };
 
-// 天气数据结构
+// 屏幕/语音使用的天气快照。本板天气统一来自 reminder MCP 的 get_weather，
+// 不再由固件直连 QWeather / 中国天气网 / Open-Meteo。
 struct WeatherData {
     std::string city;     // 城市名
     std::string temp;     // 温度（字符串）
@@ -26,72 +26,57 @@ struct WeatherData {
     std::string update_time;
     bool valid = false;
 
-    // ===== 扩展维度（和风天气提供；免密钥源能填多少填多少，未取到为空）=====
     std::string feels_like;   // 体感温度
     std::string humidity;     // 相对湿度 %
-    std::string wind_dir;     // 风向：东北风
+    std::string wind_dir;     // 风向：西北风
     std::string wind_scale;   // 风力等级：3
-    std::string vis;          // 能见度 km
-    std::string pressure;     // 气压 hPa
-    std::string aqi;          // 空气质量指数
+    std::string wind_speed;   // 风速 m/s（reminder 提供）
+    std::string vis;          // 能见度 km（仅数字）
+    std::string pressure;     // 气压 hPa（仅数字）
+    std::string precipitation;// 降水量 mm
+    std::string aqi;          // 空气质量指数（reminder 当前不提供时为空）
     std::string aqi_category; // 优 / 良 / 轻度污染 ...
     std::string pm25;         // PM2.5
     std::string sunrise;      // 今日日出 HH:MM
     std::string sunset;       // 今日日落 HH:MM
-    std::string warning;      // 当前生效预警，如"大雾黄色"；无预警为空
+    std::string warning;      // 当前生效预警 headline；无预警为空，语音播报用
+    std::string warning_short;// 详情页短文案：如“寒潮蓝色预警”
     WeatherDaily daily[3];    // 未来 3 天（含今天）
     int daily_count = 0;
 };
 
-// 天气管理器
-// 优先走和风天气（QWeather）：实时 + 空气质量 + 3 天预报 + 预警；
-// 凭证未配置或请求失败时自动回退免密钥源（中国天气网 → Open-Meteo）。
+// 天气缓存。天气数据由 TodoMcpClient 通过同一 reminder MCP 长连接调用
+// get_weather 获取，这里只负责保存线程安全的快照和手动城市。
 class WeatherManager {
 public:
     static WeatherManager& getInstance();
 
-    // 更新天气数据（网络请求，耗时较长，应在后台任务中调用）
-    // 返回 true 表示更新成功，false 表示失败（网络错误等）
-    bool update();
-
     // 获取最新天气数据（线程安全，直接读取缓存）
-    // 即使网络断开，也能返回上次成功获取的数据
     WeatherData getLatestData() {
         std::lock_guard<std::mutex> lock(mutex_);
-        // 缓存超过 30 分钟视为过期：断网后不再把旧天气当实时数据展示/播报。
+        // 天气每 12 小时才刷新一次，缓存保留 13 小时，避免两次拉取之间提前失效。
         if (latest_data_.valid && latest_time_ != std::chrono::steady_clock::time_point{}) {
-            if (std::chrono::steady_clock::now() - latest_time_ > std::chrono::minutes(30)) {
+            if (std::chrono::steady_clock::now() - latest_time_ > std::chrono::hours(13)) {
                 latest_data_.valid = false;
             }
         }
         return latest_data_;
     }
 
-    // 设置 API 密钥和主机（从配置中读取）
-    void setApiConfig(const char* key, const char* host);
-
-    // 是否已配置和风天气凭证
-    bool hasQWeather() const { return !api_key_.empty() && !api_host_.empty(); }
-
-    // 从 NVS 命名空间 "weather" 读取 api_host / api_key / city / loc_id / loc_name
-    // 供运行时（不重新编译）修改天气源配置
+    // 从 NVS weather/city、weather/adm 读取用户手动城市。
     void loadConfigFromNvs();
 
-    // 当前查询城市（IP 定位 > NVS 手动配置 > config.h WEATHER_CITY）
-    // 返回拷贝并加锁：城市字符串会被天气任务改写，跨任务读 const& 是数据竞争
+    // 当前查询城市（空字符串表示使用 reminder 服务端配置的城市）。
     std::string city() const { std::lock_guard<std::mutex> lock(loc_mutex_); return city_; }
+    std::string citySource() const { std::lock_guard<std::mutex> lock(loc_mutex_); return city_source_; }
 
-    // 手动指定城市（MCP self.weather.set_city 用）：清定位缓存并跳过后续 IP 定位
-    // adm：可选上级行政区划（省/市），用于同名城市消歧（参考 DuDuClock 的做法）
+    // 手动指定城市（MCP self.weather.set_city 用），持久化到 NVS。
     void SetCity(const std::string& city, const std::string& adm = "");
 
-    // 当前城市来源（手动配置 / 上次定位缓存 / IP 定位 / 默认）——诊断用
-    std::string citySource() const { std::lock_guard<std::mutex> lock(loc_mutex_); return city_source_; }
-    // 当前解析到的和风 LocationID——诊断用
-    std::string locationId() const { std::lock_guard<std::mutex> lock(loc_mutex_); return loc_id_; }
+    // 解析 reminder MCP 的 get_weather 响应（result.content[0].text 为 JSON 字符串）。
+    bool updateFromReminderJson(const std::string& payload);
 
-    // 通过外部工具（如 MCP）直接写入天气数据
-    // 适用于不走板载 HTTP 天气接口，而由 AI 侧先查好天气再下发到设备
+    // 兼容 AI 侧 MCP 直接写入天气缓存（不参与自动拉取）。
     bool updateFromExternal(const std::string& city,
                             const std::string& weather_text,
                             const std::string& temperature,
@@ -99,50 +84,12 @@ public:
 
 private:
     WeatherManager();
-    mutable std::mutex mutex_;   // 保护 latest_data_：多任务并发读写 std::string 会 UB
-    mutable std::mutex loc_mutex_;  // 保护 city_/loc_id_/loc_name_/adm_/city_source_ 等定位字符串
+    mutable std::mutex mutex_;       // 保护 latest_data_ / latest_time_
+    mutable std::mutex loc_mutex_;   // 保护 city_ / adm_ / city_source_ / manual_city_
     WeatherData latest_data_;
-    std::chrono::steady_clock::time_point latest_time_{};  // 最近一次成功写入时间，用于缓存过期
-
-    // API 配置
-    std::string api_key_;
-    std::string api_host_;
+    std::chrono::steady_clock::time_point latest_time_{};
     std::string city_;
-    std::string loc_id_;    // 和风天气 LocationID（geo 查询结果，缓存在 NVS）
-    std::string loc_name_;  // 和风返回的城市名（用于显示）
-    std::string adm_;       // 上级行政区划（手动配置或 geo 返回的 adm1），同名城市消歧用
-    std::string city_source_ = "默认";   // 城市来源描述
-    std::string ip_cache_city_;          // NVS 缓存的上次 IP 定位城市
-    std::string ip_cache_region_;        // NVS 缓存的上次 IP 定位省份
-    std::string backend_cache_city_;     // NVS 缓存的后端地址城市
-    std::string backend_cache_adm_;      // NVS 缓存的后端地址省份
-    std::string backend_cache_loc_id_;   // NVS 缓存的后端 LocationID
-
-    // IP 定位状态（ip-api.com）
-    bool manual_city_ = false;   // 城市被手动指定，跳过 IP 定位
-    bool ip_located_ = false;    // 本次开机是否已尝试过 IP 定位
-    bool has_ip_coord_ = false;  // 是否拿到经纬度（城市名查询失败时兜底）
-    float ip_lat_ = 0.0f;
-    float ip_lon_ = 0.0f;
-
-    static esp_err_t http_event_handler(esp_http_client_event_t *evt);
-
-    // 通用 HTTP(S) GET：把响应体原始字节写入 out（verify_tls=false 时不校验证书）
-    bool httpGetRaw(const std::string& url, int timeout_ms, bool verify_tls, std::string& out);
-    // 通用 HTTPS GET：成功时把响应体（自动处理 gzip）写入 out
-    bool httpGetJson(const std::string& url, std::string& out, int timeout_ms);
-
-    // 和风天气：解析 LocationID（优先用 NVS 缓存，其次 geo 查询，最后用城市代码兜底）
-    std::string ResolveLocationId();
-    bool updateQWeather();
-
-    // 后端地址：从 xiaozhi-server 的 /xiaozhi/weather 拿实际所在地 + LocationID
-    bool LocateFromBackend();
-
-    // IP 定位：拿到实际所在城市 + 经纬度（手动配置城市时直接跳过）
-    bool LocateByIp();
-
-    // 无和风 Key 时的免密钥天气源：主用中国天气网(数据接口)，备用 Open-Meteo
-    bool updateItboy();
-    bool updateOpenMeteo();
+    std::string adm_;
+    std::string city_source_ = "Reminder MCP";
+    bool manual_city_ = false;
 };

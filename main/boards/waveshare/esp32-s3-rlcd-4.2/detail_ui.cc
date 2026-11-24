@@ -2,7 +2,7 @@
 //   标题行：定位图标 + 城市 + 更新时间
 //   Hero  ：大温度 + 天气徽标 + 今日温差（主信息）
 //           右侧体感 / 湿度 / 风（次信息，带图标与分隔线）
-//   指标条：AQI（含 PM2.5）/ 能见度 / 气压（带图标）
+//   指标条：降水量 / 能见度 / 气压（带图标）
 //   预报  ：今天 / 明天 / 后天，最高温大字、最低温小字
 //   底栏  ：日出日落 + 预警（有预警时黑底白字反色）
 // 横屏 400x300 与竖屏 300x400 共用结构，竖屏把多余高度均摊到区块间距。
@@ -116,14 +116,13 @@ void CustomLcdDisplay::SetupWeatherDetailUI() {
     lv_obj_remove_flag(detail_page_, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(detail_page_, LV_OBJ_FLAG_HIDDEN);   // 构造期先隐藏，避免启动瞬间闪黑帧
 
-    // ===== 标题行：定位图标 + 「天气」+ 城市 + 更新时间 =====
+    // ===== 标题行：定位图标 + 城市 + 更新时间 =====
     MakeIcon(detail_page_, MATERIAL_SYMBOLS_LOCATION_ON, lv_color_white(), kPad, kTitleY + 1);
-    MakeLabel(detail_page_, &font_puhui_16_1, lv_color_white(), kPad + 20, kTitleY, "天气");
 
     d_city_label_ = lv_label_create(detail_page_);
     lv_obj_set_style_text_font(d_city_label_, &font_puhui_16_1_full, 0);
     lv_obj_set_style_text_color(d_city_label_, lv_color_white(), 0);
-    lv_obj_set_pos(d_city_label_, kPad + 56, kTitleY - 1);
+    lv_obj_set_pos(d_city_label_, kPad + 22, kTitleY - 1);
     lv_obj_set_width(d_city_label_, 130);
     lv_label_set_long_mode(d_city_label_, LV_LABEL_LONG_CLIP);
     lv_label_set_text(d_city_label_, "--");
@@ -230,33 +229,25 @@ void CustomLcdDisplay::SetupWeatherDetailUI() {
         }
     }
 
-    // ===== 指标条：AQI（含 PM2.5）/ 能见度 / 气压（标题 + 图标 + 值）=====
+    // ===== 指标条：降水量 / 能见度 / 气压（标题 + 图标 + 值）=====
     const int metric_w = (content_w - kGap * 2) / 3;
     for (int i = 0; i < 3; ++i) {
         lv_obj_t* card = CreateDetailCard(detail_page_, kPad + i * (metric_w + kGap),
                                           metrics_y, metric_w, kMetricH, 1);
-        static const char* kMetricNames[3] = {"AQI", "能见度", "气压"};
+        static const char* kMetricNames[3] = {"降水量", "能见度", "气压"};
         static const char* kMetricIcons[3] = {
-            MATERIAL_SYMBOLS_FAVORITE,
+            MATERIAL_SYMBOLS_NAVIGATION,
             MATERIAL_SYMBOLS_EYEGLASSES,
             MATERIAL_SYMBOLS_PROGRESS_ACTIVITY,
         };
         MakeLabel(card, &font_puhui_14_1, lv_color_black(), 8, 4, kMetricNames[i]);
-        // AQI 卡右上角已有 PM2.5 数值，再放图标会与文字重叠，故仅其余卡显示图标
+        // 第一卡显示降水量，不再放图标，避免与文字重叠
         if (i != 0) {
             MakeIcon(card, kMetricIcons[i], lv_color_black(), metric_w - 24, 4);
         }
 
-        if (i == 0) {
-            d_metric_value_[0] = MakeLabel(card, &font_puhui_16_1_full, lv_color_black(),
-                                           8, 21, "--");
-            d_metric_sub_[0] = MakeLabel(card, &font_puhui_14_1, lv_color_black(),
-                                         8, 3, "");
-            lv_obj_align(d_metric_sub_[0], LV_ALIGN_TOP_RIGHT, -8, 5);
-        } else {
-            d_metric_value_[i] = MakeLabel(card, &font_puhui_16_1_full, lv_color_black(),
-                                           8, 21, "--");
-        }
+        d_metric_value_[i] = MakeLabel(card, &font_puhui_16_1_full, lv_color_black(),
+                                       8, 21, "--");
         if (d_metric_value_[i] != nullptr) {
             lv_obj_set_width(d_metric_value_[i], metric_w - 16);
             lv_label_set_long_mode(d_metric_value_[i], LV_LABEL_LONG_CLIP);
@@ -340,8 +331,8 @@ void CustomLcdDisplay::RefreshWeatherDetail() {
              "%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s",
              nz(wd.city, ""), nz(wd.temp, ""), nz(wd.text, ""), nz(wd.update_time, ""),
              nz(wd.feels_like, ""), nz(wd.humidity, ""), nz(wd.wind_dir, ""),
-             nz(wd.wind_scale, ""), nz(wd.vis, ""), nz(wd.pressure, ""), nz(wd.aqi, ""),
-             nz(wd.aqi_category, ""), nz(wd.pm25, ""), nz(wd.sunrise, ""), nz(wd.sunset, ""),
+             nz(wd.wind_scale, ""), nz(wd.wind_speed, ""), nz(wd.vis, ""), nz(wd.pressure, ""),
+             nz(wd.precipitation, ""), nz(wd.warning_short, ""), nz(wd.sunrise, ""), nz(wd.sunset, ""),
              nz(wd.warning, ""),
              wd.daily_count > 0 ? nz(wd.daily[0].text_day, "") : "",
              wd.daily_count > 0 ? nz(wd.daily[0].temp_min, "") : "",
@@ -451,16 +442,12 @@ void CustomLcdDisplay::RefreshWeatherDetail() {
     lv_label_set_text(d_hero_extra_value_[2], buf);
 
     // ===== 指标条 =====
-    if (wd.aqi.empty()) {
+    if (wd.precipitation.empty()) {
         snprintf(buf, sizeof(buf), "--");
-    } else if (wd.aqi_category.empty()) {
-        snprintf(buf, sizeof(buf), "%s", wd.aqi.c_str());
     } else {
-        snprintf(buf, sizeof(buf), "%s %s", wd.aqi.c_str(), wd.aqi_category.c_str());
+        snprintf(buf, sizeof(buf), "%smm", wd.precipitation.c_str());
     }
     lv_label_set_text(d_metric_value_[0], buf);
-    snprintf(buf, sizeof(buf), "PM2.5 %s", nz(wd.pm25, "--"));
-    lv_label_set_text(d_metric_sub_[0], buf);
 
     if (wd.vis.empty()) {
         snprintf(buf, sizeof(buf), "--");
@@ -499,7 +486,8 @@ void CustomLcdDisplay::RefreshWeatherDetail() {
     lv_label_set_text(d_sun_label_, buf);
 
     // ===== 预警：有预警反色（黑底白字 + 白框）突出显示 =====
-    if (wd.warning.empty()) {
+    const std::string& warn_text = !wd.warning_short.empty() ? wd.warning_short : wd.warning;
+    if (warn_text.empty()) {
         lv_obj_set_style_bg_color(d_warn_card_, lv_color_white(), 0);
         lv_obj_set_style_border_color(d_warn_card_, lv_color_black(), 0);
         lv_obj_set_style_text_color(d_warn_label_, lv_color_black(), 0);
@@ -510,7 +498,6 @@ void CustomLcdDisplay::RefreshWeatherDetail() {
         lv_obj_set_style_border_color(d_warn_card_, lv_color_white(), 0);
         lv_obj_set_style_text_color(d_warn_label_, lv_color_white(), 0);
         lv_obj_set_style_text_color(d_warn_icon_, lv_color_white(), 0);
-        snprintf(buf, sizeof(buf), "预警  %s", wd.warning.c_str());
-        lv_label_set_text(d_warn_label_, buf);
+        lv_label_set_text(d_warn_label_, warn_text.c_str());
     }
 }

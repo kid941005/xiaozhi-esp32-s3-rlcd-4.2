@@ -29,36 +29,9 @@
 #define AUDIO_CODEC_ES7210_ADDR  ES7210_CODEC_DEFAULT_ADDR
 
 // ===== 天气 =====
-// 优先使用和风天气（QWeather）：可拿到实时（体感/风/湿度/能见度/气压）+ 空气质量 +
-// 3 天预报 + 日出日落 + 官方预警；凭证为空时自动回退免密钥源（中国天气网 → Open-Meteo）。
-//
-// 凭证填写优先级：NVS("weather"/"api_host","api_key") > managers/weather_qweather_secret.h > 这里
-// secret 头文件已 gitignore，严禁把真实密钥写在本文件里。
-#define QWEATHER_HOST ""   // 例："xxxxxx.re.qweatherapi.com"（控制台项目管理里的 API Host）
-#define QWEATHER_KEY  ""   // 例：32 位十六进制 API KEY
-
-// 免密钥源参数（和风不可用时的兜底）
-#define WEATHER_LAT   31.8107f    // 纬度（默认常州）
-#define WEATHER_LON   119.9740f   // 经度
-#define WEATHER_CITY  "常州"       // 查询/显示的城市名（和风 geo 定位也用它）
-#define WEATHER_CITY_CODE "101191101"
-
-// IP 定位（ip-api.com 免费接口，HTTP，45 次/分钟）：仅作最后兜底。
-// 注意：IP 定位得到的是「出口 IP」的注册地，设备在 Windows 热点/运营商 NAT 后面时常常与真实
-// 所在地不一致（实测出口 IP 判为南京、实际在常州），因此手动配置城市（NVS weather/city 或
-// MCP self.weather.set_city）优先，IP 定位只在没配置时使用。
-#define WEATHER_IP_GEO_URL "http://ip-api.com/json/?lang=zh-CN&fields=status,country,regionName,city,lat,lon"
-// 备用 IP 定位源（主源失败时依次尝试，字段名各不相同，解析层已兼容）
-//   ipapi.co:  city / region / latitude / longitude（失败时含 error 字段）
-//   ipinfo.io: city / region / loc="lat,lon"
-#define WEATHER_IP_GEO_URL_ALT1 "https://ipapi.co/json/"
-#define WEATHER_IP_GEO_URL_ALT2 "https://ipinfo.io/json"
-
-// 后端天气地址接口（xiaozhi-server 的 GET /xiaozhi/weather）。
-// 设备优先从后端拿「实际所在地 + 和风 LocationID」，不再用出口 IP 判城市；
-// 后端不可用时回退下面的 WEATHER_CITY，IP 定位仅作最后兜底。后端位置由 config.yaml 的
-// plugins.get_weather.device_location 配置。
-#define WEATHER_BACKEND_GEO_URL "https://xiaozhiweb.hqgg.top:59826/xiaozhi/weather"
+// 天气数据统一由 reminder MCP 服务的 get_weather 工具提供（与待办共用一条长连接），
+// 设备不再直连 QWeather / 中国天气网 / Open-Meteo，也不做 IP 或后端地理定位。
+// 手动城市通过 MCP self.weather.set_city 保存到 NVS weather/city。
 
 // 待办 MCP 接入点（websocket JSON-RPC）。留空表示不启用，可在运行时通过
 // MCP 工具 self.todo.set_url 配置（持久化在 NVS namespace "todo", key "mcp_url"）。
@@ -80,7 +53,7 @@
 #define BATTERY_CAPACITY_MAH  0       // 例如 2000（单节锂电）
 #define BATTERY_AVG_CURRENT_MA 0      // 例如 120（整机平均放电电流）
 
-#define BOOT_BUTTON_GPIO        GPIO_NUM_0   // 右侧按键：单击音量+10，双击音量-10，长按静音/取消静音
+#define BOOT_BUTTON_GPIO        GPIO_NUM_0   // 右侧按键：单击音量升一档（20/40/60/80/100 循环），双击降一档，长按静音/取消静音
 #define USER_BUTTON_GPIO        GPIO_NUM_18  // 左侧按键：单击主页/天气/音乐页切换
 
 

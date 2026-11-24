@@ -4,6 +4,8 @@
 #include <atomic>
 #include <cstddef>
 #include <driver/gpio.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include "config.h"
 #include "lcd_display.h"
 
@@ -21,10 +23,10 @@
 // 屏幕布局 (400x300, 1-bit 单色 RLCD)，按微雪成品界面实测比例复刻：
 // 环境 32.1°C 39%        十月初八 ╭─WiFi─▭─99%─╮
 // ┌─────────────────┐ ┌─────────────┐
-// │ 10月2日 星期五   │ │ 待办    ☑ ★ │
+// │ 10月2日 星期五   │ │ 待办         │
 // │ ██ 17:18 ██(反色)│ │ ─────────── │
-// │ 成都 晴间多云 23°C│ │ ★ 抢火车票  │
-// ├─────────────────┤ │ ★ 记得吃饭  │
+// │ 成都 晴间多云 23°C│ │ □ 抢火车票  │
+// ├─────────────────┤ │ □ 记得吃饭  │
 // │ AI 卡(199x100)  │ │             │
 // └─────────────────┘ └─────────────┘
 //   时钟卡 199x120      待办卡 173x249
@@ -101,7 +103,7 @@ private:
     lv_obj_t *ai_face_ = nullptr;           // 内置绘制的猫脸（资源包无 emoji 时兜底显示）
 
     // 待办卡片（右侧整高）
-    lv_obj_t *memo_rows_ = nullptr;           // 待办列表容器（每项 = ★+时间 一行 / 事项 一行）
+    lv_obj_t *memo_rows_ = nullptr;           // 待办列表容器（每项 = □+时间 一行 / 事项 一行）
     int memo_rows_w_ = 160;                   // 待办行可用宽度（布局时确定）
     lv_point_precise_t memo_dash_pts_[kTodoDisplayMaxItems][2] = {};  // 项间虚线端点（lv_line 不拷贝点数组，必须常驻）
     lv_obj_t *music_title_label_ = nullptr;   // 音乐页面：歌名
@@ -118,6 +120,13 @@ private:
     lv_obj_t *music_emotion_img_ = nullptr;   // 音乐页面：小智表情图片（和天气页 emotion_img_ 对应）
     lv_obj_t *music_ai_face_ = nullptr;       // 音乐页面：内置猫脸（无 emoji 素材时兜底）
 
+    // ===== 音量浮层（最右侧竖排五阶：20/40/60/80/100）=====
+    lv_obj_t *volume_overlay_ = nullptr;       // 黑色圆角浮层，挂在 lv_layer_top
+    lv_obj_t *volume_percent_label_ = nullptr; // 顶部「音量 60%」
+    lv_obj_t *volume_step_label_[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
+    lv_obj_t *volume_step_bar_[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
+    uint32_t volume_overlay_hide_ms_ = 0;      // 0=不自动隐藏；由 PollTransientUi 到点隐藏
+
     // ===== 天气详情页（detail_ui.cc）=====
     // 信息层级：当前天气 hero（大温度 + 天气徽标 + 今日温差）> 体感/湿度/风 > 指标条 > 三日预报 > 日出日落/预警
     lv_obj_t *detail_page_ = nullptr;
@@ -129,8 +138,8 @@ private:
     lv_obj_t *d_hero_unit_label_ = nullptr;   // 温度单位 °C
     lv_obj_t *d_hero_range_label_ = nullptr;  // 今日 10~17°C
     lv_obj_t *d_hero_extra_value_[3] = {nullptr, nullptr, nullptr};  // 体感/湿度/风
-    lv_obj_t *d_metric_value_[3] = {nullptr, nullptr, nullptr};      // AQI/能见度/气压
-    lv_obj_t *d_metric_sub_[3] = {nullptr, nullptr, nullptr};        // AQI 的 PM2.5，其余留空
+    lv_obj_t *d_metric_value_[3] = {nullptr, nullptr, nullptr};      // 风速/能见度/气压
+
     lv_obj_t *d_fc_day_[3] = {nullptr, nullptr, nullptr};            // 今天/明天/后天
     lv_obj_t *d_fc_text_[3] = {nullptr, nullptr, nullptr};           // 白天天气
     lv_obj_t *d_fc_high_[3] = {nullptr, nullptr, nullptr};           // 最高温（大字）
@@ -242,6 +251,11 @@ public:
     virtual void SetChatMessage(const char* role, const char* content) override;
     virtual bool SetEmotion(const char* emotion) override;
     virtual void ClearChatMessages() override;
+    // 音量提示统一改为最右侧五阶浮层（物理按键与 MCP 调用共用）
+    virtual void ShowNotification(const char* notification, int duration_ms = 3000) override;
+    virtual void ShowNotification(const std::string& notification, int duration_ms = 3000) override;
+    void ShowVolumeLevel(int volume);   // 显示五阶音量浮层，volume=0 显示静音
+
     
     // 重写状态栏更新（我们用图片图标，不用 Font Awesome 文字）
     virtual void UpdateStatusBar(bool update_all = false) override;

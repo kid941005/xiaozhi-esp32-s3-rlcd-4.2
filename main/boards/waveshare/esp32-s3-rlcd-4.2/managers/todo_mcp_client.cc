@@ -23,6 +23,7 @@
 #include "../config.h"
 #include "../ui_limits.h"   // P2 #26：与显示侧共享待办上限常量
 #include "memo_store.h"     // 与板级共享 memo/items 读改写锁
+#include "weather_manager.h" // 天气统一由 reminder MCP get_weather 提供
 
 // 本地私有配置（含 token，已在 .gitignore 中排除），存在时覆盖 config.h 的默认值
 #if __has_include("todo_mcp_secret.h")
@@ -61,6 +62,8 @@ constexpr int kMaxConsecFail = 2;       // 连续拉取失败多少次后重连
 constexpr int kListRetryAttempts = 3;   // 单轮 list_todos 失败后的快速重试次数（避免首轮瞬态错误把旧缓存留 60s）
 constexpr int kListRetryTimeoutMs = 10000;  // 每次快速重试的响应超时
 constexpr int kMaxRows = kTodoFetchMaxRows;  // P2 #26：抓取上限，见 ui_limits.h（显示侧仅渲染 kTodoDisplayMaxItems=6）
+constexpr int kWeatherPollMs = 12 * 60 * 60 * 1000;  // 天气成功刷新间隔：12 小时
+constexpr int kWeatherRetryMs = 60 * 1000;      // 天气失败重试间隔
 
 // 0=周日 … 6=周六
 int DayOfWeek(int y, int m, int d) {
@@ -124,6 +127,27 @@ std::string BuildListTodosRequest(int id) {
                   "{\"name\":\"list_todos\",\"arguments\":{\"view\":\"today\",\"limit\":10}}}",
                   id);
     return std::string(buf);
+}
+
+// reminder MCP 的 get_weather：city 为空时由服务端使用“天气提醒”配置的城市。
+// 用 cJSON 构造请求，避免城市名中的特殊字符破坏 JSON。
+std::string BuildGetWeatherRequest(int id, const std::string& city) {
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "jsonrpc", "2.0");
+    cJSON_AddNumberToObject(root, "id", id);
+    cJSON_AddStringToObject(root, "method", "tools/call");
+    cJSON* params = cJSON_AddObjectToObject(root, "params");
+    cJSON_AddStringToObject(params, "name", "get_weather");
+    cJSON* args = cJSON_AddObjectToObject(params, "arguments");
+    if (!city.empty()) {
+        cJSON_AddStringToObject(args, "city", city.c_str());
+    }
+    cJSON_AddNumberToObject(args, "days", 3);
+    char* out = cJSON_PrintUnformatted(root);
+    std::string result = out ? out : "";
+    if (out) cJSON_free(out);
+    cJSON_Delete(root);
+    return result;
 }
 
 void LogHeap(const char* when) {
@@ -409,6 +433,7 @@ void TodoMcpClient::RunSession(const std::string& url) {
 
     int consec_fail = 0;
     unsigned list_seq = 0;
+    int64_t weather_next_ms = 0;   // 首次连上立即取一次天气
     for (;;) {
         if (broken_) {
             ESP_LOGW(TAG, "连接已断开");
@@ -492,6 +517,38 @@ void TodoMcpClient::RunSession(const std::string& url) {
                 }
                 ApplyMusicStatusPayload(payload);
             }
+        }
+
+        // 天气统一走 reminder MCP 的 get_weather，复用同一条长连接；
+        // 成功 12 小时刷新，失败 60 秒后重试。
+        const int64_t now_ms = esp_timer_get_time() / 1000;
+        if (now_ms >= weather_next_ms) {
+            bool weather_ok = false;
+            pending_id_ = 4;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                msg_reply_.clear();
+            }
+            xEventGroupClearBits(event_group_, kReplyBit);
+            const std::string city = WeatherManager::getInstance().city();
+            if (ws->Send(BuildGetWeatherRequest(pending_id_, city))) {
+                bits = xEventGroupWaitBits(event_group_, kReplyBit, pdTRUE, pdFALSE,
+                                           pdMS_TO_TICKS(kCallTimeoutMs));
+                if (bits & kReplyBit) {
+                    std::string payload;
+                    {
+                        std::lock_guard<std::mutex> lock(mutex_);
+                        payload = msg_reply_;
+                    }
+                    weather_ok = ApplyWeatherPayload(payload);
+                } else {
+                    ESP_LOGW(TAG, "等待 get_weather 响应超时");
+                }
+            } else {
+                ESP_LOGW(TAG, "发送 get_weather 失败");
+            }
+            weather_next_ms = esp_timer_get_time() / 1000 +
+                              (weather_ok ? kWeatherPollMs : kWeatherRetryMs);
         }
 
         // 等到下一次拉取，期间网络恢复事件可以提前触发
@@ -759,6 +816,10 @@ static int ParseSeconds(const std::string& text) {
     long v = std::strtol(text.c_str(), &end, 10);
     if (end == text.c_str() || v < 0) return -1;
     return static_cast<int>(v);
+}
+
+bool TodoMcpClient::ApplyWeatherPayload(const std::string& payload) {
+    return WeatherManager::getInstance().updateFromReminderJson(payload);
 }
 
 bool TodoMcpClient::ApplyMusicStatusPayload(const std::string& payload) {

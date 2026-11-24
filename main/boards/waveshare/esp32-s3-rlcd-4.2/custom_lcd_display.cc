@@ -17,6 +17,7 @@
 #include <string>
 #include <cstring>
 #include <cstdio>
+#include <cstdlib>
 #include <cJSON.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -36,6 +37,7 @@
 #include "material_symbols.h"
 #include "ui_assets.h"
 #include "managers/todo_mcp_client.h"
+#include "assets/lang_config.h"
 
 static const char *TAG = "CustomDisplay";
 
@@ -382,7 +384,7 @@ void CustomLcdDisplay::LoadMemoFromNvs() {
 }
 
 // 内部版本：不获取锁（调用者必须已持有 DisplayLock）
-// 每行 = ★ 图标 + 文本（文本自动换行），和参考界面的待办列表一致
+// 每行 = □ 图标 + 文本（文本自动换行），和参考界面的待办列表一致
 void CustomLcdDisplay::RefreshMemoDisplayInternal() {
     if (!memo_rows_) return;
 
@@ -440,7 +442,7 @@ void CustomLcdDisplay::RefreshMemoDisplayInternal() {
         const char *body_str =
             (c != nullptr && cJSON_IsString(c) && c->valuestring != nullptr) ? c->valuestring : "";
 
-        // 项容器：竖排两行（第一行 ★+时间，第二行 事项），末尾附一条虚线
+        // 项容器：竖排两行（第一行 □+时间，第二行 事项），末尾附一条虚线
         lv_obj_t *box = lv_obj_create(memo_rows_);
         lv_obj_set_width(box, row_w);
         lv_obj_set_height(box, LV_SIZE_CONTENT);
@@ -452,7 +454,7 @@ void CustomLcdDisplay::RefreshMemoDisplayInternal() {
         lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_flex_align(box, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 
-        // 第一行：★ + 时间
+        // 第一行：□ + 时间
         lv_obj_t *head = lv_obj_create(box);
         lv_obj_set_width(head, row_w);
         lv_obj_set_height(head, LV_SIZE_CONTENT);
@@ -464,10 +466,16 @@ void CustomLcdDisplay::RefreshMemoDisplayInternal() {
         lv_obj_set_flex_flow(head, LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(head, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-        lv_obj_t *icon = lv_label_create(head);
-        lv_obj_set_style_text_font(icon, &font_material_symbols_16_1, 0);
-        lv_obj_set_style_text_color(icon, lv_color_black(), 0);
-        lv_label_set_text(icon, MATERIAL_SYMBOLS_STAR);
+        // 正方形空心图标：不依赖图标字体，直接画 14x14 黑色描边方块
+        lv_obj_t *icon = lv_obj_create(head);
+        lv_obj_set_size(icon, 14, 14);
+        lv_obj_set_style_bg_opa(icon, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(icon, 1, 0);
+        lv_obj_set_style_border_color(icon, lv_color_black(), 0);
+        lv_obj_set_style_radius(icon, 0, 0);
+        lv_obj_set_style_pad_all(icon, 0, 0);
+        lv_obj_remove_flag(icon, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_remove_flag(icon, LV_OBJ_FLAG_CLICKABLE);
 
         bool ascii_time = true;
         for (const char *p = time_str; *p != 0; ++p) {
@@ -727,7 +735,7 @@ void CustomLcdDisplay::ClearChatMessages() {
     if (chat_status_label_) {
         lv_anim_delete(chat_status_label_, nullptr);
         lv_label_set_text(chat_status_label_, "AI 待命");
-        lv_obj_align(chat_status_label_, LV_ALIGN_LEFT_MID, 0, 0);
+        lv_obj_align(chat_status_label_, LV_ALIGN_LEFT_MID, kAiChatTextOffsetX, 0);
     }
     if (music_chat_status_label_) lv_label_set_text(music_chat_status_label_, "");
     // 表情不清除，保持常驻
@@ -760,6 +768,84 @@ void CustomLcdDisplay::SetTheme(Theme* theme) {
     // 但需要保存 theme 指针，SetEmotion 需要用它来加载 emoji 图片
     current_theme_ = theme;
     ESP_LOGI(TAG, "RLCD 单色屏，跳过主题切换（已保存 theme 指针）");
+}
+
+// ===== 音量浮层：屏幕最右侧竖排五阶 =====
+void CustomLcdDisplay::ShowVolumeLevel(int volume) {
+    DisplayLockGuard lock(this);
+    if (volume_overlay_ == nullptr || volume_percent_label_ == nullptr) {
+        return;
+    }
+
+    if (volume < 0) volume = 0;
+    if (volume > 100) volume = 100;
+
+    if (volume == 0) {
+        lv_label_set_text(volume_percent_label_, Lang::Strings::MUTED);
+    } else {
+        lv_label_set_text_fmt(volume_percent_label_, "%s%d%%", Lang::Strings::VOLUME, volume);
+    }
+
+    // 五档：100/80/60/40/20，自上而下排列；level 为已填充的档数。
+    int level = volume / 20;
+    if (level > 5) level = 5;
+    const int current_row = (level > 0) ? (5 - level) : -1;
+
+    for (int i = 0; i < 5; ++i) {
+        const int threshold = (5 - i) * 20;
+        const bool on = (volume > 0 && volume >= threshold);
+        lv_obj_set_style_bg_color(volume_step_bar_[i],
+                                  on ? lv_color_white() : lv_color_black(), 0);
+        lv_obj_set_style_bg_opa(volume_step_bar_[i], LV_OPA_COVER, 0);
+        lv_obj_set_style_border_color(volume_step_bar_[i], lv_color_white(), 0);
+
+        // 当前档位反色（白底黑字），其它档位保持透明底白字。
+        const bool current = (i == current_row);
+        lv_obj_set_style_bg_opa(volume_step_label_[i],
+                                current ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+        lv_obj_set_style_bg_color(volume_step_label_[i], lv_color_white(), 0);
+        lv_obj_set_style_text_color(volume_step_label_[i],
+                                    current ? lv_color_black() : lv_color_white(), 0);
+    }
+
+    lv_obj_remove_flag(volume_overlay_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(volume_overlay_);
+    volume_overlay_hide_ms_ = lv_tick_get() + 1800;
+}
+
+void CustomLcdDisplay::ShowNotification(const std::string& notification, int duration_ms) {
+    ShowNotification(notification.c_str(), duration_ms);
+}
+
+void CustomLcdDisplay::ShowNotification(const char* notification, int duration_ms) {
+    // 音量类提示统一走右侧五阶浮层，物理按键与 MCP 调用共用。
+    if (notification != nullptr) {
+        if (strcmp(notification, Lang::Strings::MUTED) == 0) {
+            ShowVolumeLevel(0);
+            return;
+        }
+        if (strcmp(notification, Lang::Strings::MAX_VOLUME) == 0) {
+            ShowVolumeLevel(100);
+            return;
+        }
+
+        const char* prefix = Lang::Strings::VOLUME;
+        const size_t prefix_len = strlen(prefix);
+        if (prefix_len > 0 && strncmp(notification, prefix, prefix_len) == 0) {
+            const char* value_str = notification + prefix_len;
+            while (*value_str == ' ') {
+                ++value_str;
+            }
+            char* end = nullptr;
+            const long value = std::strtol(value_str, &end, 10);
+            if (end != value_str) {
+                ShowVolumeLevel(static_cast<int>(value));
+                return;
+            }
+        }
+    }
+
+    LcdDisplay::ShowNotification(notification, duration_ms);
 }
 
 void CustomLcdDisplay::ApplyDisplayMode() {

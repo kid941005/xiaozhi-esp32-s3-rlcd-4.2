@@ -56,6 +56,7 @@ private:
     bool ApplyPayload(const std::string& payload);
     bool ApplyReminderApiPayload(const std::string& payload);
     bool ApplyMusicStatusPayload(const std::string& payload);
+    bool ApplyWeatherPayload(const std::string& payload);
     static void TaskEntry(void* arg);
     static void HttpTaskEntry(void* arg);
     void RunHttp();

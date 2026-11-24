@@ -4,9 +4,9 @@
 //   状态栏：左上「环境 32.1°C 39%」   右上白底胶囊（WiFi + 电池 + 电量%）
 //   ┌───────────────┬───────────────┐
 //   │ 时钟卡 189×138 │ 待办卡 189×256 │
-//   │ 10月2日 星期五 │ 待办      ☑ ★ │
-//   │     17:18      │ ★ 抢火车票     │
-//   │ 十月初八 小雪  │ ★ 记得吃饭     │
+//   │ 10月2日 星期五 │ 待办           │
+//   │     17:18      │ □ 抢火车票     │
+//   │ 十月初八 小雪  │ □ 记得吃饭     │
 //   │ 成都 晴 23°C   │               │
 //   ├───────────────┤               │
 //   │ AI 卡 189×112  │               │
@@ -175,7 +175,6 @@ void CustomLcdDisplay::SetupWeatherUI() {
     // 静态文案（内容固定的控件）用 16px 1bpp 点阵字体：字形本身就是二值点阵，
     // 不会像 4bpp 字体那样被 flush 阈值切出毛边，RLCD 上更清晰。
     const lv_font_t *font_static = &font_puhui_16_1;
-    const lv_font_t *font_icon   = &font_material_symbols_16_1;
 
     // ===== 状态栏（右上角白底胶囊：WiFi + 电池 + 电量）=====
     // 与音乐页共用 BuildStatusCapsule()，仅尺寸/对齐/字体不同。
@@ -352,24 +351,11 @@ void CustomLcdDisplay::SetupWeatherUI() {
     lv_obj_set_style_clip_corner(todo_card, true, 0);
 
     lv_obj_t *todo_title = lv_label_create(todo_card);
-    lv_obj_set_style_text_font(todo_title, font_static, 0);
+    lv_obj_set_style_text_font(todo_title, &font_puhui_16_1_full, 0);
     lv_obj_set_style_text_color(todo_title, lv_color_black(), 0);
     lv_obj_set_style_text_letter_space(todo_title, 1, 0);
     lv_obj_align(todo_title, LV_ALIGN_TOP_LEFT, 12, 8);
-    lv_label_set_text(todo_title, "待办");
-
-    // 标题右侧两个图标（☑ ★），与参考图一致
-    lv_obj_t *todo_icon_star = lv_label_create(todo_card);
-    lv_obj_set_style_text_font(todo_icon_star, font_icon, 0);
-    lv_obj_set_style_text_color(todo_icon_star, lv_color_black(), 0);
-    lv_obj_align(todo_icon_star, LV_ALIGN_TOP_RIGHT, -12, 10);
-    lv_label_set_text(todo_icon_star, MATERIAL_SYMBOLS_STAR);
-
-    lv_obj_t *todo_icon_check = lv_label_create(todo_card);
-    lv_obj_set_style_text_font(todo_icon_check, font_icon, 0);
-    lv_obj_set_style_text_color(todo_icon_check, lv_color_black(), 0);
-    lv_obj_align(todo_icon_check, LV_ALIGN_TOP_RIGHT, -34, 10);
-    lv_label_set_text(todo_icon_check, MATERIAL_SYMBOLS_CHECK_CIRCLE);
+    lv_label_set_text(todo_title, "今天待办");
 
     // 标题下分隔线
     lv_obj_t *todo_sep = lv_obj_create(todo_card);
@@ -382,7 +368,7 @@ void CustomLcdDisplay::SetupWeatherUI() {
     lv_obj_remove_flag(todo_sep, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_remove_flag(todo_sep, LV_OBJ_FLAG_CLICKABLE);
 
-    // 待办列表容器：每行 = ★ + 文本（文本自动换行）
+    // 待办列表容器：每行 = □ + 文本（文本自动换行）
     memo_rows_w_ = todo_w - 24;
     memo_rows_ = lv_obj_create(todo_card);
     lv_obj_set_pos(memo_rows_, 12, 44);
@@ -447,6 +433,51 @@ void CustomLcdDisplay::SetupWeatherUI() {
     lv_obj_set_style_radius(notification_label_, 8, 0);
     lv_obj_align(notification_label_, LV_ALIGN_CENTER, 0, 0);
     lv_obj_add_flag(notification_label_, LV_OBJ_FLAG_HIDDEN);
+
+    // ===== 音量浮层：贴在屏幕最右侧，黑白配色，纵向五阶 =====
+    // 五档固定为 20% / 40% / 60% / 80% / 100%，顶部显示当前百分比；
+    // 当前档位反色高亮，条形随档位从下往上填充。挂在 lv_layer_top，跨页面可见。
+    volume_overlay_ = lv_obj_create(lv_layer_top());
+    lv_obj_set_size(volume_overlay_, 90, 148);
+    lv_obj_align(volume_overlay_, LV_ALIGN_RIGHT_MID, -8, 0);
+    lv_obj_set_style_bg_color(volume_overlay_, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(volume_overlay_, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(volume_overlay_, 2, 0);
+    lv_obj_set_style_border_color(volume_overlay_, lv_color_white(), 0);
+    lv_obj_set_style_radius(volume_overlay_, 10, 0);
+    lv_obj_set_style_pad_all(volume_overlay_, 0, 0);
+    lv_obj_remove_flag(volume_overlay_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(volume_overlay_, LV_OBJ_FLAG_HIDDEN);
+
+    volume_percent_label_ = lv_label_create(volume_overlay_);
+    lv_obj_set_style_text_font(volume_percent_label_, font_static, 0);
+    lv_obj_set_style_text_color(volume_percent_label_, lv_color_white(), 0);
+    lv_obj_set_width(volume_percent_label_, LV_PCT(100));
+    lv_obj_set_style_text_align(volume_percent_label_, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(volume_percent_label_, LV_ALIGN_TOP_MID, 0, 6);
+    lv_label_set_text(volume_percent_label_, "音量 60%");
+
+    static const int kVolumeLevels[5] = {100, 80, 60, 40, 20};
+    for (int i = 0; i < 5; ++i) {
+        volume_step_label_[i] = lv_label_create(volume_overlay_);
+        lv_obj_set_style_text_font(volume_step_label_[i], &font_puhui_14_1, 0);
+        lv_obj_set_style_text_color(volume_step_label_[i], lv_color_white(), 0);
+        lv_obj_set_style_text_align(volume_step_label_[i], LV_TEXT_ALIGN_LEFT, 0);
+        lv_obj_set_width(volume_step_label_[i], 42);
+        lv_obj_set_pos(volume_step_label_[i], 6, 32 + i * 22);
+        lv_label_set_text_fmt(volume_step_label_[i], "%d%%", kVolumeLevels[i]);
+
+        volume_step_bar_[i] = lv_obj_create(volume_overlay_);
+        lv_obj_set_size(volume_step_bar_[i], 28, 12);
+        lv_obj_set_pos(volume_step_bar_[i], 52, 34 + i * 22);
+        lv_obj_set_style_bg_color(volume_step_bar_[i], lv_color_black(), 0);
+        lv_obj_set_style_bg_opa(volume_step_bar_[i], LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(volume_step_bar_[i], 1, 0);
+        lv_obj_set_style_border_color(volume_step_bar_[i], lv_color_white(), 0);
+        lv_obj_set_style_radius(volume_step_bar_[i], 2, 0);
+        lv_obj_set_style_pad_all(volume_step_bar_[i], 0, 0);
+        lv_obj_remove_flag(volume_step_bar_[i], LV_OBJ_FLAG_SCROLLABLE);
+    }
 
     mute_label_ = lv_label_create(screen);
     lv_label_set_text(mute_label_, "");

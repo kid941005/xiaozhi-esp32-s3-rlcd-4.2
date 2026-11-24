@@ -31,12 +31,10 @@
 #include "managers/todo_mcp_client.h"
 #include "date_utils.h"
 #include "ui_assets.h"
-// 敏感配置（天气 API Key 等）不入库：有 secret_config.h 就用，没有就用默认值
+// 时区/NTP 等本地配置：有 secret_config.h 就用，没有就用默认值
 #if __has_include("secret_config.h")
 #include "secret_config.h"
 #else
-#define WEATHER_API_KEY  ""
-#define WEATHER_API_HOST ""
 #define TIMEZONE_STRING  "CST-8"
 #define NTP_SERVER       "ntp.aliyun.com"
 #endif
@@ -44,12 +42,6 @@
 static const char *TAG = "DataUpdate";
 
 void CustomLcdDisplay::StartDataUpdateTask() {
-    // 暂时停用板载和风天气 API 配置，改为由 MCP 工具写入天气缓存
-    // WeatherManager::getInstance().setApiConfig(
-    //     WEATHER_API_KEY,
-    //     WEATHER_API_HOST
-    // );
-
     // 栈从 16KB 下调到 8KB，给音频/MQTT 留更多 SRAM 余量
     // 优先级保持较低，避免与语音收发实时链路抢占 CPU
     xTaskCreate(DataUpdateTask, "weather_ui_update", 8192, this, 2, &update_task_handle_);
@@ -200,7 +192,7 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
         }
 
         // ===== 天气更新 =====
-        // 暂时停用板载和风天气自动拉取，天气由 AI 通过 MCP 主动写入
+        // 天气由 TodoMcpClient 通过 reminder MCP get_weather 拉取并写入缓存
 
         // ===== 时间获取（在锁外也需要用，所以先获取）=====
         time_t now;

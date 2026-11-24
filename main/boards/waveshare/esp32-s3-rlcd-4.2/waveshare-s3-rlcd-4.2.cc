@@ -33,26 +33,6 @@
 
 #define TAG "waveshare_rlcd_4_2"
 
-// 天气拉取任务：优先和风天气（实时/空气/预报/预警），失败回退免密钥源
-// 成功 15 分钟更新一次（和风实时数据 10 分钟一更新、空气质量 1 小时一更新）；
-// 失败按 60s -> 120s -> 240s -> 300s 退避重试，成功后退避清零。
-static void WeatherFetchTask(void* arg) {
-    vTaskDelay(pdMS_TO_TICKS(15000));
-    uint32_t fail_backoff_ms = 60000;
-    for (;;) {
-        bool ok = WeatherManager::getInstance().update();
-        uint32_t interval_ms = 0;
-        if (ok) {
-            fail_backoff_ms = 60000;
-            interval_ms = 15u * 60u * 1000u;
-        } else {
-            interval_ms = fail_backoff_ms;
-            fail_backoff_ms = (fail_backoff_ms >= 300000u) ? 300000u : (fail_backoff_ms * 2u);
-        }
-        vTaskDelay(pdMS_TO_TICKS(interval_ms));
-    }
-}
-
 // 电池状态快照：百分比 / 电压 / 充电判断 / 剩余电量与可续航估算
 struct BatteryStatus {
     int percent = 0;          // 0-100
@@ -70,7 +50,7 @@ struct BatteryStatus {
 class CustomBoard : public WifiBoard {
 private:
     i2c_master_bus_handle_t i2c_bus_;
-    Button volume_button_;  // GPIO0 右侧按键：单击音量+10，双击音量-10，长按静音/取消静音
+    Button volume_button_;  // GPIO0 右侧按键：单击音量下一档，双击上一档，长按静音/取消静音
     Button user_button_;    // GPIO18 左侧按键：单击主页/天气/音乐页切换
     int volume_before_mute_ = -1;
     CustomLcdDisplay *display_ = nullptr;
@@ -308,13 +288,13 @@ private:
     }
 
     void InitializeButtons() { 
-        // 右侧按键 BOOT（GPIO0）- 音量调节：单击 +10，双击 -10，长按静音/取消静音
+        // 右侧按键 BOOT（GPIO0）- 音量调节：单击下一档（20→40→60→80→100→20），双击上一档，长按静音/取消静音
         volume_button_.OnClick([this]() {
-            AdjustVolume(+10);
+            AdjustVolume(+1);
         });
 
         volume_button_.OnDoubleClick([this]() {
-            AdjustVolume(-10);
+            AdjustVolume(-1);
         });
 
         volume_button_.OnLongPress([this]() {
@@ -331,28 +311,44 @@ private:
         });
     }
 
-    // 调整音量（delta 为 ±10），范围 0~100
-    void AdjustVolume(int delta) {
+    // 调整音量：按固定五档循环（20/40/60/80/100），单击下一档，双击上一档
+    void AdjustVolume(int direction) {
         auto codec = GetAudioCodec();
         if (codec == nullptr) {
             return;
         }
-        int volume = codec->output_volume() + delta;
-        if (volume < 0) volume = 0;
-        if (volume > 100) volume = 100;
+        static const int kVolumeLevels[5] = {20, 40, 60, 80, 100};
+        const int current = codec->output_volume();
+        int volume = current;
+        if (direction > 0) {
+            volume = 20;
+            for (int level : kVolumeLevels) {
+                if (level > current) {
+                    volume = level;
+                    break;
+                }
+            }
+            if (current >= 100) {
+                volume = 20;  // 100% 后循环回到 20%
+            }
+        } else {
+            volume = 100;
+            for (int i = 4; i >= 0; --i) {
+                if (kVolumeLevels[i] < current) {
+                    volume = kVolumeLevels[i];
+                    break;
+                }
+            }
+            if (current <= 20) {
+                volume = 100;  // 反向循环
+            }
+        }
         codec->SetOutputVolume(volume);
-        // 调大音量自动解除开机静音；调到 0 视为静音
-        codec->SetMute(volume == 0);
+        // 调大音量自动解除开机静音
+        codec->SetMute(false);
         if (display_) {
             display_->NotifyUserActivity();
-            if (volume == 0) {
-                display_->ShowNotification(Lang::Strings::MUTED);
-            } else if (volume >= 100) {
-                display_->ShowNotification(Lang::Strings::MAX_VOLUME);
-            } else {
-                display_->ShowNotification(std::string(Lang::Strings::VOLUME) +
-                                            std::to_string(volume));
-            }
+            display_->ShowVolumeLevel(volume);
         }
         ESP_LOGI(TAG, "音量按钮：%d%%（静音=%d）", volume, codec->muted() ? 1 : 0);
     }
@@ -369,15 +365,17 @@ private:
             ESP_LOGI(TAG, "音量按钮：静音（原 %d%%）", volume_before_mute_);
         } else {
             int restore = volume_before_mute_ > 0 ? volume_before_mute_ : 50;
+            // 恢复时对齐到最近的五档值
+            restore = ((restore + 19) / 20) * 20;
+            if (restore < 20) restore = 20;
+            if (restore > 100) restore = 100;
             codec->SetOutputVolume(restore);
             codec->SetMute(false);
             ESP_LOGI(TAG, "音量按钮：取消静音（%d%%）", restore);
         }
         if (display_) {
             display_->NotifyUserActivity();
-            display_->ShowNotification(codec->muted() ? Lang::Strings::MUTED
-                                                      : std::string(Lang::Strings::VOLUME) +
-                                                            std::to_string(codec->output_volume()));
+            display_->ShowVolumeLevel(codec->muted() ? 0 : codec->output_volume());
         }
     }
 
@@ -443,9 +441,6 @@ private:
 
     void RefreshAllData() {
         ESP_LOGI(TAG, "手动刷新所有数据...");
-        
-        // 暂时停用板载和风天气拉取，天气请通过 MCP 工具 self.weather.update 刷新
-        // WeatherManager::getInstance().update();
         
         // 重新同步 NTP 时间
         SensorManager::getInstance().syncNtpTime();
@@ -543,9 +538,8 @@ private:
                 data = wm.getLatestData();
                 char buf[256];
                 snprintf(buf, sizeof(buf),
-                         "天气城市：%s（来源：%s，LocationID：%s），最新显示：%s %s %s°C",
+                         "天气城市：%s（来源：%s），最新显示：%s %s %s°C",
                          wm.city().c_str(), wm.citySource().c_str(),
-                         wm.locationId().empty() ? "(未解析)" : wm.locationId().c_str(),
                          data.city.c_str(), data.text.c_str(), data.temp.c_str());
                 return std::string(buf);
             }
@@ -976,14 +970,11 @@ private:
         // 启动天气站数据更新任务
         display_->StartDataUpdateTask();
 
-        // 读取 NVS 里可运行时修改的天气配置（api_host / api_key / city）
+        // 读取 NVS 里的手动天气城市（天气数据由 reminder MCP get_weather 提供）
         WeatherManager::getInstance().loadConfigFromNvs();
 
-        // 启动天气网络拉取任务（独立任务，避免 HTTP 阻塞 LVGL 刷新）
-        xTaskCreate(WeatherFetchTask, "weather_fetch", 12288, nullptr, 2, nullptr);
-
-        // 启动待办 MCP 拉取任务：周期性调用外部 MCP 接入点的 list_todos，
-        // 把当日待办写到右侧待办卡（独立任务 + 独立 websocket 连接）
+        // 启动 reminder MCP 任务：同一长连接周期拉取 list_todos 和 get_weather，
+        // 待办写右侧卡片，天气写入 WeatherManager 缓存。
         TodoMcpClient::GetInstance().Start([this]() {
             if (display_ != nullptr) {
                 display_->RefreshMemoDisplay();
