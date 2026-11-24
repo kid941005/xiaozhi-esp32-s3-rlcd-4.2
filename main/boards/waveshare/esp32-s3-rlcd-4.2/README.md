@@ -137,6 +137,7 @@ idf.py -p COM7 flash monitor
 
 - 设备通过独立 WebSocket 连接外部 MCP 接入点。
 - 握手一次后复用长连接，每 10 秒调用 `list_todos(view=today, limit=10)`；内容无变化时只刷新 UI，不写 NVS。
+- TLS 1.2 会话票据会持久化到 NVS；重启或断线重连优先复用，省去完整证书链握手。
 - 断线/工具路由异常按 5 秒间隔快速重连；单轮 `list_todos` 失败最多快速重试 3 次。
 - 服务端 ping，客户端回 pong。
 - 支持 `self.todo.set_url` 修改地址、`self.todo.sync` 手动覆盖列表。

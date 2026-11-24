@@ -967,11 +967,9 @@ private:
             DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y,
             DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY, spi_config);
         
-        // 启动天气站数据更新任务
-        display_->StartDataUpdateTask();
-
-        // 读取 NVS 里的手动天气城市（天气数据由 reminder MCP get_weather 提供）
+        // 先恢复 NVS 天气快照/手动城市，再启动数据更新任务，避免开机首帧先显示 -- --°C。
         WeatherManager::getInstance().loadConfigFromNvs();
+        display_->StartDataUpdateTask();
 
         // 启动 reminder MCP 任务：同一长连接周期拉取 list_todos 和 get_weather，
         // 待办写右侧卡片，天气写入 WeatherManager 缓存。

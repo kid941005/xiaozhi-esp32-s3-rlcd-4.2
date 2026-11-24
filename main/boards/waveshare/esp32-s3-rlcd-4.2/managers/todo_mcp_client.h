@@ -11,6 +11,8 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/event_groups.h>
 
+#include "session_tls.h"
+
 class WebSocket;
 
 // 设备侧 MCP 客户端：连接外部 MCP 接入点（websocket），保持长连接，
@@ -63,6 +65,8 @@ private:
     bool FetchTodosDirect();
 
     EventGroupHandle_t event_group_ = nullptr;
+    SessionNetwork session_network_;   // 专用 TLS 传输：复用 MCP 端点的 TLS 会话
+    bool http_task_started_ = false;   // REST 兜底任务只在 MCP 缺工具时按需启动
     std::function<void()> on_updated_;
     std::mutex mutex_;
     std::mutex nvs_mutex_;

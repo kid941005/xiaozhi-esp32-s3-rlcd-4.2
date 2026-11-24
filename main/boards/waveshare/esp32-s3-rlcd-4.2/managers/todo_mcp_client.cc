@@ -54,10 +54,11 @@ constexpr int kInitTimeoutMs = 10000;
 constexpr int kCallTimeoutMs = 20000;
 constexpr int kPollMs = 10 * 1000;      // 长连接下的拉取间隔；NVS 仅在内容变化时写入
 constexpr int kRetryMs = 5 * 1000;      // 断线/工具路由异常后的重连间隔
-constexpr int kFirstDelayMs = 20000;    // 上电后先等网络
-constexpr int kHttpFirstDelayMs = 8000; // HTTP 直连首次拉取（网络通常已就绪）
+constexpr int kFirstDelayMs = 20000;    // 等待网络事件的上限（正常 Connected 会提前唤醒）
+constexpr int kHttpFirstDelayMs = 8000; // HTTP 兜底首次拉取（按需启动时使用）
 constexpr int kConnectAttempts = 3;     // 建连失败重试次数
-constexpr int kConnectGapMs = 3000;
+constexpr int kConnectGapMs = 1000;     // 首连失败后的重试间隔：缩短空档，减少开机等待
+
 constexpr int kMaxConsecFail = 2;       // 连续拉取失败多少次后重连
 constexpr int kListRetryAttempts = 3;   // 单轮 list_todos 失败后的快速重试次数（避免首轮瞬态错误把旧缓存留 60s）
 constexpr int kListRetryTimeoutMs = 10000;  // 每次快速重试的响应超时
@@ -333,16 +334,20 @@ void TodoMcpClient::Start(std::function<void()> on_updated) {
     GetUrl();
     xTaskCreate(TaskEntry, "todo_mcp", 8192, this, 2, nullptr);
 
-    // Reminder REST API 直连任务：外部 MCP 接入点不可用时仍能保证待办卡更新。
-    // 仅在本地私有 todo_mcp_secret.h 配置了 URL + API Key 时启用。
-    if (std::strlen(REMINDER_API_URL) > 0 && std::strlen(REMINDER_API_KEY) > 0) {
-        ESP_LOGI(TAG, "Reminder HTTP 直连已启用");
-        xTaskCreate(HttpTaskEntry, "todo_http", 8192, this, 2, nullptr);
-    }
+    // Reminder REST 直连不再开机启动：MCP 长连接已覆盖待办与天气，
+    // 同时启动两套 TLS 会争抢启动阶段网络。仅在 MCP 明确缺少 list_todos 时按需启动兜底。
 }
 
 void TodoMcpClient::Run() {
-    vTaskDelay(pdMS_TO_TICKS(kFirstDelayMs));
+    // 等待网络 Connected 事件（RequestRefresh 设置 kRefreshBit）；最多等 kFirstDelayMs 兜底。
+    ESP_LOGI(TAG, "等待网络就绪，最多 %d ms", kFirstDelayMs);
+    EventBits_t start_bits = xEventGroupWaitBits(event_group_, kRefreshBit, pdTRUE, pdFALSE,
+                                                 pdMS_TO_TICKS(kFirstDelayMs));
+    if (start_bits & kRefreshBit) {
+        ESP_LOGI(TAG, "网络就绪，立即连接 MCP");
+    } else {
+        ESP_LOGW(TAG, "等待网络事件超时，仍尝试连接 MCP");
+    }
     for (;;) {
         const std::string url = GetUrl();
         if (!url.empty()) {
@@ -357,11 +362,8 @@ void TodoMcpClient::Run() {
 }
 
 bool TodoMcpClient::OpenSession(std::unique_ptr<WebSocket>& ws, const std::string& url) {
-    NetworkInterface* network = Board::GetInstance().GetNetwork();
-    if (network == nullptr) {
-        ESP_LOGW(TAG, "网络未就绪");
-        return false;
-    }
+    // 待办 MCP 使用带 TLS 会话复用的 SessionNetwork，其余 WebSocket 逻辑不变。
+    NetworkInterface* network = &session_network_;
 
     for (int attempt = 1; attempt <= kConnectAttempts; ++attempt) {
         broken_ = false;
@@ -440,6 +442,38 @@ void TodoMcpClient::RunSession(const std::string& url) {
             break;
         }
 
+        // 天气优先：会话刚建立就先取 get_weather，避免被 list_todos / music_status 的超时阻塞。
+        // 同一条长连接复用；成功 12 小时刷新，失败 60 秒后重试。
+        const int64_t now_ms = esp_timer_get_time() / 1000;
+        if (now_ms >= weather_next_ms) {
+            bool weather_ok = false;
+            pending_id_ = 4;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                msg_reply_.clear();
+            }
+            xEventGroupClearBits(event_group_, kReplyBit);
+            const std::string city = WeatherManager::getInstance().city();
+            if (ws->Send(BuildGetWeatherRequest(pending_id_, city))) {
+                bits = xEventGroupWaitBits(event_group_, kReplyBit, pdTRUE, pdFALSE,
+                                           pdMS_TO_TICKS(kCallTimeoutMs));
+                if (bits & kReplyBit) {
+                    std::string payload;
+                    {
+                        std::lock_guard<std::mutex> lock(mutex_);
+                        payload = msg_reply_;
+                    }
+                    weather_ok = ApplyWeatherPayload(payload);
+                } else {
+                    ESP_LOGW(TAG, "等待 get_weather 响应超时");
+                }
+            } else {
+                ESP_LOGW(TAG, "发送 get_weather 失败");
+            }
+            weather_next_ms = esp_timer_get_time() / 1000 +
+                              (weather_ok ? kWeatherPollMs : kWeatherRetryMs);
+        }
+
         // list_todos 偶发瞬态失败（例如网关首次路由返回 -32601）时，不要直接保留
         // 旧 NVS 并等到 60s 后的下一轮；先在同一会话内快速重试 3 次。
         bool list_ok = false;
@@ -486,6 +520,11 @@ void TodoMcpClient::RunSession(const std::string& url) {
                 // 直接断开重连，让网关重新选择后端 MCP 服务。
                 if (std::strlen(REMINDER_API_URL) > 0 && std::strlen(REMINDER_API_KEY) > 0) {
                     mcp_tool_missing_ = true;
+                    if (!http_task_started_) {
+                        http_task_started_ = true;
+                        ESP_LOGI(TAG, "外部 MCP 未提供 list_todos，启动 Reminder REST 兜底");
+                        xTaskCreate(HttpTaskEntry, "todo_http", 8192, this, 2, nullptr);
+                    }
                     ESP_LOGW(TAG, "外部 MCP 未提供 list_todos，待办改由 Reminder REST 直连提供，5 分钟后重试 MCP");
                 } else {
                     ESP_LOGW(TAG, "list_todos 未注册或路由异常，立即重建会话");
@@ -517,38 +556,6 @@ void TodoMcpClient::RunSession(const std::string& url) {
                 }
                 ApplyMusicStatusPayload(payload);
             }
-        }
-
-        // 天气统一走 reminder MCP 的 get_weather，复用同一条长连接；
-        // 成功 12 小时刷新，失败 60 秒后重试。
-        const int64_t now_ms = esp_timer_get_time() / 1000;
-        if (now_ms >= weather_next_ms) {
-            bool weather_ok = false;
-            pending_id_ = 4;
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                msg_reply_.clear();
-            }
-            xEventGroupClearBits(event_group_, kReplyBit);
-            const std::string city = WeatherManager::getInstance().city();
-            if (ws->Send(BuildGetWeatherRequest(pending_id_, city))) {
-                bits = xEventGroupWaitBits(event_group_, kReplyBit, pdTRUE, pdFALSE,
-                                           pdMS_TO_TICKS(kCallTimeoutMs));
-                if (bits & kReplyBit) {
-                    std::string payload;
-                    {
-                        std::lock_guard<std::mutex> lock(mutex_);
-                        payload = msg_reply_;
-                    }
-                    weather_ok = ApplyWeatherPayload(payload);
-                } else {
-                    ESP_LOGW(TAG, "等待 get_weather 响应超时");
-                }
-            } else {
-                ESP_LOGW(TAG, "发送 get_weather 失败");
-            }
-            weather_next_ms = esp_timer_get_time() / 1000 +
-                              (weather_ok ? kWeatherPollMs : kWeatherRetryMs);
         }
 
         // 等到下一次拉取，期间网络恢复事件可以提前触发

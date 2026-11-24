@@ -69,6 +69,105 @@ std::string AlertColorName(const std::string& color) {
     return "";
 }
 
+// 把完整天气快照序列化成 JSON 存 NVS，开机 first frame 先显示上次天气。
+std::string SerializeWeatherSnapshot(const WeatherData& d) {
+    cJSON* root = cJSON_CreateObject();
+    if (root == nullptr) return "";
+    cJSON_AddStringToObject(root, "city", d.city.c_str());
+    cJSON_AddStringToObject(root, "temp", d.temp.c_str());
+    cJSON_AddStringToObject(root, "text", d.text.c_str());
+    cJSON_AddStringToObject(root, "update_time", d.update_time.c_str());
+    cJSON_AddStringToObject(root, "feels_like", d.feels_like.c_str());
+    cJSON_AddStringToObject(root, "humidity", d.humidity.c_str());
+    cJSON_AddStringToObject(root, "wind_dir", d.wind_dir.c_str());
+    cJSON_AddStringToObject(root, "wind_scale", d.wind_scale.c_str());
+    cJSON_AddStringToObject(root, "wind_speed", d.wind_speed.c_str());
+    cJSON_AddStringToObject(root, "vis", d.vis.c_str());
+    cJSON_AddStringToObject(root, "pressure", d.pressure.c_str());
+    cJSON_AddStringToObject(root, "precipitation", d.precipitation.c_str());
+    cJSON_AddStringToObject(root, "aqi", d.aqi.c_str());
+    cJSON_AddStringToObject(root, "aqi_category", d.aqi_category.c_str());
+    cJSON_AddStringToObject(root, "pm25", d.pm25.c_str());
+    cJSON_AddStringToObject(root, "sunrise", d.sunrise.c_str());
+    cJSON_AddStringToObject(root, "sunset", d.sunset.c_str());
+    cJSON_AddStringToObject(root, "warning", d.warning.c_str());
+    cJSON_AddStringToObject(root, "warning_short", d.warning_short.c_str());
+    const int n = (d.daily_count > 3) ? 3 : d.daily_count;
+    cJSON_AddNumberToObject(root, "daily_count", n);
+    cJSON* days = cJSON_AddArrayToObject(root, "daily");
+    for (int i = 0; i < n; ++i) {
+        const WeatherDaily& wd = d.daily[i];
+        cJSON* day = cJSON_CreateObject();
+        cJSON_AddStringToObject(day, "date", wd.date.c_str());
+        cJSON_AddStringToObject(day, "week", wd.week.c_str());
+        cJSON_AddStringToObject(day, "text_day", wd.text_day.c_str());
+        cJSON_AddStringToObject(day, "text_night", wd.text_night.c_str());
+        cJSON_AddStringToObject(day, "temp_min", wd.temp_min.c_str());
+        cJSON_AddStringToObject(day, "temp_max", wd.temp_max.c_str());
+        cJSON_AddStringToObject(day, "wind_dir", wd.wind_dir.c_str());
+        cJSON_AddStringToObject(day, "wind_scale", wd.wind_scale.c_str());
+        cJSON_AddStringToObject(day, "sunrise", wd.sunrise.c_str());
+        cJSON_AddStringToObject(day, "sunset", wd.sunset.c_str());
+        cJSON_AddItemToArray(days, day);
+    }
+    char* out = cJSON_PrintUnformatted(root);
+    std::string result = out ? out : "";
+    if (out) cJSON_free(out);
+    cJSON_Delete(root);
+    return result;
+}
+
+bool DeserializeWeatherSnapshot(const std::string& text, WeatherData& d) {
+    if (text.empty()) return false;
+    cJSON* root = cJSON_Parse(text.c_str());
+    if (root == nullptr) return false;
+    d = WeatherData();
+    d.city = JsonString(root, "city");
+    d.temp = JsonString(root, "temp");
+    d.text = JsonString(root, "text");
+    d.update_time = JsonString(root, "update_time");
+    d.feels_like = JsonString(root, "feels_like");
+    d.humidity = JsonString(root, "humidity");
+    d.wind_dir = JsonString(root, "wind_dir");
+    d.wind_scale = JsonString(root, "wind_scale");
+    d.wind_speed = JsonString(root, "wind_speed");
+    d.vis = JsonString(root, "vis");
+    d.pressure = JsonString(root, "pressure");
+    d.precipitation = JsonString(root, "precipitation");
+    d.aqi = JsonString(root, "aqi");
+    d.aqi_category = JsonString(root, "aqi_category");
+    d.pm25 = JsonString(root, "pm25");
+    d.sunrise = JsonString(root, "sunrise");
+    d.sunset = JsonString(root, "sunset");
+    d.warning = JsonString(root, "warning");
+    d.warning_short = JsonString(root, "warning_short");
+    cJSON* count_item = cJSON_GetObjectItem(root, "daily_count");
+    int n = cJSON_IsNumber(count_item) ? count_item->valueint : 0;
+    if (n < 0) n = 0;
+    if (n > 3) n = 3;
+    d.daily_count = n;
+    cJSON* days = cJSON_GetObjectItem(root, "daily");
+    if (days != nullptr && cJSON_IsArray(days)) {
+        for (int i = 0; i < n; ++i) {
+            cJSON* day = cJSON_GetArrayItem(days, i);
+            WeatherDaily& wd = d.daily[i];
+            wd.date = JsonString(day, "date");
+            wd.week = JsonString(day, "week");
+            wd.text_day = JsonString(day, "text_day");
+            wd.text_night = JsonString(day, "text_night");
+            wd.temp_min = JsonString(day, "temp_min");
+            wd.temp_max = JsonString(day, "temp_max");
+            wd.wind_dir = JsonString(day, "wind_dir");
+            wd.wind_scale = JsonString(day, "wind_scale");
+            wd.sunrise = JsonString(day, "sunrise");
+            wd.sunset = JsonString(day, "sunset");
+        }
+    }
+    d.valid = true;
+    cJSON_Delete(root);
+    return !d.city.empty() && !d.temp.empty() && !d.text.empty();
+}
+
 }  // namespace
 
 WeatherManager::WeatherManager() = default;
@@ -80,6 +179,22 @@ WeatherManager& WeatherManager::getInstance() {
 
 void WeatherManager::loadConfigFromNvs() {
     Settings settings("weather", false);
+    // 先恢复上一次成功天气；开机首屏先显示快照，MCP 后台刷新后覆盖。
+    const std::string snapshot = settings.GetString("snapshot");
+    if (!snapshot.empty()) {
+        static WeatherData cached;
+        if (DeserializeWeatherSnapshot(snapshot, cached)) {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                latest_data_ = cached;
+                latest_time_ = std::chrono::steady_clock::now();
+            }
+            ESP_LOGI(TAG, "已加载 NVS 天气快照: %s %s %s°C（后台刷新）", cached.city.c_str(),
+                     cached.text.c_str(), cached.temp.c_str());
+        } else {
+            ESP_LOGW(TAG, "NVS 天气快照无法解析，忽略");
+        }
+    }
     const std::string city = settings.GetString("city");
     const std::string adm = settings.GetString("adm");
     if (city.empty()) {
@@ -115,6 +230,7 @@ void WeatherManager::SetCity(const std::string& city, const std::string& adm) {
     Settings wr("weather", true);
     wr.SetString("city", city);
     wr.SetString("adm", adm);
+    wr.EraseKey("snapshot");   // 城市变了，旧城市快照不能继续在首屏显示
     ESP_LOGI(TAG, "天气城市已手动设置为 %s（上级=%s），等待下次拉取", city.c_str(),
              adm.empty() ? "-" : adm.c_str());
 }
@@ -233,6 +349,13 @@ bool WeatherManager::updateFromReminderJson(const std::string& payload) {
         if (!manual_city_) {
             city_ = d.city;
             city_source_ = "Reminder MCP";
+        }
+    }
+    {
+        Settings wr("weather", true);
+        const std::string snapshot = SerializeWeatherSnapshot(d);
+        if (!snapshot.empty()) {
+            wr.SetString("snapshot", snapshot);
         }
     }
 
