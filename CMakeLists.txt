@@ -32,5 +32,5 @@ if(FW_GIT_REV)
     message(STATUS "Firmware git revision for project description: ${FW_GIT_REV}")
 endif()
 
-set(PROJECT_VER "2.7.4")
+set(PROJECT_VER "2.7.5")
 project(xiaozhi)
