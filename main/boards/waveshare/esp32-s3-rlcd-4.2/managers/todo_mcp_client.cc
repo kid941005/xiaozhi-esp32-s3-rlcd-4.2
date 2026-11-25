@@ -65,6 +65,7 @@ constexpr int kListRetryTimeoutMs = 10000;  // 每次快速重试的响应超时
 constexpr int kMaxRows = kTodoFetchMaxRows;  // P2 #26：抓取上限，见 ui_limits.h（显示侧仅渲染 kTodoDisplayMaxItems=6）
 constexpr int kWeatherPollMs = 12 * 60 * 60 * 1000;  // 天气成功刷新间隔：12 小时
 constexpr int kWeatherRetryMs = 60 * 1000;      // 天气失败重试间隔
+constexpr int kWeatherMaxFailBeforeReconnect = 2;  // 天气连续失败后重建 MCP 会话
 
 // 0=周日 … 6=周六
 int DayOfWeek(int y, int m, int d) {
@@ -434,6 +435,7 @@ void TodoMcpClient::RunSession(const std::string& url) {
     ESP_LOGI(TAG, "MCP 会话已建立");
 
     int consec_fail = 0;
+    int weather_fail_streak = 0;
     unsigned list_seq = 0;
     int64_t weather_next_ms = 0;   // 首次连上立即取一次天气
     for (;;) {
@@ -470,8 +472,21 @@ void TodoMcpClient::RunSession(const std::string& url) {
             } else {
                 ESP_LOGW(TAG, "发送 get_weather 失败");
             }
-            weather_next_ms = esp_timer_get_time() / 1000 +
-                              (weather_ok ? kWeatherPollMs : kWeatherRetryMs);
+            if (weather_ok) {
+                weather_fail_streak = 0;
+                weather_next_ms = esp_timer_get_time() / 1000 + kWeatherPollMs;
+            } else {
+                ++weather_fail_streak;
+                ESP_LOGW(TAG, "get_weather 连续失败 %d/%d 次", weather_fail_streak,
+                         kWeatherMaxFailBeforeReconnect);
+                if (weather_fail_streak >= kWeatherMaxFailBeforeReconnect) {
+                    // 同一 MCP 会话的工具路由可能已经损坏；继续在这个会话里重试会一直失败，
+                    // 直到 13 小时天气缓存过期后主页变成 --。直接重建会话换取新路由。
+                    ESP_LOGW(TAG, "get_weather 连续失败，重建 MCP 会话");
+                    break;
+                }
+                weather_next_ms = esp_timer_get_time() / 1000 + kWeatherRetryMs;
+            }
         }
 
         // list_todos 偶发瞬态失败（例如网关首次路由返回 -32601）时，不要直接保留

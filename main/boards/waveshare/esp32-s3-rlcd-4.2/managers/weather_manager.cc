@@ -250,7 +250,17 @@ bool WeatherManager::updateFromReminderJson(const std::string& payload) {
     cJSON* first = (content && cJSON_IsArray(content)) ? cJSON_GetArrayItem(content, 0) : nullptr;
     cJSON* text = first ? cJSON_GetObjectItem(first, "text") : nullptr;
     if (text == nullptr || !cJSON_IsString(text) || text->valuestring == nullptr) {
-        ESP_LOGW(TAG, "reminder get_weather 响应缺少 result.content[0].text");
+        cJSON* error = cJSON_GetObjectItem(root, "error");
+        if (error != nullptr) {
+            cJSON* code = cJSON_GetObjectItem(error, "code");
+            cJSON* message = cJSON_GetObjectItem(error, "message");
+            ESP_LOGW(TAG, "reminder get_weather 错误: code=%d message=%.160s",
+                     cJSON_IsNumber(code) ? code->valueint : 0,
+                     (cJSON_IsString(message) && message->valuestring) ? message->valuestring : "");
+        } else {
+            ESP_LOGW(TAG, "reminder get_weather 响应缺少 result.content[0].text: %.200s",
+                     payload.c_str());
+        }
         cJSON_Delete(root);
         return false;
     }
