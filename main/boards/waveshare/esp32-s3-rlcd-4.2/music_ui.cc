@@ -214,30 +214,21 @@ void CustomLcdDisplay::SetupMusicUI() {
     lv_obj_remove_flag(info_sep, LV_OBJ_FLAG_SCROLLABLE);
 
     // 歌词区域（三行卡拉 OK 样式：上一句淡色、当前句醒目、下一句淡色）
-    const int lyric_start_y = 58;       // 分隔线下方起始 y
-    const int lyric_line_h = 24;        // 每行歌词高度
-    const int lyric_gap = 3;            // 行间距
+    const int lyric_start_y = 54;       // 分隔线下方起始 y
+    const int lyric_line_h = 24;        // 上一句/下一句行高
+    const int lyric_gap = 2;            // 行间距
+    const int lyric_current_h = 40;     // 当前句最多显示两行，避免跑马灯
     const int lyric_w = info_w - 24;
-
-    // 上一句歌词（小字，单行省略号截断 —— 固定高度确保不换行）
-    music_lyric_prev_label_ = lv_label_create(info_card);
-    lv_obj_set_style_text_font(music_lyric_prev_label_, font_sm, 0);
-    lv_obj_set_style_text_color(music_lyric_prev_label_, lv_color_black(), 0);
-    lv_obj_set_style_text_align(music_lyric_prev_label_, LV_TEXT_ALIGN_LEFT, 0);
-    lv_obj_set_size(music_lyric_prev_label_, lyric_w, lyric_line_h);
-    lv_label_set_long_mode(music_lyric_prev_label_, LV_LABEL_LONG_DOT);
-    lv_label_set_text(music_lyric_prev_label_, "");
-    lv_obj_align(music_lyric_prev_label_, LV_ALIGN_TOP_LEFT, 0, lyric_start_y);
 
     // 当前歌词（完整字库，醒目黑色，加大字号）
     music_lyric_label_ = lv_label_create(info_card);
     lv_obj_set_style_text_font(music_lyric_label_, font_cn, 0);
     lv_obj_set_style_text_color(music_lyric_label_, lv_color_black(), 0);
     lv_obj_set_style_text_align(music_lyric_label_, LV_TEXT_ALIGN_LEFT, 0);
-    lv_obj_set_width(music_lyric_label_, lyric_w);
-    lv_label_set_long_mode(music_lyric_label_, LV_LABEL_LONG_SCROLL_CIRCULAR);
+    lv_obj_set_size(music_lyric_label_, lyric_w, lyric_current_h);
+    lv_label_set_long_mode(music_lyric_label_, LV_LABEL_LONG_WRAP);
     lv_label_set_text(music_lyric_label_, "等待播放...");
-    lv_obj_align(music_lyric_label_, LV_ALIGN_TOP_LEFT, 0, lyric_start_y + lyric_line_h + lyric_gap);
+    lv_obj_align(music_lyric_label_, LV_ALIGN_TOP_LEFT, 0, lyric_start_y);
 
     // 下一句歌词（小字，单行省略号截断 —— 固定高度确保不换行）
     music_lyric_next_label_ = lv_label_create(info_card);
@@ -247,7 +238,8 @@ void CustomLcdDisplay::SetupMusicUI() {
     lv_obj_set_size(music_lyric_next_label_, lyric_w, lyric_line_h);
     lv_label_set_long_mode(music_lyric_next_label_, LV_LABEL_LONG_DOT);
     lv_label_set_text(music_lyric_next_label_, "");
-    lv_obj_align(music_lyric_next_label_, LV_ALIGN_TOP_LEFT, 0, lyric_start_y + (lyric_line_h + lyric_gap) * 2);
+    lv_obj_align(music_lyric_next_label_, LV_ALIGN_TOP_LEFT, 0,
+                 lyric_start_y + lyric_current_h + lyric_gap);
 
     // ============================================================
     // 第 3 层：进度条 + 时间
