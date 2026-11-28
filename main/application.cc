@@ -2014,11 +2014,40 @@ void Application::MusicPlaybackTask(std::string url, std::string title, std::str
             auto* network = Board::GetInstance().GetNetwork();
             const std::string& lyric_url = args->lyric_url;
             ESP_LOGI(TAG, "正在拉取歌词: %s", lyric_url.c_str());
-            auto lyric_http = network->CreateHttp(4);  // 用不同的 connect_id，避免和音乐流(3)的 TLS 连接冲突
-            lyric_http->SetHeader("User-Agent", SystemInfo::GetUserAgent());
-            if (lyric_http->Open("GET", lyric_url)) {
-                if (lyric_http->GetStatusCode() == 200) {
-                    std::string lyric_text = lyric_http->ReadAll();
+            // 网关首次请求歌词时会同步抓取上游，容易超过默认 30s；
+            // 这里用“短超时 + 退避重试”，首轮超时后等网关预热完成再取缓存。
+            constexpr int kLyricAttempts = 3;
+            constexpr int kLyricTimeoutsMs[kLyricAttempts] = {8000, 12000, 20000};
+            constexpr int kLyricRetryDelayMs = 4000;
+            std::string lyric_text;
+            bool lyric_fetched = false;
+            for (int attempt = 0; attempt < kLyricAttempts && !lyric_fetched; ++attempt) {
+                auto lyric_http = network->CreateHttp(4);  // 用不同的 connect_id，避免和音乐流(3)的 TLS 连接冲突
+                lyric_http->SetTimeout(kLyricTimeoutsMs[attempt]);
+                lyric_http->SetHeader("User-Agent", SystemInfo::GetUserAgent());
+                auto opened = lyric_http->Open("GET", lyric_url);
+                if (!opened) {
+                    ESP_LOGW(TAG, "歌词拉取失败（第 %d/%d 次）：无法连接: %s", attempt + 1,
+                             kLyricAttempts, opened.error().ToString().c_str());
+                } else {
+                    auto status = lyric_http->GetStatusCode();
+                    if (!status) {
+                        ESP_LOGW(TAG, "歌词拉取失败（第 %d/%d 次）：%s", attempt + 1,
+                                 kLyricAttempts, status.error().ToString().c_str());
+                    } else if (*status != 200) {
+                        ESP_LOGW(TAG, "歌词拉取失败（第 %d/%d 次），HTTP 状态码: %d", attempt + 1,
+                                 kLyricAttempts, *status);
+                    } else {
+                        lyric_text = lyric_http->ReadAll();
+                        lyric_fetched = true;
+                    }
+                }
+                lyric_http->Close();
+                if (!lyric_fetched && attempt + 1 < kLyricAttempts) {
+                    vTaskDelay(pdMS_TO_TICKS(kLyricRetryDelayMs));
+                }
+            }
+            if (lyric_fetched) {
                     // LRCLIB 返回 JSON：取 syncedLyrics；没有时间轴时用 plainLyrics 生成伪 LRC
                     if (lyric_url.find("lrclib.net") != std::string::npos && !lyric_text.empty()) {
                         cJSON* lrc_root = cJSON_Parse(lyric_text.c_str());
@@ -2129,12 +2158,8 @@ void Application::MusicPlaybackTask(std::string url, std::string title, std::str
                         ESP_LOGW(TAG, "歌词内容为空");
                     }
                 } else {
-                    ESP_LOGW(TAG, "歌词拉取失败，HTTP 状态码: %d", lyric_http->GetStatusCode());
+                    ESP_LOGW(TAG, "歌词拉取失败：重试 %d 次后仍无法获取", kLyricAttempts);
                 }
-                lyric_http->Close();
-            } else {
-                ESP_LOGW(TAG, "歌词拉取失败：无法连接到歌词服务");
-            }
 
             {
                 std::lock_guard<std::mutex> lock(share->mutex);
