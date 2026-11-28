@@ -1320,7 +1320,10 @@ void Application::HandleStateChangedEvent() {
                 // voice processing. This prevents audio truncation when STOP arrives
                 // late due to network jitter. Instead of blocking the main loop here,
                 // defer the start until MAIN_EVENT_PLAYBACK_DRAINED arrives.
-                if (listening_mode_ == kListeningModeAutoStop && !audio_service_.IsPlaybackIdle()) {
+                // Half-duplex: never re-open the uplink while TTS audio is still
+                // draining, otherwise the tail of the assistant's own speech is
+                // captured by the microphone and sent back to the server ASR.
+                if (!audio_service_.IsPlaybackIdle()) {
                     pending_listening_start_ = true;
                 } else {
                     StartListeningAudio();
@@ -1337,11 +1340,14 @@ void Application::HandleStateChangedEvent() {
                 esp_timer_stop(vad_barge_in_timer_);
             }
 
-            if (listening_mode_ != kListeningModeRealtime) {
-                audio_service_.EnableVoiceProcessing(false);
-                // Only AFE wake word can be detected in speaking mode
-                audio_service_.EnableWakeWordDetection(audio_service_.IsAfeWakeWord());
-            }
+            // Half-duplex: pause the uplink microphone for the whole TTS
+            // playback, including realtime mode. Device-side AEC cannot fully
+            // suppress the speaker echo, and the server ASR otherwise hears the
+            // assistant's own voice and starts a self-conversation loop.
+            audio_service_.EnableVoiceProcessing(false);
+            // Keep only AFE wake word detection alive so the user can still
+            // interrupt with the wake word; its output is not sent upstream.
+            audio_service_.EnableWakeWordDetection(audio_service_.IsAfeWakeWord());
             audio_service_.ResetDecoder();
             break;
         case kDeviceStateNotifying:
